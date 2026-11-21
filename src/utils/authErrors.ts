@@ -20,8 +20,13 @@ export function formatFirebaseAuthError(error: unknown): string {
       return 'Another sign-in popup was already open. Please try again.';
     case 'auth/popup-blocked':
       return 'Your browser blocked the Google sign-in popup. Allow popups for this site and try again.';
-    case 'auth/unauthorized-domain':
-      return 'This domain is not yet authorized in Firebase Authentication. Add this app URL under Firebase Console → Authentication → Settings → Authorized domains.';
+    case 'auth/unauthorized-domain': {
+      const hostHint =
+        typeof window !== 'undefined' && window.location?.hostname
+          ? ` (${window.location.hostname})`
+          : '';
+      return `This domain${hostHint} is not yet authorized in Firebase Authentication. Add it under Firebase Console → Authentication → Settings → Authorized domains, or continue in Offline Space.`;
+    }
     case 'auth/operation-not-allowed':
       return 'This sign-in provider is not enabled yet in Firebase Console. Enable Email/Password (or Google) under Firebase Console → Authentication → Sign-in method.';
     case 'auth/email-already-in-use':

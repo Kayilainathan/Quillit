@@ -34,6 +34,7 @@ import {
   getNextPreferredCycleSpecs,
 } from './utils/adaptivePromptProfile';
 import { decryptVault, encryptVault, isEncryptedEnvelope } from './utils/crypto';
+import { getApiUrl, safeParseJsonResponse } from './utils/apiBase';
 import {
   auth,
   getWorkspaceAccessToken,
@@ -296,6 +297,12 @@ export default function App() {
   }, [theme]);
 
   useEffect(() => {
+    if (!auth) {
+      setCloudUser(null);
+      setAuthReady(true);
+      setCloudSyncStatus('local');
+      return;
+    }
     const unsub = onAuthStateChanged(auth, (user) => {
       setCloudUser(user);
       setAuthReady(true);
@@ -1000,7 +1007,7 @@ export default function App() {
           vault.vocabulary,
           todayISO
         );
-        const res = await fetch('/api/schedule-triweekly', {
+        const res = await fetch(getApiUrl('/api/schedule-triweekly'), {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -1020,9 +1027,12 @@ export default function App() {
             },
           }),
         });
-        const data = await res.json();
-        if (!res.ok) {
-          throw new Error(data.error || 'Failed to refresh AI schedule.');
+        const data = await safeParseJsonResponse<Record<string, unknown>>(res);
+        if (!res.ok || !data) {
+          throw new Error(
+            (typeof data?.error === 'string' && data.error) ||
+              'AI schedule refresh requires an active API server.'
+          );
         }
 
         if (typeof data.modelUsed === 'string') {
@@ -1148,7 +1158,7 @@ export default function App() {
           todayISO
         );
 
-        const res = await fetch('/api/schedule-triweekly', {
+        const res = await fetch(getApiUrl('/api/schedule-triweekly'), {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -1170,9 +1180,12 @@ export default function App() {
             },
           }),
         });
-        const data = await res.json();
-        if (!res.ok) {
-          throw new Error(data.error || 'Unable to generate monthly plan.');
+        const data = await safeParseJsonResponse<Record<string, unknown>>(res);
+        if (!res.ok || !data) {
+          throw new Error(
+            (typeof data?.error === 'string' && data.error) ||
+              'AI monthly plan requires an active API server. Use Auto-Fill Month for instant offline scheduling.'
+          );
         }
 
         if (typeof data.modelUsed === 'string') {
@@ -1239,7 +1252,7 @@ export default function App() {
     const targetSession = pendingEvalSessions[0];
     const timer = window.setTimeout(async () => {
       try {
-        const res = await fetch('/api/evaluate', {
+        const res = await fetch(getApiUrl('/api/evaluate'), {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -1255,17 +1268,31 @@ export default function App() {
           }),
         });
         if (!res.ok) return;
-        const data = await res.json();
-        if (data.evaluationStatus !== 'completed' || !data.scores) {
+        const data = await safeParseJsonResponse<{
+          evaluationStatus?: string;
+          modelUsed?: string;
+          scores?: WritingSession['scores'];
+          cefrLevel?: string;
+          internationalMetrics?: WritingSession['internationalMetrics'];
+          toneVerdict?: string;
+          flowVerdict?: string;
+          feedbackImplemented?: WritingSession['feedbackImplemented'];
+          whatImproved?: string;
+          strictImprovements?: string;
+          grammarFixes?: WritingSession['grammarFixes'];
+          vocabUpgrades?: WritingSession['vocabUpgrades'];
+        }>(res);
+        if (!data || data.evaluationStatus !== 'completed' || !data.scores) {
           return;
         }
+        const resolvedScores = data.scores;
         if (typeof data.modelUsed === 'string') {
           setActiveAiModelLabel(data.modelUsed);
         }
-        const totalScore = computeTotalScore(data.scores);
+        const totalScore = computeTotalScore(resolvedScores);
         const percentage = computePercentage(totalScore);
         const intl = deriveInternationalMetrics({
-          scores: data.scores,
+          scores: resolvedScores,
           content: targetSession.content,
           internationalMetrics: data.internationalMetrics,
         });
@@ -1276,7 +1303,7 @@ export default function App() {
             if (s.id !== targetSession.id) return s;
             const finalized: WritingSession = {
               ...s,
-              scores: data.scores,
+              scores: resolvedScores,
               totalScore,
               percentage,
               cefrLevel: data.cefrLevel || s.cefrLevel,

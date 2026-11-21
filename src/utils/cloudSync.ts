@@ -60,13 +60,13 @@ export function handleFirestoreError(
   const errInfo: FirestoreErrorInfo = {
     error: error instanceof Error ? error.message : String(error),
     authInfo: {
-      userId: auth.currentUser?.uid,
-      email: auth.currentUser?.email,
-      emailVerified: auth.currentUser?.emailVerified,
-      isAnonymous: auth.currentUser?.isAnonymous,
-      tenantId: auth.currentUser?.tenantId,
+      userId: auth?.currentUser?.uid,
+      email: auth?.currentUser?.email,
+      emailVerified: auth?.currentUser?.emailVerified,
+      isAnonymous: auth?.currentUser?.isAnonymous,
+      tenantId: auth?.currentUser?.tenantId,
       providerInfo:
-        auth.currentUser?.providerData?.map((provider) => ({
+        auth?.currentUser?.providerData?.map((provider) => ({
           providerId: provider.providerId,
           email: provider.email,
         })) || [],
@@ -265,6 +265,7 @@ export async function ensureUserProfileDoc(
   user: User,
   settings: UserSettings
 ): Promise<Partial<UserSettings>> {
+  if (!db) return {};
   const path = `users/${user.uid}`;
   const ref = doc(db, 'users', user.uid);
   const safeGoal = Math.max(50, Math.min(5000, Math.round(settings.dailyWordGoal || 200)));
@@ -378,6 +379,7 @@ export async function syncSessionToCloud(
   uid: string,
   session: WritingSession
 ): Promise<void> {
+  if (!db) return;
   const docId = sanitizeDocId(session.id, 'SESSION');
   const path = `users/${uid}/sessions/${docId}`;
   const ref = doc(db, 'users', uid, 'sessions', docId);
@@ -425,6 +427,7 @@ export async function syncSlotToCloud(
   uid: string,
   slot: CalendarSlot
 ): Promise<void> {
+  if (!db) return;
   const docId = sanitizeDocId(slot.id, 'slot');
   const path = `users/${uid}/calendarSlots/${docId}`;
   const ref = doc(db, 'users', uid, 'calendarSlots', docId);
@@ -472,6 +475,7 @@ export async function deleteSlotFromCloud(
   uid: string,
   slotId: string
 ): Promise<void> {
+  if (!db) return;
   const docId = sanitizeDocId(slotId, 'slot');
   const path = `users/${uid}/calendarSlots/${docId}`;
   try {
@@ -485,6 +489,7 @@ export async function syncVocabToCloud(
   uid: string,
   entry: VocabEntry
 ): Promise<void> {
+  if (!db) return;
   const docId = sanitizeDocId(entry.id, 'vocab');
   const path = `users/${uid}/vocabulary/${docId}`;
   const ref = doc(db, 'users', uid, 'vocabulary', docId);
@@ -515,6 +520,7 @@ export async function deleteVocabFromCloud(
   uid: string,
   vocabId: string
 ): Promise<void> {
+  if (!db) return;
   const docId = sanitizeDocId(vocabId, 'vocab');
   const path = `users/${uid}/vocabulary/${docId}`;
   try {
@@ -614,6 +620,7 @@ export async function syncLocalVaultWithCloud(
   user: User,
   localVault: VaultPayload
 ): Promise<VaultPayload> {
+  if (!db) return localVault;
   const hydratedSettings = await ensureUserProfileDoc(user, localVault.settings);
 
   const sessionsPath = `users/${user.uid}/sessions`;
@@ -705,6 +712,7 @@ export function subscribeToCloudVault(
     onError?: (error: Error) => void;
   }
 ): () => void {
+  if (!db) return () => {};
   const sessionsPath = `users/${uid}/sessions`;
   const slotsPath = `users/${uid}/calendarSlots`;
   const vocabPath = `users/${uid}/vocabulary`;
@@ -772,6 +780,7 @@ export async function purgePredefinedCloudRecords(
   uid: string,
   ids: { sessionIds: string[]; slotIds: string[]; vocabIds: string[] }
 ): Promise<void> {
+  if (!db) return;
   const deletions: Promise<void>[] = [];
 
   for (const sid of ids.sessionIds) {

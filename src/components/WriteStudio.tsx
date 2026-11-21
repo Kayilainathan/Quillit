@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ArrowRight,
+  BookmarkPlus,
   BookOpen,
   CalendarClock,
   Check,
@@ -57,6 +58,8 @@ import {
   savePersistedDeckState,
   type TopicDeckState,
 } from '../utils/topicDeck';
+import { getApiUrl, safeParseJsonResponse } from '../utils/apiBase';
+import { QuickAddVocabModal } from './QuickAddVocabModal';
 import {
   applyAllOfflineIssues,
   applyOfflineIssue,
@@ -225,6 +228,9 @@ export function WriteStudio({
   const [liveAppliedNotice, setLiveAppliedNotice] = useState<string | null>(
     null
   );
+  const [showQuickAddVocab, setShowQuickAddVocab] = useState(false);
+  const [quickVocabToast, setQuickVocabToast] = useState<string | null>(null);
+  const quickVocabToastTimerRef = useRef<number | null>(null);
 
   const [checkedAngles, setCheckedAngles] = useState<Record<string, boolean>>(
     {}
@@ -556,7 +562,7 @@ export function WriteStudio({
     setPivoting(true);
     setErrorMessage(null);
     try {
-      const res = await fetch('/api/pivot-topic', {
+      const res = await fetch(getApiUrl('/api/pivot-topic'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -564,8 +570,13 @@ export function WriteStudio({
           customFocus: pivotFocus.trim(),
         }),
       });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Unable to apply Universal Pivot.');
+      const data = await safeParseJsonResponse<Record<string, unknown>>(res);
+      if (!res.ok || !data) {
+        throw new Error(
+          (typeof data?.error === 'string' && data.error) ||
+            'Topic pivot requires an active API server.'
+        );
+      }
       const nextTopic = String(data.topic || pivotFocus.trim());
       const nextSlot: CalendarSlot = {
         ...activeLinkedSlot,
@@ -956,6 +967,19 @@ export function WriteStudio({
                   ? 'Picking a topic...'
                   : 'Want a random topic?'}
               </span>
+            </button>
+          )}
+
+          {!focusMode && (
+            <button
+              type="button"
+              data-testid="quick-add-vocab-button"
+              onClick={() => setShowQuickAddVocab(true)}
+              title="Quickly save a new word and definition to your vocabulary bank"
+              className="btn-secondary inline-flex items-center gap-1.5 px-2.5 py-2 text-xs font-medium whitespace-nowrap"
+            >
+              <BookmarkPlus className="w-3.5 h-3.5 text-ink-secondary" aria-hidden="true" />
+              <span>Quick Add</span>
             </button>
           )}
 
@@ -2042,6 +2066,39 @@ export function WriteStudio({
           </aside>
         )}
       </div>
+
+      {quickVocabToast && (
+        <div
+          role="status"
+          data-testid="quick-add-vocab-toast"
+          className="fixed bottom-5 right-5 z-40 inline-flex items-center gap-2 px-3.5 py-2 rounded-md border border-status-success-border bg-surface text-xs text-ink-primary shadow-md"
+        >
+          <CheckCircle2
+            className="w-3.5 h-3.5 text-status-success shrink-0"
+            aria-hidden="true"
+          />
+          <span>{quickVocabToast}</span>
+        </div>
+      )}
+
+      <QuickAddVocabModal
+        open={showQuickAddVocab}
+        mode={mode}
+        todayISO={todayISO}
+        existingVocabulary={vocabulary}
+        onAdd={(entry) => {
+          onAddVocabEntry(entry);
+          setQuickVocabToast(`Added "${entry.betterAlternative}" to vocabulary`);
+          if (quickVocabToastTimerRef.current !== null) {
+            window.clearTimeout(quickVocabToastTimerRef.current);
+          }
+          quickVocabToastTimerRef.current = window.setTimeout(() => {
+            setQuickVocabToast(null);
+            quickVocabToastTimerRef.current = null;
+          }, 3200);
+        }}
+        onClose={() => setShowQuickAddVocab(false)}
+      />
     </div>
   );
 }

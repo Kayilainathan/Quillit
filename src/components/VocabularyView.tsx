@@ -827,12 +827,17 @@ export function VocabularyView({
             >
               <div className="space-y-1">
                 <div className="text-sm flex flex-wrap items-center gap-2">
-                  <span className="line-through text-ink-muted">
-                    {item.used}
-                  </span>
-                  <span aria-hidden="true" className="text-ink-muted">
-                    →
-                  </span>
+                  {item.used.trim().toLowerCase() !==
+                  item.betterAlternative.trim().toLowerCase() ? (
+                    <>
+                      <span className="line-through text-ink-muted">
+                        {item.used}
+                      </span>
+                      <span aria-hidden="true" className="text-ink-muted">
+                        →
+                      </span>
+                    </>
+                  ) : null}
                   <span className="font-semibold text-ink-primary">
                     {item.betterAlternative}
                   </span>
@@ -841,7 +846,10 @@ export function VocabularyView({
                   {item.explanation}
                 </p>
                 <div className="text-xs text-ink-muted">
-                  “{item.contextSnippet}” · {MODE_LABELS[item.mode]} ·{' '}
+                  {item.contextSnippet.trim() ? (
+                    <>“{item.contextSnippet}” · </>
+                  ) : null}
+                  {MODE_LABELS[item.mode]} ·{' '}
                   <span className="font-mono-tabular">{item.dateAdded}</span> ·{' '}
                   {item.mastered ? 'Mastered' : 'Practicing'}
                 </div>

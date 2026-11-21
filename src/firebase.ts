@@ -1,4 +1,4 @@
-import { initializeApp } from 'firebase/app';
+import { initializeApp, type FirebaseApp } from 'firebase/app';
 import {
   GoogleAuthProvider,
   createUserWithEmailAndPassword,
@@ -10,11 +10,20 @@ import {
   signInWithPopup,
   signOut,
   updateProfile,
+  type Auth,
   type User,
 } from 'firebase/auth';
-import { doc, getDocFromServer, getFirestore } from 'firebase/firestore';
-import firebaseConfig from '../firebase-applet-config.json';
+import {
+  doc,
+  getDocFromServer,
+  getFirestore,
+  type Firestore,
+} from 'firebase/firestore';
 import { formatFirebaseAuthError } from './utils/authErrors';
+import {
+  resolveFirebaseConfig,
+  type ResolvedFirebaseConfig,
+} from './utils/firebaseConfig';
 
 export const WORKSPACE_SCOPES = [
   'https://www.googleapis.com/auth/spreadsheets',
@@ -22,21 +31,62 @@ export const WORKSPACE_SCOPES = [
   'https://www.googleapis.com/auth/drive.file',
 ] as const;
 
-const app = initializeApp(firebaseConfig);
+// Load firebase-applet-config.json optionally via Vite glob so production/GitHub Pages
+// builds still succeed cleanly even if the JSON file is omitted or configured via env vars.
+const configModules = import.meta.glob<{
+  default?: Partial<ResolvedFirebaseConfig>;
+}>('../firebase-applet-config.json', { eager: true });
 
-const configWithOptionalDb = firebaseConfig as typeof firebaseConfig & {
-  firestoreDatabaseId?: string;
-};
+const fileFirebaseConfig =
+  Object.values(configModules)[0]?.default ??
+  (Object.values(configModules)[0] as Partial<ResolvedFirebaseConfig> | undefined);
 
+const resolvedConfig = resolveFirebaseConfig(fileFirebaseConfig, {
+  VITE_FIREBASE_API_KEY: import.meta.env.VITE_FIREBASE_API_KEY,
+  VITE_FIREBASE_AUTH_DOMAIN: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN,
+  VITE_FIREBASE_PROJECT_ID: import.meta.env.VITE_FIREBASE_PROJECT_ID,
+  VITE_FIREBASE_STORAGE_BUCKET: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET,
+  VITE_FIREBASE_MESSAGING_SENDER_ID:
+    import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID,
+  VITE_FIREBASE_APP_ID: import.meta.env.VITE_FIREBASE_APP_ID,
+  VITE_FIREBASE_DATABASE_ID: import.meta.env.VITE_FIREBASE_DATABASE_ID,
+  VITE_FIREBASE_MEASUREMENT_ID: import.meta.env.VITE_FIREBASE_MEASUREMENT_ID,
+});
+
+let app: FirebaseApp | null = null;
+let initializedAuth: Auth | null = null;
+let initializedDb: Firestore | null = null;
+
+if (resolvedConfig) {
+  try {
+    app = initializeApp(resolvedConfig);
+    initializedDb = resolvedConfig.firestoreDatabaseId
+      ? getFirestore(app, resolvedConfig.firestoreDatabaseId)
+      : getFirestore(app);
+    initializedAuth = getAuth(app);
+  } catch (err) {
+    console.warn('Firebase initialization skipped; running in Offline Space mode.', err);
+    app = null;
+    initializedAuth = null;
+    initializedDb = null;
+  }
+}
+
+export const isFirebaseConfigured = Boolean(app && initializedAuth);
 export const hasConfiguredFirestoreDatabase = Boolean(
-  configWithOptionalDb.firestoreDatabaseId
+  initializedDb && resolvedConfig?.firestoreDatabaseId
 );
+export const db: Firestore | null = initializedDb;
+export const auth: Auth | null = initializedAuth;
 
-export const db = configWithOptionalDb.firestoreDatabaseId
-  ? getFirestore(app, configWithOptionalDb.firestoreDatabaseId)
-  : getFirestore(app);
-
-export const auth = getAuth(app);
+function requireAuth(): Auth {
+  if (!auth) {
+    throw new Error(
+      'Cloud Sign-In is not configured on this static deployment. Use Continue in Offline Space, or add your Firebase config.'
+    );
+  }
+  return auth;
+}
 
 // Standard Google Sign-In provider (no sensitive Workspace scopes that can block basic login)
 export const basicGoogleProvider = new GoogleAuthProvider();
@@ -53,11 +103,13 @@ workspaceGoogleProvider.setCustomParameters({ prompt: 'select_account' });
 let cachedWorkspaceAccessToken: string | null = null;
 let isSigningIn = false;
 
-onAuthStateChanged(auth, (user) => {
-  if (!user && !isSigningIn) {
-    cachedWorkspaceAccessToken = null;
-  }
-});
+if (auth) {
+  onAuthStateChanged(auth, (user) => {
+    if (!user && !isSigningIn) {
+      cachedWorkspaceAccessToken = null;
+    }
+  });
+}
 
 export function getWorkspaceAccessToken(): string | null {
   return cachedWorkspaceAccessToken;
@@ -75,9 +127,10 @@ export async function signInWithGoogleAccount(): Promise<{
   user: User;
   accessToken: string | null;
 }> {
+  const activeAuth = requireAuth();
   isSigningIn = true;
   try {
-    const result = await signInWithPopup(auth, basicGoogleProvider);
+    const result = await signInWithPopup(activeAuth, basicGoogleProvider);
     const credential = GoogleAuthProvider.credentialFromResult(result);
     return {
       user: result.user,
@@ -97,9 +150,10 @@ export async function signInWithGoogleWorkspace(): Promise<{
   user: User;
   accessToken: string | null;
 }> {
+  const activeAuth = requireAuth();
   isSigningIn = true;
   try {
-    const result = await signInWithPopup(auth, workspaceGoogleProvider);
+    const result = await signInWithPopup(activeAuth, workspaceGoogleProvider);
     const credential = GoogleAuthProvider.credentialFromResult(result);
     cachedWorkspaceAccessToken = credential?.accessToken ?? null;
     return {
@@ -121,9 +175,10 @@ export async function signUpWithEmailPassword(
   password: string,
   displayName?: string
 ): Promise<{ user: User; verificationSent: boolean }> {
+  const activeAuth = requireAuth();
   try {
     const result = await createUserWithEmailAndPassword(
-      auth,
+      activeAuth,
       email.trim(),
       password
     );
@@ -152,9 +207,10 @@ export async function signInWithEmailPassword(
   email: string,
   password: string
 ): Promise<User> {
+  const activeAuth = requireAuth();
   try {
     const result = await signInWithEmailAndPassword(
-      auth,
+      activeAuth,
       email.trim(),
       password
     );
@@ -168,8 +224,9 @@ export async function signInWithEmailPassword(
  * Sends a Firebase password reset email.
  */
 export async function sendPasswordReset(email: string): Promise<void> {
+  const activeAuth = requireAuth();
   try {
-    await sendPasswordResetEmail(auth, email.trim());
+    await sendPasswordResetEmail(activeAuth, email.trim());
   } catch (error) {
     throw new Error(formatFirebaseAuthError(error));
   }
@@ -179,11 +236,12 @@ export async function sendPasswordReset(email: string): Promise<void> {
  * Re-sends email verification link for the currently signed-in Email/Password user.
  */
 export async function resendVerificationEmail(): Promise<void> {
-  if (!auth.currentUser) {
+  const activeAuth = requireAuth();
+  if (!activeAuth.currentUser) {
     throw new Error('No signed-in user found.');
   }
   try {
-    await sendEmailVerification(auth.currentUser);
+    await sendEmailVerification(activeAuth.currentUser);
   } catch (error) {
     throw new Error(formatFirebaseAuthError(error));
   }
@@ -193,7 +251,7 @@ export async function resendVerificationEmail(): Promise<void> {
  * Refreshes the signed-in Firebase user & ID token (picks up newly verified email status).
  */
 export async function reloadCurrentUser(): Promise<User | null> {
-  if (!auth.currentUser) return null;
+  if (!auth?.currentUser) return null;
   await auth.currentUser.reload();
   await auth.currentUser.getIdToken(true);
   return auth.currentUser;
@@ -201,6 +259,7 @@ export async function reloadCurrentUser(): Promise<User | null> {
 
 export async function signOutGoogleWorkspace(): Promise<void> {
   cachedWorkspaceAccessToken = null;
+  if (!auth) return;
   await signOut(auth);
 }
 
@@ -209,7 +268,7 @@ let connectionTested = false;
 export async function testConnection(): Promise<boolean> {
   if (connectionTested) return hasConfiguredFirestoreDatabase;
   connectionTested = true;
-  if (!hasConfiguredFirestoreDatabase) {
+  if (!db || !hasConfiguredFirestoreDatabase) {
     return false;
   }
   try {

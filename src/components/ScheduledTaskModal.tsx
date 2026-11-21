@@ -24,6 +24,7 @@ import {
   deriveInternationalMetrics,
   type CoachPerformanceContext,
 } from '../utils/analytics';
+import { getApiUrl, safeParseJsonResponse } from '../utils/apiBase';
 
 interface EvaluationPayload {
   evaluationStatus?: 'completed' | 'queued_for_reset';
@@ -98,7 +99,7 @@ export function ScheduledTaskModal({
     setPivoting(true);
     setError(null);
     try {
-      const res = await fetch('/api/pivot-topic', {
+      const res = await fetch(getApiUrl('/api/pivot-topic'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -106,8 +107,13 @@ export function ScheduledTaskModal({
           customFocus: pivotFocus.trim(),
         }),
       });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Universal Pivot failed.');
+      const data = await safeParseJsonResponse<Record<string, unknown>>(res);
+      if (!res.ok || !data) {
+        throw new Error(
+          (typeof data?.error === 'string' && data.error) ||
+            'Topic pivot requires an active API server.'
+        );
+      }
       onUpdateSlot({
         ...slot,
         topic: String(data.topic || pivotFocus.trim()),
@@ -135,7 +141,7 @@ export function ScheduledTaskModal({
     }
     setRealtimeLoading(true);
     try {
-      const res = await fetch('/api/realtime-assist', {
+      const res = await fetch(getApiUrl('/api/realtime-assist'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -144,9 +150,14 @@ export function ScheduledTaskModal({
           tone: TONE_LABELS[slot.tone],
         }),
       });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Live assist failed.');
-      setRealtimeResult(data as RealtimeAssistResult);
+      const data = await safeParseJsonResponse<Record<string, unknown>>(res);
+      if (!res.ok || !data) {
+        throw new Error(
+          (typeof data?.error === 'string' && data.error) ||
+            'Live AI assist requires an active API server.'
+        );
+      }
+      setRealtimeResult(data as unknown as RealtimeAssistResult);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Live assist failed.');
     } finally {
@@ -183,7 +194,7 @@ export function ScheduledTaskModal({
     }
     setEvaluating(true);
     try {
-      const res = await fetch('/api/evaluate', {
+      const res = await fetch(getApiUrl('/api/evaluate'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -199,9 +210,14 @@ export function ScheduledTaskModal({
           studentProfile,
         }),
       });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Evaluation failed.');
-      setEvaluation(data as EvaluationPayload);
+      const data = await safeParseJsonResponse<Record<string, unknown>>(res);
+      if (!res.ok || !data) {
+        throw new Error(
+          (typeof data?.error === 'string' && data.error) ||
+            'AI evaluation requires an active API server.'
+        );
+      }
+      setEvaluation(data as unknown as EvaluationPayload);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Evaluation failed.');
     } finally {
