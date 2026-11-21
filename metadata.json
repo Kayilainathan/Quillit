@@ -1,0 +1,8 @@
+{
+  "name": "Cadence",
+  "description": "Private encrypted writing studio, English fluency coach, and multidimensional progress tracker for EIE engineering and personal journaling.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

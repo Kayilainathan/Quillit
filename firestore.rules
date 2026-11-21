@@ -1,0 +1,301 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Pillar 1 / Global Safety Net: Default-deny catch-all
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Primitive Helpers
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerifiedOwner(userId) {
+      return isSignedIn()
+        && request.auth.token.email_verified == true
+        && request.auth.uid == userId;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isValidMode(m) {
+      return m in ['journal', 'linkedin', 'email', 'friend', 'technical', 'creative'];
+    }
+
+    function isValidTone(t) {
+      return t in [
+        'professional-warm',
+        'conversational',
+        'formal-executive',
+        'academic-technical',
+        'crisp-direct',
+        'narrative-vivid'
+      ];
+    }
+
+    function isValidISODate(d) {
+      return d is string && d.size() == 10 && d.matches('^\\d{4}-\\d{2}-\\d{2}$');
+    }
+
+    // Entity Validation Helpers (Anti-Update-Gap)
+    function isValidUserProfile(data, userId) {
+      return data.keys().hasAll([
+          'uid', 'semesterLabel', 'dailyWordGoal', 'autoSaveVocab',
+          'focusModeDefault', 'autoReloadSchedule', 'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'uid', 'email', 'displayName', 'semesterLabel', 'collegeDegree',
+          'semester', 'collegeName', 'age', 'onboardingCompleted',
+          'googleSpreadsheetId', 'googleDocId', 'dailyWordGoal',
+          'autoSaveVocab', 'focusModeDefault', 'autoReloadSchedule',
+          'createdAt', 'updatedAt'
+        ])
+        && data.uid == userId
+        && isValidId(data.uid)
+        && (!('email' in data) || (data.email is string && data.email.size() <= 254))
+        && (!('displayName' in data) || (data.displayName is string && data.displayName.size() <= 120))
+        && data.semesterLabel is string && data.semesterLabel.size() >= 1 && data.semesterLabel.size() <= 120
+        && (!('collegeDegree' in data) || (data.collegeDegree is string && data.collegeDegree.size() <= 120))
+        && (!('semester' in data) || (data.semester is string && data.semester.size() <= 40))
+        && (!('collegeName' in data) || (data.collegeName is string && data.collegeName.size() <= 140))
+        && (!('age' in data) || (data.age is number && data.age >= 14 && data.age <= 80))
+        && (!('onboardingCompleted' in data) || data.onboardingCompleted is bool)
+        && (!('googleSpreadsheetId' in data) || (data.googleSpreadsheetId is string && data.googleSpreadsheetId.size() <= 128))
+        && (!('googleDocId' in data) || (data.googleDocId is string && data.googleDocId.size() <= 128))
+        && data.dailyWordGoal is number && data.dailyWordGoal >= 50 && data.dailyWordGoal <= 5000
+        && data.autoSaveVocab is bool
+        && data.focusModeDefault is bool
+        && data.autoReloadSchedule is bool
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidWritingSession(data, userId, sessionId) {
+      return data.keys().hasAll([
+          'id', 'ownerId', 'date', 'daySlot', 'mode', 'promptCategory', 'tone',
+          'topicDescription', 'content', 'wordCount', 'scores', 'totalScore',
+          'percentage', 'cefrLevel', 'toneVerdict', 'flowVerdict',
+          'feedbackImplemented', 'whatImproved', 'strictImprovements',
+          'grammarFixes', 'vocabUpgrades', 'status', 'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'id', 'ownerId', 'date', 'daySlot', 'mode', 'promptCategory', 'tone',
+          'topicDescription', 'content', 'wordCount', 'scores', 'totalScore',
+          'percentage', 'cefrLevel', 'internationalMetrics', 'toneVerdict',
+          'flowVerdict', 'feedbackImplemented', 'whatImproved',
+          'strictImprovements', 'grammarFixes', 'vocabUpgrades', 'status',
+          'evaluationPending', 'modelUsed', 'createdAt', 'updatedAt'
+        ])
+        && data.id == sessionId && isValidId(data.id)
+        && data.ownerId == userId && isValidId(data.ownerId)
+        && isValidISODate(data.date)
+        && data.daySlot is string && data.daySlot.size() <= 80
+        && isValidMode(data.mode)
+        && data.promptCategory is string && data.promptCategory.size() <= 100
+        && isValidTone(data.tone)
+        && data.topicDescription is string && data.topicDescription.size() >= 1 && data.topicDescription.size() <= 300
+        && data.content is string && data.content.size() <= 30000
+        && data.wordCount is number && data.wordCount >= 0 && data.wordCount <= 20000
+        && data.scores is map
+        && data.scores.keys().hasOnly([
+          'naturalVoiceFlow', 'claritySimplicity', 'grammarMechanics',
+          'toneEngagement', 'sentenceVarietyCadence', 'concisenessDirectness'
+        ])
+        && data.totalScore is number && data.totalScore >= 0 && data.totalScore <= 60
+        && data.percentage is number && data.percentage >= 0 && data.percentage <= 100
+        && data.cefrLevel is string && data.cefrLevel.size() <= 12
+        && (!('internationalMetrics' in data) || data.internationalMetrics is map)
+        && data.toneVerdict is string && data.toneVerdict.size() <= 1000
+        && data.flowVerdict is string && data.flowVerdict.size() <= 1000
+        && data.feedbackImplemented in ['Baseline', 'Yes', 'Partial', 'No']
+        && data.whatImproved is string && data.whatImproved.size() <= 1500
+        && data.strictImprovements is string && data.strictImprovements.size() <= 1500
+        && data.grammarFixes is list && data.grammarFixes.size() <= 25
+        && (data.grammarFixes.size() == 0 || data.grammarFixes[0] is map)
+        && data.vocabUpgrades is list && data.vocabUpgrades.size() <= 25
+        && (data.vocabUpgrades.size() == 0 || data.vocabUpgrades[0] is map)
+        && data.status in ['Completed', 'Draft']
+        && (!('evaluationPending' in data) || data.evaluationPending is bool)
+        && (!('modelUsed' in data) || (data.modelUsed is string && data.modelUsed.size() <= 64))
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidCalendarSlot(data, userId, slotId) {
+      return data.keys().hasAll([
+          'id', 'ownerId', 'dayOfWeek', 'slotLabel', 'scheduledDate',
+          'mode', 'tone', 'promptCategory', 'topic', 'targetWords',
+          'completed', 'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'id', 'ownerId', 'dayOfWeek', 'slotLabel', 'slotTime', 'scheduledDate',
+          'mode', 'tone', 'promptCategory', 'topic', 'topicPrimer', 'pivotRule',
+          'feedbackReminder', 'targetWords', 'completed', 'linkedSessionId',
+          'suggestions', 'isTriWeekly', 'pillar', 'createdAt', 'updatedAt'
+        ])
+        && data.id == slotId && isValidId(data.id)
+        && data.ownerId == userId && isValidId(data.ownerId)
+        && data.dayOfWeek is string && data.dayOfWeek.size() <= 20
+        && data.slotLabel is string && data.slotLabel.size() <= 60
+        && (!('slotTime' in data) || (data.slotTime is string && data.slotTime.size() <= 20))
+        && isValidISODate(data.scheduledDate)
+        && isValidMode(data.mode)
+        && isValidTone(data.tone)
+        && data.promptCategory is string && data.promptCategory.size() <= 100
+        && data.topic is string && data.topic.size() >= 1 && data.topic.size() <= 300
+        && (!('topicPrimer' in data) || (data.topicPrimer is string && data.topicPrimer.size() <= 600))
+        && (!('pivotRule' in data) || (data.pivotRule is string && data.pivotRule.size() <= 400))
+        && (!('feedbackReminder' in data) || (data.feedbackReminder is string && data.feedbackReminder.size() <= 400))
+        && data.targetWords is number && data.targetWords >= 20 && data.targetWords <= 5000
+        && data.completed is bool
+        && (!('linkedSessionId' in data) || (data.linkedSessionId is string && data.linkedSessionId.size() <= 128))
+        && (!('suggestions' in data) || (data.suggestions is list && data.suggestions.size() <= 6 && (data.suggestions.size() == 0 || data.suggestions[0] is string)))
+        && (!('isTriWeekly' in data) || data.isTriWeekly is bool)
+        && (!('pillar' in data) || data.pillar in ['technical-concept', 'linkedin-email', 'creative-story'])
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidVocabEntry(data, userId, vocabId) {
+      return data.keys().hasAll([
+          'id', 'ownerId', 'used', 'betterAlternative', 'explanation',
+          'contextSnippet', 'mode', 'dateAdded', 'mastered', 'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'id', 'ownerId', 'used', 'betterAlternative', 'explanation',
+          'contextSnippet', 'mode', 'dateAdded', 'mastered', 'sessionId',
+          'createdAt', 'updatedAt'
+        ])
+        && data.id == vocabId && isValidId(data.id)
+        && data.ownerId == userId && isValidId(data.ownerId)
+        && data.used is string && data.used.size() >= 1 && data.used.size() <= 160
+        && data.betterAlternative is string && data.betterAlternative.size() >= 1 && data.betterAlternative.size() <= 160
+        && data.explanation is string && data.explanation.size() <= 500
+        && data.contextSnippet is string && data.contextSnippet.size() <= 300
+        && isValidMode(data.mode)
+        && isValidISODate(data.dateAdded)
+        && data.mastered is bool
+        && (!('sessionId' in data) || (data.sessionId is string && data.sessionId.size() <= 128))
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    // Connection check doc
+    match /test/connection {
+      allow get: if true;
+    }
+
+    // Private User Root & Settings
+    match /users/{userId} {
+      allow get: if isValidId(userId) && isVerifiedOwner(userId);
+      allow create: if isValidId(userId)
+        && isVerifiedOwner(userId)
+        && isValidUserProfile(incoming(), userId)
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+      allow update: if isValidId(userId)
+        && isVerifiedOwner(userId)
+        && isValidUserProfile(incoming(), userId)
+        && incoming().uid == existing().uid
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly([
+          'email', 'displayName', 'semesterLabel', 'collegeDegree', 'semester',
+          'collegeName', 'age', 'onboardingCompleted', 'googleSpreadsheetId',
+          'googleDocId', 'dailyWordGoal', 'autoSaveVocab', 'focusModeDefault',
+          'autoReloadSchedule', 'updatedAt'
+        ]);
+      allow delete: if isValidId(userId) && isVerifiedOwner(userId);
+
+      match /sessions/{sessionId} {
+        allow get: if isValidId(userId) && isValidId(sessionId) && isVerifiedOwner(userId);
+        allow list: if isValidId(userId) && isVerifiedOwner(userId) && resource.data.ownerId == request.auth.uid;
+        allow create: if isValidId(userId)
+          && isValidId(sessionId)
+          && isVerifiedOwner(userId)
+          && exists(/databases/$(database)/documents/users/$(userId))
+          && isValidWritingSession(incoming(), userId, sessionId)
+          && incoming().createdAt == request.time
+          && incoming().updatedAt == request.time;
+        allow update: if isValidId(userId)
+          && isValidId(sessionId)
+          && isVerifiedOwner(userId)
+          && isValidWritingSession(incoming(), userId, sessionId)
+          && (existing().status == 'Draft' || existing().evaluationPending == true)
+          && incoming().id == existing().id
+          && incoming().ownerId == existing().ownerId
+          && incoming().createdAt == existing().createdAt
+          && incoming().updatedAt == request.time
+          && incoming().diff(existing()).affectedKeys().hasOnly([
+            'scores', 'totalScore', 'percentage', 'cefrLevel',
+            'internationalMetrics', 'toneVerdict', 'flowVerdict',
+            'feedbackImplemented', 'whatImproved', 'strictImprovements',
+            'grammarFixes', 'vocabUpgrades', 'evaluationPending',
+            'modelUsed', 'status', 'updatedAt'
+          ]);
+        allow delete: if isValidId(userId) && isValidId(sessionId) && isVerifiedOwner(userId);
+      }
+
+      match /calendarSlots/{slotId} {
+        allow get: if isValidId(userId) && isValidId(slotId) && isVerifiedOwner(userId);
+        allow list: if isValidId(userId) && isVerifiedOwner(userId) && resource.data.ownerId == request.auth.uid;
+        allow create: if isValidId(userId)
+          && isValidId(slotId)
+          && isVerifiedOwner(userId)
+          && exists(/databases/$(database)/documents/users/$(userId))
+          && isValidCalendarSlot(incoming(), userId, slotId)
+          && incoming().createdAt == request.time
+          && incoming().updatedAt == request.time;
+        allow update: if isValidId(userId)
+          && isValidId(slotId)
+          && isVerifiedOwner(userId)
+          && isValidCalendarSlot(incoming(), userId, slotId)
+          && incoming().id == existing().id
+          && incoming().ownerId == existing().ownerId
+          && incoming().createdAt == existing().createdAt
+          && incoming().updatedAt == request.time
+          && incoming().diff(existing()).affectedKeys().hasOnly([
+            'slotLabel', 'slotTime', 'mode', 'tone', 'promptCategory', 'topic',
+            'topicPrimer', 'pivotRule', 'feedbackReminder', 'targetWords',
+            'completed', 'linkedSessionId', 'suggestions', 'updatedAt'
+          ]);
+        allow delete: if isValidId(userId) && isValidId(slotId) && isVerifiedOwner(userId);
+      }
+
+      match /vocabulary/{vocabId} {
+        allow get: if isValidId(userId) && isValidId(vocabId) && isVerifiedOwner(userId);
+        allow list: if isValidId(userId) && isVerifiedOwner(userId) && resource.data.ownerId == request.auth.uid;
+        allow create: if isValidId(userId)
+          && isValidId(vocabId)
+          && isVerifiedOwner(userId)
+          && exists(/databases/$(database)/documents/users/$(userId))
+          && isValidVocabEntry(incoming(), userId, vocabId)
+          && incoming().createdAt == request.time
+          && incoming().updatedAt == request.time;
+        allow update: if isValidId(userId)
+          && isValidId(vocabId)
+          && isVerifiedOwner(userId)
+          && isValidVocabEntry(incoming(), userId, vocabId)
+          && incoming().id == existing().id
+          && incoming().ownerId == existing().ownerId
+          && incoming().createdAt == existing().createdAt
+          && incoming().updatedAt == request.time
+          && incoming().diff(existing()).affectedKeys().hasOnly([
+            'mastered', 'explanation', 'contextSnippet', 'updatedAt'
+          ]);
+        allow delete: if isValidId(userId) && isValidId(vocabId) && isVerifiedOwner(userId);
+      }
+    }
+  }
+}

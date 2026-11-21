@@ -1,0 +1,738 @@
+@import "tailwindcss";
+@import "./styles/tokens.css";
+
+@custom-variant dark (&:where(.dark, .dark *, [data-theme="dark"], [data-theme="dark"] *));
+
+@theme {
+  --color-canvas: var(--bg-canvas);
+  --color-surface: var(--bg-surface);
+  --color-subtle: var(--bg-subtle);
+  --color-elevated: var(--bg-elevated);
+
+  --color-ink-primary: var(--ink-primary);
+  --color-ink-secondary: var(--ink-secondary);
+  --color-ink-muted: var(--ink-muted);
+  --color-ink-inverse: var(--ink-inverse);
+
+  --color-accent: var(--accent);
+  --color-accent-hover: var(--accent-hover);
+  --color-accent-soft: var(--accent-soft);
+
+  --color-status-success: var(--status-success);
+  --color-status-success-soft: var(--status-success-soft);
+  --color-status-success-border: var(--status-success-border);
+  --color-status-warning: var(--status-warning);
+  --color-status-warning-soft: var(--status-warning-soft);
+  --color-status-warning-border: var(--status-warning-border);
+  --color-status-danger: var(--status-danger);
+  --color-status-danger-soft: var(--status-danger-soft);
+  --color-status-danger-border: var(--status-danger-border);
+  --color-status-info: var(--status-info);
+  --color-status-info-soft: var(--status-info-soft);
+  --color-status-info-border: var(--status-info-border);
+
+  --color-border-subtle: var(--border-subtle);
+  --color-border-default: var(--border-default);
+  --color-border-strong: var(--border-strong);
+
+  --radius-sm: var(--radius-sm);
+  --radius-md: var(--radius-md);
+  --radius-lg: var(--radius-lg);
+}
+
+@layer base {
+  html {
+    font-family: var(--font-sans);
+    background-color: var(--bg-canvas);
+    color: var(--ink-primary);
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeLegibility;
+  }
+
+  body {
+    background-color: var(--bg-canvas);
+    color: var(--ink-primary);
+    line-height: 1.6;
+  }
+
+  [data-theme="dark"] body,
+  .dark body {
+    letter-spacing: 0.005em;
+  }
+
+  h1,
+  h2 {
+    letter-spacing: -0.025em;
+    line-height: 1.18;
+    text-wrap: balance;
+  }
+
+  h3 {
+    letter-spacing: -0.015em;
+    line-height: 1.25;
+    text-wrap: balance;
+  }
+
+  p {
+    text-wrap: pretty;
+  }
+
+  ::selection {
+    background-color: var(--accent-soft);
+    color: var(--ink-primary);
+  }
+
+  /* High-contrast accessible focus ring on every interactive control */
+  :is(a, button, input, textarea, select, [tabindex]):focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+
+  .font-display {
+    font-family: var(--font-display);
+  }
+
+  .font-mono-tabular {
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .tabular-nums {
+    font-variant-numeric: tabular-nums;
+  }
+
+  .text-balance {
+    text-wrap: balance;
+  }
+
+  /* Ultra-slim unobtrusive scrollbars */
+  ::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: var(--scrollbar-thumb);
+    border-radius: var(--radius-full);
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: var(--scrollbar-thumb-hover);
+  }
+}
+
+/* ==========================================================================
+   Tactile Micro-Interaction System
+   Weighted, crisp, immediate (110ms–240ms) with touch & reduced-motion guards
+   ========================================================================== */
+
+@keyframes surfaceEnter {
+  from {
+    opacity: 0;
+    transform: translateY(6px) scale(0.975);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes scrimEnter {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+/* 1. Primary Button */
+.btn-primary {
+  background-color: var(--accent);
+  color: var(--ink-inverse);
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
+  box-shadow: var(--highlight-inset);
+  transition:
+    transform var(--dur-fast) var(--ease-snappy),
+    filter var(--dur-fast) var(--ease-snappy),
+    box-shadow var(--dur-fast) var(--ease-snappy),
+    opacity var(--dur-fast) var(--ease-snappy);
+  cursor: pointer;
+}
+
+.btn-primary:active:not(:disabled) {
+  transform: translateY(0) scale(0.985);
+  transition-duration: 90ms;
+}
+
+.btn-primary:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+/* 2. Secondary / Ghost / Icon Buttons */
+.btn-secondary {
+  background-color: var(--bg-surface);
+  color: var(--ink-primary);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  transition:
+    background-color var(--dur-fast) var(--ease-snappy),
+    border-color var(--dur-fast) var(--ease-snappy),
+    color var(--dur-fast) var(--ease-snappy),
+    transform var(--dur-instant) var(--ease-snappy);
+  cursor: pointer;
+}
+
+.btn-secondary svg,
+.btn-ghost svg {
+  opacity: 0.72;
+  transition:
+    opacity var(--dur-fast) var(--ease-snappy),
+    transform var(--dur-fast) var(--ease-snappy);
+}
+
+.btn-secondary:active:not(:disabled),
+.btn-ghost:active:not(:disabled) {
+  transform: scale(0.97);
+  transition-duration: 90ms;
+}
+
+.btn-secondary:disabled,
+.btn-ghost:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.btn-ghost {
+  background-color: transparent;
+  color: var(--ink-secondary);
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  transition:
+    background-color var(--dur-fast) var(--ease-snappy),
+    color var(--dur-fast) var(--ease-snappy),
+    border-color var(--dur-fast) var(--ease-snappy),
+    transform var(--dur-instant) var(--ease-snappy);
+  cursor: pointer;
+}
+
+/* 3. Static Display Cards vs Interactive Clickable Cards */
+.card-surface {
+  background-color: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+}
+
+.card-interactive {
+  background-color: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  transition:
+    border-color var(--dur-fast) var(--ease-snappy),
+    transform var(--dur-fast) var(--ease-out-expo),
+    box-shadow var(--dur-fast) var(--ease-out-expo),
+    background-color var(--dur-fast) var(--ease-snappy);
+  cursor: pointer;
+}
+
+.card-interactive .card-arrow {
+  transition: transform var(--dur-fast) var(--ease-out-expo);
+}
+
+.card-interactive:active {
+  transform: translateY(0) scale(0.995);
+  transition-duration: 90ms;
+}
+
+/* 4. Navigation Links & Tabs */
+.nav-link-tactile {
+  position: relative;
+  color: var(--ink-secondary);
+  border-radius: var(--radius-sm);
+  transition:
+    background-color 150ms var(--ease-snappy),
+    color 150ms var(--ease-snappy);
+  cursor: pointer;
+}
+
+.nav-link-tactile[data-active="true"] {
+  background-color: var(--bg-subtle);
+  color: var(--ink-primary);
+  font-weight: 500;
+}
+
+/* Segmented Tracks */
+.segmented-track {
+  background-color: var(--bg-subtle);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  padding: 4px;
+}
+
+.segmented-item {
+  color: var(--ink-secondary);
+  border-radius: var(--radius-sm);
+  transition:
+    background-color var(--dur-fast) var(--ease-snappy),
+    color var(--dur-fast) var(--ease-snappy),
+    box-shadow var(--dur-fast) var(--ease-snappy);
+  cursor: pointer;
+}
+
+.segmented-item[data-active="true"] {
+  background-color: var(--bg-surface);
+  color: var(--ink-primary);
+  font-weight: 500;
+  box-shadow: var(--shadow-sm);
+}
+
+/* 5. Text Links & Inline Actions */
+.inline-link-tactile {
+  color: var(--ink-primary);
+  text-decoration: none;
+  border-bottom: 1px solid var(--border-default);
+  padding-bottom: 1px;
+  transition:
+    border-color var(--dur-fast) var(--ease-snappy),
+    color var(--dur-fast) var(--ease-snappy);
+}
+
+.inline-link-tactile svg {
+  transition: transform var(--dur-fast) var(--ease-out-expo);
+}
+
+/* 6. List Rows & Table Rows */
+.row-tactile {
+  transition: background-color 150ms var(--ease-snappy);
+}
+
+.row-tactile .row-actions {
+  opacity: 0.78;
+  transition: opacity 150ms var(--ease-snappy);
+}
+
+.row-tactile:focus-within .row-actions {
+  opacity: 1;
+}
+
+/* 7. Inputs, Textareas & Selects */
+.input-tactile {
+  background-color: var(--bg-surface);
+  color: var(--ink-primary);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  transition:
+    border-color var(--dur-fast) var(--ease-snappy),
+    box-shadow var(--dur-fast) var(--ease-snappy),
+    background-color var(--dur-fast) var(--ease-snappy);
+}
+
+.input-tactile::placeholder {
+  color: var(--ink-muted);
+}
+
+.input-tactile:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--focus-ring);
+}
+
+/* 8. Floating Layers (Modals, Popovers, Scrims) */
+.modal-scrim {
+  background-color: var(--bg-scrim);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+  animation: scrimEnter var(--dur-normal) var(--ease-out-expo) both;
+}
+
+.modal-panel {
+  background-color: var(--bg-elevated);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-lg);
+  animation: surfaceEnter var(--dur-normal) var(--ease-out-expo) both;
+}
+
+.popover-panel {
+  background-color: var(--bg-elevated);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-md);
+  animation: surfaceEnter var(--dur-normal) var(--ease-out-expo) both;
+}
+
+/* Official Google Sign-In Button — Tokenized */
+.gsi-material-button {
+  -moz-user-select: none;
+  -webkit-user-select: none;
+  -ms-user-select: none;
+  user-select: none;
+  appearance: none;
+  -webkit-appearance: none;
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 44px;
+  padding: 0 16px;
+  border-radius: var(--radius-md);
+  font-family: var(--font-sans);
+  font-size: 14px;
+  font-weight: 500;
+  letter-spacing: 0.005em;
+  cursor: pointer;
+  background-color: var(--bg-surface);
+  color: var(--ink-primary);
+  border: 1px solid var(--border-default);
+  transition:
+    background-color var(--dur-fast) var(--ease-snappy),
+    border-color var(--dur-fast) var(--ease-snappy),
+    box-shadow var(--dur-fast) var(--ease-snappy),
+    transform var(--dur-instant) var(--ease-snappy);
+}
+
+.gsi-material-button:active:not(:disabled) {
+  transform: scale(0.985);
+  transition-duration: 90ms;
+}
+
+.gsi-material-button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.gsi-material-button-content-wrapper {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  width: 100%;
+}
+
+.gsi-material-button-icon {
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+}
+
+/* 9. Touch Guard — Hover lifts & washes only on fine pointer devices */
+@media (hover: hover) and (pointer: fine) {
+  .btn-primary:hover:not(:disabled) {
+    filter: brightness(1.08);
+    transform: translateY(-1px);
+    box-shadow: var(--shadow-sm), var(--highlight-inset);
+  }
+
+  [data-theme="dark"] .btn-primary:hover:not(:disabled),
+  .dark .btn-primary:hover:not(:disabled) {
+    filter: brightness(0.92);
+  }
+
+  .btn-secondary:hover:not(:disabled) {
+    background-color: var(--bg-subtle);
+    border-color: var(--border-strong);
+  }
+
+  .btn-secondary:hover:not(:disabled) svg,
+  .btn-ghost:hover:not(:disabled) svg {
+    opacity: 1;
+  }
+
+  .btn-ghost:hover:not(:disabled) {
+    background-color: var(--bg-subtle);
+    color: var(--ink-primary);
+  }
+
+  .card-interactive:hover {
+    border-color: var(--border-strong);
+    transform: translateY(-2px);
+    box-shadow: var(--shadow-md);
+  }
+
+  .card-interactive:hover .card-arrow {
+    transform: translateX(3px);
+  }
+
+  .nav-link-tactile:hover {
+    background-color: var(--bg-subtle);
+    color: var(--ink-primary);
+  }
+
+  .segmented-item:hover:not([data-active="true"]) {
+    color: var(--ink-primary);
+  }
+
+  .inline-link-tactile:hover {
+    border-bottom-color: var(--ink-primary);
+  }
+
+  .inline-link-tactile:hover svg {
+    transform: translateX(2px);
+  }
+
+  .row-tactile:hover {
+    background-color: color-mix(in srgb, var(--bg-subtle) 60%, transparent);
+  }
+
+  .row-tactile .row-actions {
+    opacity: 0;
+  }
+
+  .row-tactile:hover .row-actions,
+  .row-tactile:focus-within .row-actions {
+    opacity: 1;
+  }
+
+  .input-tactile:hover:not(:focus) {
+    border-color: var(--border-strong);
+  }
+
+  .gsi-material-button:hover:not(:disabled) {
+    background-color: var(--bg-subtle);
+    border-color: var(--border-strong);
+    box-shadow: var(--shadow-sm);
+  }
+
+  .tactile-note-row:hover {
+    background-color: var(--bg-subtle);
+    transform: translateX(2px);
+  }
+
+  .tactile-note-row:hover .tactile-note-icon {
+    transform: translateY(-1px) rotate(-6deg);
+    color: var(--ink-primary);
+  }
+}
+
+/* ==========================================================================
+   Writing Studio Stationery & Ink Micro-Interactions (Flashcard Modal)
+   ========================================================================== */
+.stationery-band {
+  background-image: repeating-linear-gradient(
+    to bottom,
+    transparent 0px,
+    transparent 21px,
+    var(--border-subtle) 21px,
+    var(--border-subtle) 22px
+  );
+  background-position: 0 8px;
+}
+
+.ink-stroke-line {
+  stroke-dasharray: 180;
+  stroke-dashoffset: 118;
+  transition: stroke-dashoffset 480ms var(--ease-out-expo), opacity 240ms ease;
+}
+
+.ink-active .ink-stroke-line {
+  stroke-dashoffset: 0;
+  opacity: 1;
+}
+
+.nib-emblem {
+  transition: transform 380ms var(--ease-out-expo);
+  transform-box: fill-box;
+  transform-origin: center;
+}
+
+.ink-active .nib-emblem {
+  transform: translate(12px, -2px) rotate(-8deg);
+}
+
+/* Returning Writer Flashcard: Silk Bookmark & Page Lift */
+.bookmark-ribbon {
+  transition: transform 420ms var(--ease-out-expo);
+  transform-box: fill-box;
+  transform-origin: top center;
+}
+
+.ink-active .bookmark-ribbon {
+  transform: translateY(4px) scaleY(1.06);
+}
+
+.page-corner-lift {
+  transition: transform 420ms var(--ease-out-expo);
+  transform-box: fill-box;
+  transform-origin: bottom left;
+}
+
+.ink-active .page-corner-lift {
+  transform: translate(2px, -2px) rotate(-3deg);
+}
+
+/* Cloud Migration Flashcard: Paper Note Gliding to Cloud */
+.glide-trail {
+  stroke-dasharray: 120;
+  stroke-dashoffset: 84;
+  transition: stroke-dashoffset 520ms var(--ease-out-expo), opacity 240ms ease;
+}
+
+.ink-active .glide-trail {
+  stroke-dashoffset: 0;
+  opacity: 1;
+}
+
+.glide-note {
+  transition: transform 460ms var(--ease-out-expo);
+  transform-box: fill-box;
+  transform-origin: center;
+}
+
+.ink-active .glide-note {
+  transform: translate(16px, -4px) rotate(-5deg);
+}
+
+/* Fresh Space Guard: Stacked Manuscript Folios */
+.folio-back {
+  transition: transform 380ms var(--ease-out-expo);
+  transform-box: fill-box;
+  transform-origin: center;
+}
+
+.ink-active .folio-back {
+  transform: translate(-5px, -3px) rotate(-5deg);
+}
+
+.folio-front {
+  transition: transform 380ms var(--ease-out-expo);
+  transform-box: fill-box;
+  transform-origin: center;
+}
+
+.ink-active .folio-front {
+  transform: translate(4px, 1px) rotate(2deg);
+}
+
+.tactile-note-row {
+  border-radius: var(--radius-md);
+  transition:
+    background-color var(--dur-fast) var(--ease-snappy),
+    transform var(--dur-fast) var(--ease-out-expo);
+}
+
+.tactile-note-row:active {
+  background-color: var(--bg-subtle);
+  transform: scale(0.985);
+  transition-duration: 90ms;
+}
+
+.tactile-note-icon {
+  transition:
+    transform var(--dur-fast) var(--ease-out-expo),
+    color var(--dur-fast) var(--ease-snappy);
+}
+
+/* Antique Manuscript Password Ink-Stamp Glyph Animation */
+@keyframes inkStampSettle {
+  0% {
+    opacity: 0;
+    transform: translateY(-4px) scale(1.36) rotate(-12deg);
+  }
+  55% {
+    opacity: 1;
+    transform: translateY(1px) scale(0.95) rotate(2deg);
+  }
+  100% {
+    opacity: 0.92;
+    transform: translateY(0) scale(1) rotate(0deg);
+  }
+}
+
+.manuscript-masked-input {
+  color: transparent !important;
+  -webkit-text-fill-color: transparent !important;
+  caret-color: transparent !important;
+}
+
+.manuscript-masked-input::placeholder {
+  color: var(--ink-muted);
+  -webkit-text-fill-color: var(--ink-muted);
+}
+
+.manuscript-glyph {
+  display: inline-block;
+  font-family: var(--font-display);
+  animation: inkStampSettle 280ms var(--ease-out-expo) both;
+}
+
+.manuscript-quill-caret {
+  transition: transform 180ms var(--ease-out-expo), opacity 180ms ease;
+}
+
+/* Dedicated Offline Space Page Transition & Stationery Emblems */
+@keyframes pageFadeGlide {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.page-glide-enter {
+  animation: pageFadeGlide 280ms var(--ease-out-expo) both;
+}
+
+.wax-seal-lift {
+  transition: transform 360ms var(--ease-out-expo);
+  transform-box: fill-box;
+  transform-origin: center;
+}
+
+.ink-active .wax-seal-lift {
+  transform: translateY(-3px) scale(1.08) rotate(-6deg);
+}
+
+.brass-key-turn {
+  transition: transform 420ms var(--ease-out-expo);
+  transform-box: fill-box;
+  transform-origin: center;
+}
+
+.ink-active .brass-key-turn {
+  transform: translateX(4px) rotate(-14deg);
+}
+
+/* Reduced Motion Compliance */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 100ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 100ms !important;
+    scroll-behavior: auto !important;
+  }
+
+  .btn-primary:hover,
+  .btn-primary:active,
+  .btn-secondary:active,
+  .btn-ghost:active,
+  .card-interactive:hover,
+  .card-interactive:active,
+  .card-interactive:hover .card-arrow,
+  .inline-link-tactile:hover svg,
+  .gsi-material-button:active,
+  .tactile-note-row:hover,
+  .tactile-note-row:active,
+  .tactile-note-row:hover .tactile-note-icon,
+  .ink-active .nib-emblem,
+  .ink-active .bookmark-ribbon,
+  .ink-active .page-corner-lift,
+  .ink-active .glide-note,
+  .ink-active .folio-back,
+  .ink-active .folio-front,
+  .ink-active .wax-seal-lift,
+  .ink-active .brass-key-turn,
+  .page-glide-enter,
+  .manuscript-glyph {
+    transform: none !important;
+  }
+}

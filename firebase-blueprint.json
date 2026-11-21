@@ -1,0 +1,131 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "Private cloud user profile, settings, and cross-device preferences.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "email": { "type": "string", "format": "email", "maxLength": 254 },
+        "displayName": { "type": "string", "maxLength": 120 },
+        "semesterLabel": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "collegeDegree": { "type": "string", "maxLength": 120 },
+        "semester": { "type": "string", "maxLength": 40 },
+        "collegeName": { "type": "string", "maxLength": 140 },
+        "age": { "type": "number" },
+        "onboardingCompleted": { "type": "boolean" },
+        "googleSpreadsheetId": { "type": "string", "maxLength": 128 },
+        "googleDocId": { "type": "string", "maxLength": 128 },
+        "dailyWordGoal": { "type": "number" },
+        "autoSaveVocab": { "type": "boolean" },
+        "focusModeDefault": { "type": "boolean" },
+        "autoReloadSchedule": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "semesterLabel", "dailyWordGoal", "autoSaveVocab", "focusModeDefault", "autoReloadSchedule", "createdAt", "updatedAt"]
+    },
+    "WritingSessionDoc": {
+      "title": "WritingSessionDoc",
+      "description": "Cloud-synced writing entry and multidimensional rubric evaluation matching the Writing Progress & Evaluation Tracker schema.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "ownerId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "date": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$", "maxLength": 10 },
+        "daySlot": { "type": "string", "maxLength": 80 },
+        "mode": { "type": "string", "enum": ["journal", "linkedin", "email", "friend", "technical", "creative"] },
+        "promptCategory": { "type": "string", "maxLength": 100 },
+        "tone": { "type": "string", "enum": ["professional-warm", "conversational", "formal-executive", "academic-technical", "crisp-direct", "narrative-vivid"] },
+        "topicDescription": { "type": "string", "minLength": 1, "maxLength": 300 },
+        "content": { "type": "string", "maxLength": 30000 },
+        "wordCount": { "type": "number" },
+        "scores": { "type": "object" },
+        "totalScore": { "type": "number" },
+        "percentage": { "type": "number" },
+        "cefrLevel": { "type": "string", "maxLength": 12 },
+        "internationalMetrics": { "type": "object" },
+        "toneVerdict": { "type": "string", "maxLength": 1000 },
+        "flowVerdict": { "type": "string", "maxLength": 1000 },
+        "feedbackImplemented": { "type": "string", "enum": ["Baseline", "Yes", "Partial", "No"] },
+        "whatImproved": { "type": "string", "maxLength": 1500 },
+        "strictImprovements": { "type": "string", "maxLength": 1500 },
+        "grammarFixes": { "type": "array" },
+        "vocabUpgrades": { "type": "array" },
+        "status": { "type": "string", "enum": ["Completed", "Draft"] },
+        "evaluationPending": { "type": "boolean" },
+        "modelUsed": { "type": "string", "maxLength": 64 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "ownerId", "date", "daySlot", "mode", "promptCategory", "tone", "topicDescription", "content", "wordCount", "scores", "totalScore", "percentage", "cefrLevel", "toneVerdict", "flowVerdict", "feedbackImplemented", "whatImproved", "strictImprovements", "grammarFixes", "vocabUpgrades", "status", "createdAt", "updatedAt"]
+    },
+    "CalendarSlotDoc": {
+      "title": "CalendarSlotDoc",
+      "description": "Cloud-synced tri-weekly Wednesday/Friday/Sunday or custom writing task.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "ownerId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "dayOfWeek": { "type": "string", "maxLength": 20 },
+        "slotLabel": { "type": "string", "maxLength": 60 },
+        "slotTime": { "type": "string", "maxLength": 20 },
+        "scheduledDate": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$", "maxLength": 10 },
+        "mode": { "type": "string", "enum": ["journal", "linkedin", "email", "friend", "technical", "creative"] },
+        "tone": { "type": "string", "enum": ["professional-warm", "conversational", "formal-executive", "academic-technical", "crisp-direct", "narrative-vivid"] },
+        "promptCategory": { "type": "string", "maxLength": 100 },
+        "topic": { "type": "string", "minLength": 1, "maxLength": 300 },
+        "topicPrimer": { "type": "string", "maxLength": 600 },
+        "pivotRule": { "type": "string", "maxLength": 400 },
+        "feedbackReminder": { "type": "string", "maxLength": 400 },
+        "targetWords": { "type": "number" },
+        "completed": { "type": "boolean" },
+        "linkedSessionId": { "type": "string", "maxLength": 128 },
+        "suggestions": { "type": "array" },
+        "isTriWeekly": { "type": "boolean" },
+        "pillar": { "type": "string", "enum": ["technical-concept", "linkedin-email", "creative-story"] },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "ownerId", "dayOfWeek", "slotLabel", "scheduledDate", "mode", "tone", "promptCategory", "topic", "targetWords", "completed", "createdAt", "updatedAt"]
+    },
+    "VocabEntryDoc": {
+      "title": "VocabEntryDoc",
+      "description": "Cloud-synced vocabulary upgrade card saved from live coaching or full evaluations.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "ownerId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "used": { "type": "string", "minLength": 1, "maxLength": 160 },
+        "betterAlternative": { "type": "string", "minLength": 1, "maxLength": 160 },
+        "explanation": { "type": "string", "maxLength": 500 },
+        "contextSnippet": { "type": "string", "maxLength": 300 },
+        "mode": { "type": "string", "enum": ["journal", "linkedin", "email", "friend", "technical", "creative"] },
+        "dateAdded": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$", "maxLength": 10 },
+        "mastered": { "type": "boolean" },
+        "sessionId": { "type": "string", "maxLength": 128 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "ownerId", "used", "betterAlternative", "explanation", "contextSnippet", "mode", "dateAdded", "mastered", "createdAt", "updatedAt"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/UserProfile" },
+      "description": "Private root user profile and preferences document for cross-device sync."
+    },
+    "/users/{userId}/sessions/{sessionId}": {
+      "schema": { "$ref": "#/entities/WritingSessionDoc" },
+      "description": "Evaluated writing entries and tracker ledger rows owned by the authenticated user."
+    },
+    "/users/{userId}/calendarSlots/{slotId}": {
+      "schema": { "$ref": "#/entities/CalendarSlotDoc" },
+      "description": "Tri-weekly Tue/Thu/Sat and custom scheduled writing tasks owned by the authenticated user."
+    },
+    "/users/{userId}/vocabulary/{vocabId}": {
+      "schema": { "$ref": "#/entities/VocabEntryDoc" },
+      "description": "Personal vocabulary upgrade library owned by the authenticated user."
+    }
+  }
+}
