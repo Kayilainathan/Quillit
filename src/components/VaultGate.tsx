@@ -15,6 +15,7 @@ import {
   X,
 } from 'lucide-react';
 import type { EncryptedEnvelope } from '../types';
+import type { SecurityQuestionSetup } from '../utils/offlineRecovery';
 import { ManuscriptPasswordInput } from './ManuscriptPasswordInput';
 import { OfflineSpacePage, type OfflinePageMode } from './OfflineSpacePage';
 
@@ -31,14 +32,19 @@ interface VaultGateProps {
   onSendPasswordReset: (email: string) => Promise<void>;
   onCreateOfflineSpace: (
     passphrase: string,
-    hint?: string
+    securitySetup?: SecurityQuestionSetup
   ) => Promise<{ recoveryKey: string }>;
   onCompleteOfflineEntry: () => void;
   onUnlockVault: (passphrase: string) => Promise<void>;
   onRecoverWithKey: (
     recoveryKey: string,
     newPassphrase: string,
-    newHint?: string
+    securitySetup?: SecurityQuestionSetup
+  ) => Promise<{ recoveryKey: string }>;
+  onRecoverWithSecurityAnswer: (
+    securityAnswer: string,
+    newPassphrase: string,
+    securitySetup?: SecurityQuestionSetup
   ) => Promise<{ recoveryKey: string }>;
   onImportEncryptedBackup: (
     envelope: EncryptedEnvelope,
@@ -59,6 +65,7 @@ export function VaultGate({
   onCompleteOfflineEntry,
   onUnlockVault,
   onRecoverWithKey,
+  onRecoverWithSecurityAnswer,
   onImportEncryptedBackup,
 }: VaultGateProps) {
   // Page stage: Page 1 (Cloud Sign In) vs Page 2 (Dedicated Offline Space page)
@@ -408,6 +415,7 @@ export function VaultGate({
           onCompleteOfflineEntry={onCompleteOfflineEntry}
           onUnlockVault={onUnlockVault}
           onRecoverWithKey={onRecoverWithKey}
+          onRecoverWithSecurityAnswer={onRecoverWithSecurityAnswer}
           onImportEncryptedBackup={onImportEncryptedBackup}
         />
         {overwriteGuardModal}

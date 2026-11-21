@@ -1396,7 +1396,7 @@ Target Mode: ${slot.mode} | Target Tone: ${slot.tone} | Day: ${slot.dayOfWeek ||
   }
 
   app.listen(PORT, '0.0.0.0', () => {
-    console.log(`Quilit server running on http://localhost:${PORT}`);
+    console.log(`Quillit server running on http://localhost:${PORT}`);
   });
 }
 

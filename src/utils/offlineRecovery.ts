@@ -3,13 +3,36 @@ const RECOVERY_PBKDF2_ITERATIONS = 150000;
 // Unambiguous uppercase alphabet (no 0, O, 1, I) for calm, mistake-free transcription
 const KEY_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 
+export const SECURITY_QUESTION_PRESETS: readonly string[] = [
+  'What is the title of a book that changed how you think?',
+  'What street, café, or place feels most like home to you?',
+  'Who was a teacher or mentor who shaped your voice?',
+  'What quiet daily ritual do you rarely skip?',
+  'What childhood nickname or private memory only you know?',
+] as const;
+
+export interface EncryptedRecoveryPayload {
+  salt: string;
+  iv: string;
+  ciphertext: string;
+  iterations: number;
+}
+
+export interface SecurityQuestionSetup {
+  question: string;
+  answer: string;
+}
+
 export interface OfflineRecoveryLockbox {
   format: 'quillit-recovery-v1';
   salt: string;
   iv: string;
   ciphertext: string;
   iterations: number;
-  hint?: string;
+  /** Optional personal security question text (never stores the private answer) */
+  securityQuestion?: string;
+  /** Independent AES-256-GCM lockbox keyed by PBKDF2(normalized security answer) */
+  securityAnswerLockbox?: EncryptedRecoveryPayload;
   createdAt: string;
 }
 
@@ -71,48 +94,101 @@ export function normalizeRecoveryKey(input: string): string {
 }
 
 /**
- * Validates an optional memory hint so users never accidentally store
- * their actual passphrase inside a plaintext hint.
+ * Normalizes a private security answer so minor capitalization or extra spacing
+ * never causes accidental lockouts while preserving full semantic secrecy.
  */
-export function validatePassphraseHint(
-  hint: string,
+export function normalizeSecurityAnswer(input: string): string {
+  return input.trim().toLowerCase().replace(/\s+/g, ' ');
+}
+
+/**
+ * Validates an optional Personal Security Question & Private Answer pair.
+ * Never allows the private answer to match or leak the main passphrase.
+ */
+export function validateSecurityQuestionAndAnswer(
+  question: string,
+  answer: string,
   passphrase: string
-): { ok: boolean; error?: string; cleaned: string } {
-  const cleaned = hint.trim();
-  if (!cleaned) {
-    return { ok: true, cleaned: '' };
+): {
+  ok: boolean;
+  error?: string;
+  setup?: SecurityQuestionSetup;
+} {
+  const cleanedQuestion = question.trim();
+  const normalizedAnswer = normalizeSecurityAnswer(answer);
+
+  if (!cleanedQuestion && !normalizedAnswer) {
+    return { ok: true, setup: undefined };
   }
-  if (cleaned.length > 120) {
+
+  if (cleanedQuestion && !normalizedAnswer) {
     return {
       ok: false,
-      error: 'Keep your memory hint under 120 characters.',
-      cleaned,
+      error:
+        'Add a private answer for your security question, or leave both blank to rely on your Recovery Key.',
     };
   }
-  const normalizedPass = passphrase.trim().toLowerCase();
+
+  if (!cleanedQuestion && normalizedAnswer) {
+    return {
+      ok: false,
+      error: 'Choose or write a security question to pair with your private answer.',
+    };
+  }
+
+  if (cleanedQuestion.length < 6) {
+    return {
+      ok: false,
+      error: 'Write a slightly clearer security question (at least 6 characters).',
+    };
+  }
+
+  if (cleanedQuestion.length > 140) {
+    return {
+      ok: false,
+      error: 'Keep your security question under 140 characters.',
+    };
+  }
+
+  if (normalizedAnswer.length < 3) {
+    return {
+      ok: false,
+      error: 'Use at least 3 characters for your private security answer.',
+    };
+  }
+
+  const normalizedPass = normalizeSecurityAnswer(passphrase);
   if (
     normalizedPass.length >= 4 &&
-    cleaned.toLowerCase().includes(normalizedPass)
+    (normalizedAnswer === normalizedPass ||
+      normalizedAnswer.includes(normalizedPass) ||
+      (normalizedAnswer.length >= 4 && normalizedPass.includes(normalizedAnswer)))
   ) {
     return {
       ok: false,
       error:
-        'Your hint should only jog your memory, never include the passphrase itself.',
-      cleaned,
+        'Keep your private answer different from your passphrase so both stay independent and secure.',
     };
   }
-  return { ok: true, cleaned };
+
+  return {
+    ok: true,
+    setup: {
+      question: cleanedQuestion,
+      answer: normalizedAnswer,
+    },
+  };
 }
 
 async function deriveRecoveryAesKey(
-  normalizedRecoveryKey: string,
+  secretMaterial: string,
   salt: Uint8Array,
   iterations: number
 ): Promise<CryptoKey> {
   const subtle = getSubtle();
   const keyMaterial = await subtle.importKey(
     'raw',
-    new TextEncoder().encode(normalizedRecoveryKey),
+    new TextEncoder().encode(secretMaterial),
     'PBKDF2',
     false,
     ['deriveKey']
@@ -134,24 +210,15 @@ async function deriveRecoveryAesKey(
   );
 }
 
-/**
- * Encrypts the Offline Space passphrase inside a zero-knowledge AES-256-GCM
- * recovery lockbox keyed strictly by the one-time Recovery Key.
- */
-export async function encryptRecoveryLockbox(
-  passphrase: string,
-  recoveryKey: string,
-  hint?: string
-): Promise<OfflineRecoveryLockbox> {
-  if (!passphrase || passphrase.length < 4) {
-    throw new Error('Passphrase is required to seal your recovery lockbox.');
-  }
-  const normalizedKey = normalizeRecoveryKey(recoveryKey);
+async function sealSecretPayload(
+  secretMaterial: string,
+  passphrase: string
+): Promise<EncryptedRecoveryPayload> {
   const subtle = getSubtle();
   const salt = globalThis.crypto.getRandomValues(new Uint8Array(16));
   const iv = globalThis.crypto.getRandomValues(new Uint8Array(12));
   const aesKey = await deriveRecoveryAesKey(
-    normalizedKey,
+    secretMaterial,
     salt,
     RECOVERY_PBKDF2_ITERATIONS
   );
@@ -161,15 +228,75 @@ export async function encryptRecoveryLockbox(
     aesKey,
     plaintext
   );
-
-  const cleanedHint = hint?.trim() || undefined;
   return {
-    format: 'quillit-recovery-v1',
     salt: bytesToBase64(salt),
     iv: bytesToBase64(iv),
     ciphertext: bytesToBase64(new Uint8Array(encryptedBuffer)),
     iterations: RECOVERY_PBKDF2_ITERATIONS,
-    ...(cleanedHint ? { hint: cleanedHint } : {}),
+  };
+}
+
+async function openSecretPayload(
+  payload: EncryptedRecoveryPayload,
+  secretMaterial: string
+): Promise<string> {
+  const subtle = getSubtle();
+  const salt = base64ToBytes(payload.salt);
+  const iv = base64ToBytes(payload.iv);
+  const ciphertext = base64ToBytes(payload.ciphertext);
+  const iterations = payload.iterations || RECOVERY_PBKDF2_ITERATIONS;
+
+  const aesKey = await deriveRecoveryAesKey(secretMaterial, salt, iterations);
+  const decryptedBuffer = await subtle.decrypt(
+    { name: 'AES-GCM', iv: iv as BufferSource },
+    aesKey,
+    ciphertext as BufferSource
+  );
+  const parsed = JSON.parse(
+    new TextDecoder().decode(decryptedBuffer)
+  ) as { passphrase?: string };
+  if (!parsed?.passphrase || typeof parsed.passphrase !== 'string') {
+    throw new Error('Recovered payload is invalid.');
+  }
+  return parsed.passphrase;
+}
+
+/**
+ * Encrypts the Offline Space passphrase inside a zero-knowledge AES-256-GCM
+ * recovery lockbox keyed strictly by the one-time Recovery Key, and optionally
+ * seals a second independent lockbox keyed by a Personal Security Answer.
+ * Zero plaintext clues or answers are ever stored.
+ */
+export async function encryptRecoveryLockbox(
+  passphrase: string,
+  recoveryKey: string,
+  securitySetup?: SecurityQuestionSetup
+): Promise<OfflineRecoveryLockbox> {
+  if (!passphrase || passphrase.length < 4) {
+    throw new Error('Passphrase is required to seal your recovery lockbox.');
+  }
+
+  const normalizedKey = normalizeRecoveryKey(recoveryKey);
+  const primarySealed = await sealSecretPayload(normalizedKey, passphrase);
+
+  let securityQuestion: string | undefined;
+  let securityAnswerLockbox: EncryptedRecoveryPayload | undefined;
+
+  if (securitySetup?.question.trim() && securitySetup?.answer.trim()) {
+    const normalizedAnswer = normalizeSecurityAnswer(securitySetup.answer);
+    securityQuestion = securitySetup.question.trim();
+    securityAnswerLockbox = await sealSecretPayload(
+      `quillit-sec-q::${normalizedAnswer}`,
+      passphrase
+    );
+  }
+
+  return {
+    format: 'quillit-recovery-v1',
+    ...primarySealed,
+    ...(securityQuestion && securityAnswerLockbox
+      ? { securityQuestion, securityAnswerLockbox }
+      : {}),
     createdAt: new Date().toISOString(),
   };
 }
@@ -187,35 +314,71 @@ export async function decryptPassphraseWithRecoveryKey(
   }
   const normalizedKey = normalizeRecoveryKey(recoveryKeyInput);
   if (!normalizedKey || normalizedKey.length < 16) {
-    throw new Error('Enter your full Recovery Key (for example, QUILL-XXXX-XXXX-XXXX-XXXX).');
+    throw new Error(
+      'Enter your full Recovery Key (for example, QUILL-XXXX-XXXX-XXXX-XXXX).'
+    );
   }
 
-  const subtle = getSubtle();
-  const salt = base64ToBytes(lockbox.salt);
-  const iv = base64ToBytes(lockbox.iv);
-  const ciphertext = base64ToBytes(lockbox.ciphertext);
-  const iterations = lockbox.iterations || RECOVERY_PBKDF2_ITERATIONS;
-
-  const aesKey = await deriveRecoveryAesKey(normalizedKey, salt, iterations);
-
   try {
-    const decryptedBuffer = await subtle.decrypt(
-      { name: 'AES-GCM', iv: iv as BufferSource },
-      aesKey,
-      ciphertext as BufferSource
+    return await openSecretPayload(
+      {
+        salt: lockbox.salt,
+        iv: lockbox.iv,
+        ciphertext: lockbox.ciphertext,
+        iterations: lockbox.iterations,
+      },
+      normalizedKey
     );
-    const parsed = JSON.parse(
-      new TextDecoder().decode(decryptedBuffer)
-    ) as { passphrase?: string };
-    if (!parsed?.passphrase || typeof parsed.passphrase !== 'string') {
-      throw new Error('Recovered payload is invalid.');
-    }
-    return parsed.passphrase;
   } catch {
     throw new Error(
       'That Recovery Key did not match this Offline Space. Double check each character and try again.'
     );
   }
+}
+
+/**
+ * Unlocks the stored security-answer lockbox using the writer's private answer.
+ * Decrypts their real Offline Space with zero data loss and zero plaintext clues.
+ */
+export async function decryptPassphraseWithSecurityAnswer(
+  lockbox: OfflineRecoveryLockbox,
+  answerInput: string
+): Promise<string> {
+  if (
+    lockbox?.format !== 'quillit-recovery-v1' ||
+    !lockbox.securityQuestion ||
+    !lockbox.securityAnswerLockbox
+  ) {
+    throw new Error(
+      'No Personal Security Question is attached to this Offline Space.'
+    );
+  }
+  const normalizedAnswer = normalizeSecurityAnswer(answerInput);
+  if (normalizedAnswer.length < 3) {
+    throw new Error('Enter your private answer to unlock recovery.');
+  }
+
+  try {
+    return await openSecretPayload(
+      lockbox.securityAnswerLockbox,
+      `quillit-sec-q::${normalizedAnswer}`
+    );
+  } catch {
+    throw new Error(
+      'That answer did not match your sealed security question. Check spelling and try again, or use your Recovery Key.'
+    );
+  }
+}
+
+export function hasSecurityQuestionLockbox(
+  lockbox: OfflineRecoveryLockbox | null
+): boolean {
+  return Boolean(
+    lockbox?.securityQuestion &&
+      lockbox.securityAnswerLockbox?.salt &&
+      lockbox.securityAnswerLockbox?.iv &&
+      lockbox.securityAnswerLockbox?.ciphertext
+  );
 }
 
 export function isOfflineRecoveryLockbox(
@@ -262,7 +425,7 @@ export function clearOfflineRecoveryLockbox(): void {
 
 export function buildRecoveryCardText(
   recoveryKey: string,
-  hint?: string
+  securityQuestion?: string
 ): string {
   const dateLabel = new Date().toLocaleDateString('en-US', {
     year: 'numeric',
@@ -278,15 +441,19 @@ export function buildRecoveryCardText(
     `  ${recoveryKey}`,
     '',
   ];
-  if (hint && hint.trim()) {
-    lines.push('Saved Memory Hint:', `  ${hint.trim()}`, '');
+  if (securityQuestion && securityQuestion.trim()) {
+    lines.push(
+      'Personal Security Question (answer stays encrypted, never printed):',
+      `  ${securityQuestion.trim()}`,
+      ''
+    );
   }
   lines.push(
     'How this protects your writing:',
     'Your Offline Space is encrypted directly on your browser with AES-256-GCM.',
-    'Quillit never sees or stores your passphrase on any server.',
+    'Quillit never sees or stores your passphrase or security answer in plain text.',
     'If you ever forget your passphrase, open "Forgot passphrase?" in Offline Space',
-    'and enter this Recovery Key to unlock your pages and set a new passphrase.',
+    'and recover access using either your Personal Security Question or this Recovery Key.',
     '',
     'Keep this card somewhere private (a password manager, printed note, or secure folder).'
   );

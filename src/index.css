@@ -700,6 +700,89 @@
   transform: translateX(4px) rotate(-14deg);
 }
 
+/* ==========================================================================
+   Tactile Pen-and-Paper Daily Ink-Drop Well (Write Studio)
+   Pure compositor-safe 2D transform & opacity animations
+   ========================================================================== */
+@keyframes inkDropFall {
+  0% {
+    opacity: 0;
+    transform: translateY(-10px) scale(0.55);
+  }
+  20% {
+    opacity: 1;
+    transform: translateY(-2px) scale(0.95);
+  }
+  75% {
+    opacity: 0.96;
+    transform: translateY(15px) scale(1.06, 0.92);
+  }
+  100% {
+    opacity: 0;
+    transform: translateY(20px) scale(1.35, 0.35);
+  }
+}
+
+@keyframes inkRippleOut {
+  0% {
+    opacity: 0.55;
+    transform: scaleX(0.25) scaleY(0.6);
+  }
+  100% {
+    opacity: 0;
+    transform: scaleX(2.4) scaleY(1.2);
+  }
+}
+
+@keyframes inkMeniscusDrift {
+  0% {
+    transform: translateX(0);
+  }
+  100% {
+    transform: translateX(-50%);
+  }
+}
+
+@keyframes inkSealPop {
+  0% {
+    opacity: 0;
+    transform: scale(0.75) rotate(-10deg);
+  }
+  65% {
+    opacity: 1;
+    transform: scale(1.08) rotate(3deg);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1) rotate(0deg);
+  }
+}
+
+.ink-well-fill {
+  transition: transform 520ms var(--ease-out-expo);
+  transform-origin: bottom center;
+  will-change: transform;
+}
+
+.ink-well-meniscus-track {
+  animation: inkMeniscusDrift 11s linear infinite;
+  will-change: transform;
+}
+
+.ink-drop-bead {
+  animation: inkDropFall 620ms cubic-bezier(0.22, 0.68, 0.35, 1) forwards;
+  transform-origin: center;
+}
+
+.ink-drop-ripple {
+  animation: inkRippleOut 680ms var(--ease-out-expo) 260ms forwards;
+  transform-origin: center;
+}
+
+.ink-goal-seal {
+  animation: inkSealPop 380ms var(--ease-out-expo) both;
+}
+
 /* Reduced Motion Compliance */
 @media (prefers-reduced-motion: reduce) {
   *,
@@ -732,7 +815,12 @@
   .ink-active .wax-seal-lift,
   .ink-active .brass-key-turn,
   .page-glide-enter,
-  .manuscript-glyph {
+  .manuscript-glyph,
+  .ink-drop-bead,
+  .ink-drop-ripple,
+  .ink-well-meniscus-track,
+  .ink-goal-seal {
     transform: none !important;
+    animation: none !important;
   }
 }

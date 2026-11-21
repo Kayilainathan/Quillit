@@ -163,6 +163,64 @@ export function OnboardingProfileModal({
     setStep(2);
   }
 
+  function handleSkipFromStep1() {
+    setError(null);
+    const parsedAge = Number(age.trim());
+    const validAge =
+      Number.isInteger(parsedAge) && parsedAge >= 12 && parsedAge <= 95
+        ? parsedAge
+        : initialProfile?.age ?? 0;
+
+    onSave({
+      profile: {
+        displayName: displayName.trim(),
+        age: validAge,
+        collegeName: collegeName.trim(),
+        collegeDegree: initialProfile?.collegeDegree ?? '',
+        semester: initialProfile?.semester ?? '',
+        onboardingCompleted: true,
+        preferredDays:
+          preferredDays.length > 0 ? preferredDays : [3, 5, 0],
+        reminderTime,
+        defaultMode,
+        targetWordGoal,
+      },
+      rebuildMonthSchedule: true,
+      notificationsEnabled,
+      dailyWordGoal: targetWordGoal,
+      liveOfflineCheck,
+    });
+  }
+
+  function handleSkipFromStep2() {
+    setError(null);
+    const parsedAge = Number(age.trim());
+    const validAge =
+      Number.isInteger(parsedAge) && parsedAge >= 12 && parsedAge <= 95
+        ? parsedAge
+        : initialProfile?.age ?? 0;
+
+    onSave({
+      profile: {
+        displayName: displayName.trim(),
+        age: validAge,
+        collegeName: collegeName.trim(),
+        collegeDegree: initialProfile?.collegeDegree ?? '',
+        semester: initialProfile?.semester ?? '',
+        onboardingCompleted: true,
+        preferredDays:
+          preferredDays.length > 0 ? preferredDays : [3, 5, 0],
+        reminderTime: initialProfile?.reminderTime ?? '18:30',
+        defaultMode: initialProfile?.defaultMode ?? 'journal',
+        targetWordGoal: initialProfile?.targetWordGoal ?? 250,
+      },
+      rebuildMonthSchedule: true,
+      notificationsEnabled: false,
+      dailyWordGoal: initialProfile?.targetWordGoal ?? 250,
+      liveOfflineCheck: true,
+    });
+  }
+
   function handleFinalSubmit(e: FormEvent) {
     e.preventDefault();
     setError(null);
@@ -283,7 +341,11 @@ export function OnboardingProfileModal({
   );
 
   const flashcardBody = (
-    <div className="card-surface w-full max-w-lg p-6 sm:p-8 space-y-6 shadow-md">
+    <div
+      className={`card-surface w-full max-w-lg shadow-md ${
+        step === 2 ? 'p-5 sm:p-6 space-y-4' : 'p-6 sm:p-8 space-y-6'
+      }`}
+    >
       {inkWellProgressHeader}
 
       {step === 1 ? (
@@ -391,16 +453,36 @@ export function OnboardingProfileModal({
             )}
             <button
               type="submit"
+              data-testid="onboarding-step1-next"
               className="btn-primary w-full sm:w-auto inline-flex items-center justify-center gap-2 px-5 py-2.5 text-xs sm:text-sm font-medium"
             >
               <span>Next · Weekly Rhythm</span>
               <ArrowRight className="w-4 h-4" aria-hidden="true" />
             </button>
           </div>
+
+          {!isEditingExisting && (
+            <div className="pt-3 border-t border-border-subtle flex items-center justify-center">
+              <button
+                type="button"
+                data-testid="onboarding-customise-later-step1"
+                onClick={handleSkipFromStep1}
+                className="group inline-flex items-center gap-1.5 text-xs text-ink-muted hover:text-ink-primary transition-colors cursor-pointer"
+              >
+                <Feather
+                  className="w-3.5 h-3.5 transition-transform duration-200 group-hover:-rotate-12 group-hover:text-ink-primary"
+                  aria-hidden="true"
+                />
+                <span className="inline-link-tactile border-transparent group-hover:border-border-strong">
+                  Skip my details · customise my notebook later
+                </span>
+              </button>
+            </div>
+          )}
         </form>
       ) : (
-        <form onSubmit={handleFinalSubmit} className="space-y-5" noValidate>
-          <div className="space-y-1.5">
+        <form onSubmit={handleFinalSubmit} className="space-y-3.5" noValidate>
+          <div className="space-y-1">
             <h1
               id="onboarding-profile-title"
               className="font-display text-2xl sm:text-[26px] leading-tight font-medium tracking-tight text-ink-primary"
@@ -479,7 +561,7 @@ export function OnboardingProfileModal({
           </div>
 
           {/* Reminder Notification & Preferred Time */}
-          <div className="p-3.5 rounded-lg border border-border-subtle bg-subtle/65 space-y-3">
+          <div className="p-3 rounded-lg border border-border-subtle bg-subtle/65 space-y-2.5">
             <div className="flex items-center justify-between gap-3">
               <div className="flex items-center gap-2 min-w-0">
                 {notificationsEnabled ? (
@@ -650,6 +732,7 @@ export function OnboardingProfileModal({
 
             <button
               type="submit"
+              data-testid="onboarding-step2-submit"
               className="btn-primary inline-flex items-center justify-center gap-2 px-5 py-2.5 text-xs sm:text-sm font-medium"
             >
               {isEditingExisting ? (
@@ -665,6 +748,25 @@ export function OnboardingProfileModal({
               )}
             </button>
           </div>
+
+          {!isEditingExisting && (
+            <div className="pt-3 border-t border-border-subtle flex items-center justify-center">
+              <button
+                type="button"
+                data-testid="onboarding-customise-later-step2"
+                onClick={handleSkipFromStep2}
+                className="group inline-flex items-center gap-1.5 text-xs text-ink-muted hover:text-ink-primary transition-colors cursor-pointer"
+              >
+                <Feather
+                  className="w-3.5 h-3.5 transition-transform duration-200 group-hover:-rotate-12 group-hover:text-ink-primary"
+                  aria-hidden="true"
+                />
+                <span className="inline-link-tactile border-transparent group-hover:border-border-strong">
+                  Skip rhythm &amp; goals · customise my notebook later
+                </span>
+              </button>
+            </div>
+          )}
         </form>
       )}
     </div>
@@ -701,7 +803,7 @@ export function OnboardingProfileModal({
           )}
         </header>
 
-        <main className="flex-1 flex items-center justify-center px-4 py-8 sm:py-12">
+        <main className="flex-1 flex items-center justify-center px-4 py-4 sm:py-6">
           {flashcardBody}
         </main>
       </div>

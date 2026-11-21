@@ -94,10 +94,12 @@ import {
 import {
   clearOfflineRecoveryLockbox,
   decryptPassphraseWithRecoveryKey,
+  decryptPassphraseWithSecurityAnswer,
   encryptRecoveryLockbox,
   generateRecoveryKey,
   loadOfflineRecoveryLockbox,
   saveOfflineRecoveryLockbox,
+  type SecurityQuestionSetup,
 } from './utils/offlineRecovery';
 
 const LOCAL_STORAGE_KEY = 'cadence_encrypted_vault_v1';
@@ -1311,7 +1313,7 @@ export default function App() {
 
   async function handleCreateOfflineSpace(
     passphrase: string,
-    hint?: string
+    securitySetup?: SecurityQuestionSetup
   ): Promise<{ recoveryKey: string }> {
     const initialPayload = createEmptyVaultPayload();
     const envelope = await encryptVault(initialPayload, passphrase);
@@ -1319,7 +1321,11 @@ export default function App() {
     setStoredEnvelope(envelope);
 
     const recoveryKey = generateRecoveryKey();
-    const lockbox = await encryptRecoveryLockbox(passphrase, recoveryKey, hint);
+    const lockbox = await encryptRecoveryLockbox(
+      passphrase,
+      recoveryKey,
+      securitySetup
+    );
     saveOfflineRecoveryLockbox(lockbox);
 
     pendingOfflineEntryRef.current = {
@@ -1341,26 +1347,16 @@ export default function App() {
     setActiveView('write');
   }
 
-  async function handleRecoverOfflineWithKey(
-    recoveryKey: string,
+  async function finalizeOfflineRecoveryWithOriginalPassphrase(
+    originalPassphrase: string,
     newPassphrase: string,
-    newHint?: string
+    securitySetup?: SecurityQuestionSetup
   ): Promise<{ recoveryKey: string }> {
-    const lockbox = loadOfflineRecoveryLockbox();
-    if (!lockbox) {
-      throw new Error(
-        'No Recovery Key lockbox is attached to this Offline Space.'
-      );
-    }
     const envelope = loadStoredEnvelope(LOCAL_STORAGE_KEY);
     if (!envelope) {
       throw new Error('No saved Offline Space was found on this browser.');
     }
 
-    const originalPassphrase = await decryptPassphraseWithRecoveryKey(
-      lockbox,
-      recoveryKey
-    );
     const decrypted = await decryptVault(envelope, originalPassphrase);
     const { cleaned } = stripPredefinedSeedData(decrypted);
 
@@ -1372,7 +1368,7 @@ export default function App() {
     const nextLockbox = await encryptRecoveryLockbox(
       newPassphrase,
       nextRecoveryKey,
-      newHint
+      securitySetup
     );
     saveOfflineRecoveryLockbox(nextLockbox);
 
@@ -1381,6 +1377,52 @@ export default function App() {
       passphrase: newPassphrase,
     };
     return { recoveryKey: nextRecoveryKey };
+  }
+
+  async function handleRecoverOfflineWithKey(
+    recoveryKey: string,
+    newPassphrase: string,
+    securitySetup?: SecurityQuestionSetup
+  ): Promise<{ recoveryKey: string }> {
+    const lockbox = loadOfflineRecoveryLockbox();
+    if (!lockbox) {
+      throw new Error(
+        'No Recovery Key lockbox is attached to this Offline Space.'
+      );
+    }
+
+    const originalPassphrase = await decryptPassphraseWithRecoveryKey(
+      lockbox,
+      recoveryKey
+    );
+    return finalizeOfflineRecoveryWithOriginalPassphrase(
+      originalPassphrase,
+      newPassphrase,
+      securitySetup
+    );
+  }
+
+  async function handleRecoverOfflineWithSecurityAnswer(
+    securityAnswer: string,
+    newPassphrase: string,
+    securitySetup?: SecurityQuestionSetup
+  ): Promise<{ recoveryKey: string }> {
+    const lockbox = loadOfflineRecoveryLockbox();
+    if (!lockbox) {
+      throw new Error(
+        'No local recovery lockbox is attached to this Offline Space.'
+      );
+    }
+
+    const originalPassphrase = await decryptPassphraseWithSecurityAnswer(
+      lockbox,
+      securityAnswer
+    );
+    return finalizeOfflineRecoveryWithOriginalPassphrase(
+      originalPassphrase,
+      newPassphrase,
+      securitySetup
+    );
   }
 
   async function handleUnlockVault(passphrase: string) {
@@ -1756,12 +1798,10 @@ export default function App() {
     await persistVault(vault, newPassphrase);
     setActivePassphrase(newPassphrase);
     if (activeStorageKeyRef.current === LOCAL_STORAGE_KEY) {
-      const existingLockbox = loadOfflineRecoveryLockbox();
       const nextRecoveryKey = generateRecoveryKey();
       const nextLockbox = await encryptRecoveryLockbox(
         newPassphrase,
-        nextRecoveryKey,
-        existingLockbox?.hint
+        nextRecoveryKey
       );
       saveOfflineRecoveryLockbox(nextLockbox);
       return nextRecoveryKey;
@@ -1885,6 +1925,7 @@ export default function App() {
         onCompleteOfflineEntry={handleCompleteOfflineEntry}
         onUnlockVault={handleUnlockVault}
         onRecoverWithKey={handleRecoverOfflineWithKey}
+        onRecoverWithSecurityAnswer={handleRecoverOfflineWithSecurityAnswer}
         onImportEncryptedBackup={handleImportEncryptedBackup}
       />
     );
@@ -2013,6 +2054,11 @@ export default function App() {
             initialTopic={studioInitialTopic}
             initialDaySlot={studioInitialSlot}
             linkedCalendarSlotId={linkedSlotId}
+            dailyWordGoal={
+              vault.settings.dailyWordGoal ||
+              vault.settings.studentProfile?.targetWordGoal ||
+              250
+            }
             liveOfflineCheckEnabled={vault.settings.liveOfflineCheck !== false}
             onToggleLiveOfflineCheck={handleToggleLiveOfflineCheck}
             onSaveSession={handleSaveSession}

@@ -9,7 +9,6 @@ import {
   Download,
   Feather,
   KeyRound,
-  Lightbulb,
   Lock,
   Moon,
   ShieldCheck,
@@ -19,10 +18,13 @@ import {
 import type { EncryptedEnvelope } from '../types';
 import { isEncryptedEnvelope } from '../utils/crypto';
 import {
+  SECURITY_QUESTION_PRESETS,
   buildRecoveryCardText,
+  hasSecurityQuestionLockbox,
   loadOfflineRecoveryLockbox,
-  validatePassphraseHint,
+  validateSecurityQuestionAndAnswer,
   type OfflineRecoveryLockbox,
+  type SecurityQuestionSetup,
 } from '../utils/offlineRecovery';
 import { ManuscriptPasswordInput } from './ManuscriptPasswordInput';
 
@@ -32,6 +34,9 @@ export type OfflinePageMode =
   | 'restore'
   | 'forgot'
   | 'recovery-kit';
+
+type RecoveryMethodTab = 'question' | 'key';
+const CUSTOM_QUESTION_VALUE = '__custom__';
 
 interface OfflineSpacePageProps {
   initialMode: Exclude<OfflinePageMode, 'recovery-kit'>;
@@ -43,14 +48,19 @@ interface OfflineSpacePageProps {
   onRequestFreshSpaceOverwrite: () => void;
   onCreateOfflineSpace: (
     passphrase: string,
-    hint?: string
+    securitySetup?: SecurityQuestionSetup
   ) => Promise<{ recoveryKey: string }>;
   onCompleteOfflineEntry: () => void;
   onUnlockVault: (passphrase: string) => Promise<void>;
   onRecoverWithKey: (
     recoveryKey: string,
     newPassphrase: string,
-    newHint?: string
+    securitySetup?: SecurityQuestionSetup
+  ) => Promise<{ recoveryKey: string }>;
+  onRecoverWithSecurityAnswer: (
+    securityAnswer: string,
+    newPassphrase: string,
+    securitySetup?: SecurityQuestionSetup
   ) => Promise<{ recoveryKey: string }>;
   onImportEncryptedBackup: (
     envelope: EncryptedEnvelope,
@@ -70,6 +80,7 @@ export function OfflineSpacePage({
   onCompleteOfflineEntry,
   onUnlockVault,
   onRecoverWithKey,
+  onRecoverWithSecurityAnswer,
   onImportEncryptedBackup,
 }: OfflineSpacePageProps) {
   const [mode, setMode] = useState<OfflinePageMode>(initialMode);
@@ -78,21 +89,35 @@ export function OfflineSpacePage({
   // Unlock / Create / Restore form state
   const [passphrase, setPassphrase] = useState('');
   const [confirmPassphrase, setConfirmPassphrase] = useState('');
-  const [memoryHint, setMemoryHint] = useState('');
   const [showPassphrase, setShowPassphrase] = useState(false);
+
+  // Create mode: Optional encrypted Personal Security Question & Private Answer
+  const [enableSecurityQuestion, setEnableSecurityQuestion] = useState(true);
+  const [selectedQuestionPreset, setSelectedQuestionPreset] = useState<string>(
+    SECURITY_QUESTION_PRESETS[0]
+  );
+  const [customQuestion, setCustomQuestion] = useState('');
+  const [securityAnswer, setSecurityAnswer] = useState('');
+  const [showSecurityAnswer, setShowSecurityAnswer] = useState(false);
+
+  // Restore form state
   const [importedEnvelope, setImportedEnvelope] =
     useState<EncryptedEnvelope | null>(null);
   const [importedFileName, setImportedFileName] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // Forgot passphrase recovery state
+  // Forgot passphrase dual cryptographic recovery state
   const [recoveryLockbox, setRecoveryLockbox] =
     useState<OfflineRecoveryLockbox | null>(() => loadOfflineRecoveryLockbox());
+  const [recoveryMethod, setRecoveryMethod] = useState<RecoveryMethodTab>(() =>
+    hasSecurityQuestionLockbox(loadOfflineRecoveryLockbox()) ? 'question' : 'key'
+  );
+  const [recoveryAnswerInput, setRecoveryAnswerInput] = useState('');
+  const [showRecoveryAnswer, setShowRecoveryAnswer] = useState(false);
   const [recoveryKeyInput, setRecoveryKeyInput] = useState('');
   const [newRecoveryPass, setNewRecoveryPass] = useState('');
   const [confirmRecoveryPass, setConfirmRecoveryPass] = useState('');
-  const [newRecoveryHint, setNewRecoveryHint] = useState('');
   const [showNewRecoveryPass, setShowNewRecoveryPass] = useState(false);
   const [emergencyBackupSaved, setEmergencyBackupSaved] = useState(false);
 
@@ -100,20 +125,27 @@ export function OfflineSpacePage({
   const [generatedRecoveryKey, setGeneratedRecoveryKey] = useState<
     string | null
   >(null);
-  const [generatedHint, setGeneratedHint] = useState<string>('');
+  const [generatedSecurityQuestion, setGeneratedSecurityQuestion] =
+    useState<string>('');
   const [recoveryKitOrigin, setRecoveryKitOrigin] = useState<
     'created' | 'recovered'
   >('created');
   const [copiedKey, setCopiedKey] = useState(false);
   const [downloadedCard, setDownloadedCard] = useState(false);
 
+  const hasSavedSecurityQuestion = hasSecurityQuestionLockbox(recoveryLockbox);
+
   useEffect(() => {
     setMode(initialMode);
     setError(null);
     setPassphrase('');
     setConfirmPassphrase('');
-    setMemoryHint('');
-    setRecoveryLockbox(loadOfflineRecoveryLockbox());
+    setSecurityAnswer('');
+    const freshLockbox = loadOfflineRecoveryLockbox();
+    setRecoveryLockbox(freshLockbox);
+    setRecoveryMethod(
+      hasSecurityQuestionLockbox(freshLockbox) ? 'question' : 'key'
+    );
   }, [initialMode]);
 
   useEffect(() => {
@@ -130,8 +162,23 @@ export function OfflineSpacePage({
     setError(null);
     setPassphrase('');
     setConfirmPassphrase('');
-    setRecoveryLockbox(loadOfflineRecoveryLockbox());
+    setRecoveryAnswerInput('');
+    setRecoveryKeyInput('');
+    setNewRecoveryPass('');
+    setConfirmRecoveryPass('');
+    const freshLockbox = loadOfflineRecoveryLockbox();
+    setRecoveryLockbox(freshLockbox);
+    setRecoveryMethod(
+      hasSecurityQuestionLockbox(freshLockbox) ? 'question' : 'key'
+    );
     setMode(next);
+  }
+
+  function resolveCreateSecurityQuestion(): string {
+    if (!enableSecurityQuestion) return '';
+    return selectedQuestionPreset === CUSTOM_QUESTION_VALUE
+      ? customQuestion.trim()
+      : selectedQuestionPreset;
   }
 
   function handleFileChange(e: ChangeEvent<HTMLInputElement>) {
@@ -183,7 +230,10 @@ export function OfflineSpacePage({
 
   function handleDownloadRecoveryCard() {
     if (!generatedRecoveryKey) return;
-    const content = buildRecoveryCardText(generatedRecoveryKey, generatedHint);
+    const content = buildRecoveryCardText(
+      generatedRecoveryKey,
+      generatedSecurityQuestion || undefined
+    );
     const dateStamp = new Date().toISOString().slice(0, 10);
     const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
     const url = URL.createObjectURL(blob);
@@ -208,19 +258,29 @@ export function OfflineSpacePage({
         setError('Passphrases do not match.');
         return;
       }
-      const hintCheck = validatePassphraseHint(memoryHint, passphrase);
-      if (!hintCheck.ok) {
-        setError(hintCheck.error || 'Please adjust your memory hint.');
-        return;
+
+      let securitySetup: SecurityQuestionSetup | undefined;
+      if (enableSecurityQuestion && (securityAnswer.trim() || customQuestion.trim())) {
+        const check = validateSecurityQuestionAndAnswer(
+          resolveCreateSecurityQuestion(),
+          securityAnswer,
+          passphrase
+        );
+        if (!check.ok) {
+          setError(check.error || 'Please check your Personal Security Question.');
+          return;
+        }
+        securitySetup = check.setup;
       }
+
       setBusy(true);
       try {
         const { recoveryKey } = await onCreateOfflineSpace(
           passphrase,
-          hintCheck.cleaned || undefined
+          securitySetup
         );
         setGeneratedRecoveryKey(recoveryKey);
-        setGeneratedHint(hintCheck.cleaned);
+        setGeneratedSecurityQuestion(securitySetup?.question || '');
         setRecoveryKitOrigin('created');
         setCopiedKey(false);
         setDownloadedCard(false);
@@ -285,10 +345,21 @@ export function OfflineSpacePage({
     e.preventDefault();
     setError(null);
 
-    if (!recoveryKeyInput.trim()) {
+    const activeMethod: RecoveryMethodTab =
+      recoveryMethod === 'question' && hasSavedSecurityQuestion
+        ? 'question'
+        : 'key';
+
+    if (activeMethod === 'question') {
+      if (recoveryAnswerInput.trim().length < 3) {
+        setError('Enter your private answer to unlock recovery.');
+        return;
+      }
+    } else if (!recoveryKeyInput.trim()) {
       setError('Enter your saved Recovery Key first.');
       return;
     }
+
     if (newRecoveryPass.length < 6) {
       setError('Choose a new passphrase with at least 6 characters.');
       return;
@@ -297,21 +368,34 @@ export function OfflineSpacePage({
       setError('New passphrases do not match.');
       return;
     }
-    const hintCheck = validatePassphraseHint(newRecoveryHint, newRecoveryPass);
-    if (!hintCheck.ok) {
-      setError(hintCheck.error || 'Please adjust your memory hint.');
-      return;
+
+    // If recovering via Security Question, automatically preserve their sealed question & answer
+    // (as long as the new passphrase is still independent from the private answer)
+    let carriedSecuritySetup: SecurityQuestionSetup | undefined;
+    if (activeMethod === 'question' && recoveryLockbox?.securityQuestion) {
+      const carryCheck = validateSecurityQuestionAndAnswer(
+        recoveryLockbox.securityQuestion,
+        recoveryAnswerInput,
+        newRecoveryPass
+      );
+      if (carryCheck.ok && carryCheck.setup) {
+        carriedSecuritySetup = carryCheck.setup;
+      }
     }
 
     setBusy(true);
     try {
-      const { recoveryKey } = await onRecoverWithKey(
-        recoveryKeyInput,
-        newRecoveryPass,
-        hintCheck.cleaned || undefined
-      );
-      setGeneratedRecoveryKey(recoveryKey);
-      setGeneratedHint(hintCheck.cleaned);
+      const result =
+        activeMethod === 'question'
+          ? await onRecoverWithSecurityAnswer(
+              recoveryAnswerInput,
+              newRecoveryPass,
+              carriedSecuritySetup
+            )
+          : await onRecoverWithKey(recoveryKeyInput, newRecoveryPass);
+
+      setGeneratedRecoveryKey(result.recoveryKey);
+      setGeneratedSecurityQuestion(carriedSecuritySetup?.question || '');
       setRecoveryKitOrigin('recovered');
       setCopiedKey(false);
       setDownloadedCard(false);
@@ -320,7 +404,7 @@ export function OfflineSpacePage({
       setError(
         err instanceof Error
           ? err.message
-          : 'Could not recover your notebook with that Recovery Key.'
+          : 'Could not recover your notebook. Check your details and try again.'
       );
     } finally {
       setBusy(false);
@@ -335,7 +419,7 @@ export function OfflineSpacePage({
         : mode === 'restore'
           ? 'Restore Backup · Encrypted archive'
           : mode === 'forgot'
-            ? 'Passphrase Recovery · Offline Space'
+            ? 'Passphrase Recovery · Zero-knowledge'
             : 'Emergency Recovery Key · Save once';
 
   const pageHeading =
@@ -355,12 +439,12 @@ export function OfflineSpacePage({
     mode === 'unlock'
       ? 'Your drafts rest safely inside this browser. Enter your passphrase to pick up right where you paused.'
       : mode === 'create'
-        ? 'Choose a passphrase only you know. Quillit seals your writing locally and gives you a one-time Recovery Key in case you ever forget it.'
+        ? 'Choose a passphrase only you know. Quillit seals your writing locally and protects recovery with an encrypted key and optional private question.'
         : mode === 'restore'
           ? 'Select a Quillit backup file (.json) from your device and unlock it with the passphrase you used when saving it.'
           : mode === 'forgot'
-            ? 'Because Offline Space never sends your passphrase to a server, recovery happens quietly right here on your device.'
-            : 'We show this key only once. Keep it somewhere safe so you can always reset a forgotten passphrase without losing a single sentence.';
+            ? 'Your answers and keys are never stored in plain text. Verify with your sealed security question or Recovery Key to unlock your notebook with zero data loss.'
+            : 'We show this key only once. Keep it somewhere private so you can always reset a forgotten passphrase without losing a single sentence.';
 
   return (
     <div
@@ -411,7 +495,7 @@ export function OfflineSpacePage({
 
       {/* Main Dedicated Offline Desk Container */}
       <main className="flex-1 flex items-center justify-center px-4 py-8 sm:py-12">
-        <div className="w-full max-w-[440px] space-y-5">
+        <div className="w-full max-w-[450px] space-y-5">
           <section
             aria-labelledby="offline-page-title"
             className={`card-surface overflow-hidden ${
@@ -784,33 +868,117 @@ export function OfflineSpacePage({
                         />
                       </div>
 
-                      <div>
-                        <div className="flex items-center justify-between mb-1.5">
-                          <label
-                            htmlFor="offline-page-memory-hint"
-                            className="block text-xs font-medium text-ink-secondary"
+                      {/* Encrypted Personal Security Question (replaces insecure plaintext hints) */}
+                      <div
+                        data-testid="security-question-setup-box"
+                        className="p-3.5 rounded-lg border border-border-subtle bg-subtle/40 space-y-3"
+                      >
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="space-y-0.5">
+                            <div className="flex items-center gap-1.5 text-xs font-medium text-ink-primary">
+                              <ShieldCheck
+                                className="w-3.5 h-3.5 text-status-success shrink-0"
+                                aria-hidden="true"
+                              />
+                              <span>Sealed Security Question</span>
+                            </div>
+                            <p className="text-[11px] text-ink-muted leading-relaxed">
+                              Your private answer is encrypted with AES-256-GCM, never stored in plain text, and lets you recover your notebook even without your Recovery Key.
+                            </p>
+                          </div>
+                          <button
+                            type="button"
+                            data-testid="toggle-security-question"
+                            onClick={() => {
+                              setEnableSecurityQuestion((v) => !v);
+                              if (error) setError(null);
+                            }}
+                            className="text-[11px] font-medium text-ink-secondary hover:text-ink-primary transition-colors shrink-0 cursor-pointer"
                           >
-                            Memory Hint{' '}
-                            <span className="text-ink-muted font-normal">
-                              (optional)
-                            </span>
-                          </label>
+                            {enableSecurityQuestion ? 'Skip' : 'Add'}
+                          </button>
                         </div>
-                        <input
-                          id="offline-page-memory-hint"
-                          type="text"
-                          value={memoryHint}
-                          onChange={(e) => {
-                            setMemoryHint(e.target.value);
-                            if (error) setError(null);
-                          }}
-                          maxLength={120}
-                          placeholder="A quiet clue only you understand"
-                          className="input-tactile w-full px-3.5 py-2.5 text-sm"
-                        />
-                        <p className="mt-1.5 text-[11px] text-ink-muted leading-relaxed">
-                          Shown if you ever forget your passphrase. Never type your actual passphrase here.
-                        </p>
+
+                        {enableSecurityQuestion && (
+                          <div className="space-y-2.5 pt-1">
+                            <div>
+                              <label
+                                htmlFor="offline-security-question-select"
+                                className="block text-[11px] font-medium text-ink-secondary mb-1"
+                              >
+                                Personal Question
+                              </label>
+                              <select
+                                id="offline-security-question-select"
+                                data-testid="security-question-select"
+                                value={selectedQuestionPreset}
+                                onChange={(e) => {
+                                  setSelectedQuestionPreset(e.target.value);
+                                  if (error) setError(null);
+                                }}
+                                className="input-tactile w-full px-3 py-2 text-xs bg-surface"
+                              >
+                                {SECURITY_QUESTION_PRESETS.map((q) => (
+                                  <option key={q} value={q}>
+                                    {q}
+                                  </option>
+                                ))}
+                                <option value={CUSTOM_QUESTION_VALUE}>
+                                  Write my own personal question...
+                                </option>
+                              </select>
+                            </div>
+
+                            {selectedQuestionPreset === CUSTOM_QUESTION_VALUE && (
+                              <div>
+                                <label
+                                  htmlFor="offline-security-question-custom"
+                                  className="sr-only"
+                                >
+                                  Custom personal question
+                                </label>
+                                <input
+                                  id="offline-security-question-custom"
+                                  type="text"
+                                  value={customQuestion}
+                                  onChange={(e) => {
+                                    setCustomQuestion(e.target.value);
+                                    if (error) setError(null);
+                                  }}
+                                  maxLength={140}
+                                  placeholder="Type a question only you can answer..."
+                                  className="input-tactile w-full px-3 py-2 text-xs"
+                                />
+                              </div>
+                            )}
+
+                            <div>
+                              <label
+                                htmlFor="offline-security-answer"
+                                className="block text-[11px] font-medium text-ink-secondary mb-1"
+                              >
+                                Private Answer{' '}
+                                <span className="text-ink-muted font-normal">
+                                  (optional, encrypted locally)
+                                </span>
+                              </label>
+                              <ManuscriptPasswordInput
+                                id="offline-security-answer"
+                                value={securityAnswer}
+                                onChange={(next) => {
+                                  setSecurityAnswer(next);
+                                  if (error) setError(null);
+                                }}
+                                placeholder="Something personal only you know"
+                                autoComplete="off"
+                                showValue={showSecurityAnswer}
+                                onToggleShow={() =>
+                                  setShowSecurityAnswer((v) => !v)
+                                }
+                              />
+                            </div>
+                          </div>
+                        )}
                       </div>
                     </>
                   )}
@@ -873,166 +1041,200 @@ export function OfflineSpacePage({
                 </form>
               )}
 
-              {/* MODE 4: FORGOT PASSPHRASE (3-PATH REAL CRYPTOGRAPHIC RECOVERY) */}
+              {/* MODE 4: FORGOT PASSPHRASE (DUAL ZERO-KNOWLEDGE CRYPTOGRAPHIC RECOVERY) */}
               {mode === 'forgot' && (
                 <div className="space-y-4" data-testid="offline-forgot-panel">
-                  {/* Path 1: Saved Memory Hint */}
-                  {recoveryLockbox?.hint && (
-                    <div
-                      data-testid="saved-memory-hint-box"
-                      className="p-3.5 rounded-lg border border-border-subtle bg-subtle/60 space-y-2"
-                    >
-                      <div className="flex items-center gap-1.5 text-[11px] font-medium text-ink-secondary">
-                        <Lightbulb
-                          className="w-3.5 h-3.5 text-status-warning"
-                          aria-hidden="true"
-                        />
-                        <span>Your saved memory hint</span>
-                      </div>
-                      <p className="text-sm text-ink-primary font-medium leading-relaxed">
-                        &ldquo;{recoveryLockbox.hint}&rdquo;
-                      </p>
-                      <button
-                        type="button"
-                        onClick={() => switchMode('unlock')}
-                        className="inline-link-tactile text-xs font-medium cursor-pointer"
-                      >
-                        That jogged my memory, take me back to Unlock
-                      </button>
-                    </div>
-                  )}
-
-                  {/* Path 2: Cryptographic Recovery Key Unlock & Reset */}
                   {recoveryLockbox ? (
-                    <form onSubmit={handleRecoverSubmit} className="space-y-3.5">
-                      <div>
-                        <label
-                          htmlFor="recovery-key-input"
-                          className="block text-xs font-medium text-ink-secondary mb-1.5"
-                        >
-                          Emergency Recovery Key
-                        </label>
-                        <input
-                          id="recovery-key-input"
-                          type="text"
-                          value={recoveryKeyInput}
-                          onChange={(e) => {
-                            setRecoveryKeyInput(e.target.value);
-                            setInkActive(true);
-                            if (error) setError(null);
-                          }}
-                          placeholder="QUILL-XXXX-XXXX-XXXX-XXXX"
-                          autoComplete="off"
-                          spellCheck={false}
-                          className="input-tactile w-full px-3.5 py-2.5 text-xs sm:text-sm font-mono-tabular uppercase tracking-wide"
-                        />
-                      </div>
-
-                      <div>
-                        <label
-                          htmlFor="recovery-new-passphrase"
-                          className="block text-xs font-medium text-ink-secondary mb-1.5"
-                        >
-                          Choose a New Passphrase
-                        </label>
-                        <ManuscriptPasswordInput
-                          id="recovery-new-passphrase"
-                          value={newRecoveryPass}
-                          onChange={(next) => {
-                            setNewRecoveryPass(next);
-                            if (error) setError(null);
-                          }}
-                          placeholder="At least 6 characters"
-                          autoComplete="new-password"
-                          showValue={showNewRecoveryPass}
-                          onToggleShow={() => setShowNewRecoveryPass((v) => !v)}
-                        />
-                      </div>
-
-                      <div>
-                        <label
-                          htmlFor="recovery-confirm-passphrase"
-                          className="block text-xs font-medium text-ink-secondary mb-1.5"
-                        >
-                          Confirm New Passphrase
-                        </label>
-                        <ManuscriptPasswordInput
-                          id="recovery-confirm-passphrase"
-                          value={confirmRecoveryPass}
-                          onChange={(next) => {
-                            setConfirmRecoveryPass(next);
-                            if (error) setError(null);
-                          }}
-                          placeholder="Re-enter new passphrase"
-                          autoComplete="new-password"
-                          showValue={showNewRecoveryPass}
-                          showToggleButton={false}
-                        />
-                      </div>
-
-                      <div>
-                        <label
-                          htmlFor="recovery-new-hint"
-                          className="block text-xs font-medium text-ink-secondary mb-1.5"
-                        >
-                          Updated Memory Hint{' '}
-                          <span className="text-ink-muted font-normal">
-                            (optional)
-                          </span>
-                        </label>
-                        <input
-                          id="recovery-new-hint"
-                          type="text"
-                          value={newRecoveryHint}
-                          onChange={(e) => {
-                            setNewRecoveryHint(e.target.value);
-                            if (error) setError(null);
-                          }}
-                          maxLength={120}
-                          placeholder="A fresh clue for your new passphrase"
-                          className="input-tactile w-full px-3.5 py-2.5 text-sm"
-                        />
-                      </div>
-
-                      {error && (
+                    <>
+                      {/* Recovery Method Segmented Switcher when Security Question is active */}
+                      {hasSavedSecurityQuestion && (
                         <div
-                          role="alert"
-                          className="p-3 rounded-lg border border-status-danger-border bg-status-danger-soft text-xs text-status-danger leading-relaxed"
+                          className="segmented-track grid grid-cols-2 gap-1"
+                          role="tablist"
+                          aria-label="Choose cryptographic recovery method"
                         >
-                          {error}
+                          <button
+                            type="button"
+                            role="tab"
+                            aria-selected={recoveryMethod === 'question'}
+                            data-active={recoveryMethod === 'question'}
+                            data-testid="recovery-tab-question"
+                            onClick={() => {
+                              setRecoveryMethod('question');
+                              setError(null);
+                            }}
+                            className="segmented-item px-3 py-1.5 text-xs text-center"
+                          >
+                            Security Question
+                          </button>
+                          <button
+                            type="button"
+                            role="tab"
+                            aria-selected={recoveryMethod === 'key'}
+                            data-active={recoveryMethod === 'key'}
+                            data-testid="recovery-tab-key"
+                            onClick={() => {
+                              setRecoveryMethod('key');
+                              setError(null);
+                            }}
+                            className="segmented-item px-3 py-1.5 text-xs text-center"
+                          >
+                            Recovery Key
+                          </button>
                         </div>
                       )}
 
-                      <button
-                        type="submit"
-                        disabled={busy}
-                        data-testid="recovery-reset-submit"
-                        className="btn-primary group w-full inline-flex items-center justify-center gap-2 px-4 py-2.5 text-sm font-medium whitespace-nowrap"
-                      >
-                        <KeyRound className="w-3.5 h-3.5" aria-hidden="true" />
-                        <span>
-                          {busy
-                            ? 'Unlocking & re-sealing...'
-                            : 'Unlock & Reset Passphrase'}
-                        </span>
-                        {!busy && (
-                          <ArrowRight
-                            className="w-3.5 h-3.5 transition-transform duration-200 group-hover:translate-x-1"
-                            aria-hidden="true"
-                          />
+                      <form onSubmit={handleRecoverSubmit} className="space-y-3.5">
+                        {recoveryMethod === 'question' &&
+                        hasSavedSecurityQuestion ? (
+                          <div className="space-y-3">
+                            <div
+                              data-testid="saved-security-question-box"
+                              className="p-3.5 rounded-lg border border-border-subtle bg-subtle/60 space-y-1"
+                            >
+                              <div className="flex items-center gap-1.5 text-[11px] font-medium text-ink-secondary">
+                                <ShieldCheck
+                                  className="w-3.5 h-3.5 text-status-success"
+                                  aria-hidden="true"
+                                />
+                                <span>Your personal security question</span>
+                              </div>
+                              <p className="text-sm text-ink-primary font-medium leading-relaxed">
+                                {recoveryLockbox.securityQuestion}
+                              </p>
+                            </div>
+
+                            <div>
+                              <label
+                                htmlFor="recovery-security-answer"
+                                className="block text-xs font-medium text-ink-secondary mb-1.5"
+                              >
+                                Your Private Answer
+                              </label>
+                              <ManuscriptPasswordInput
+                                id="recovery-security-answer"
+                                value={recoveryAnswerInput}
+                                onChange={(next) => {
+                                  setRecoveryAnswerInput(next);
+                                  setInkActive(true);
+                                  if (error) setError(null);
+                                }}
+                                placeholder="Enter the private answer you sealed"
+                                autoComplete="off"
+                                showValue={showRecoveryAnswer}
+                                onToggleShow={() =>
+                                  setShowRecoveryAnswer((v) => !v)
+                                }
+                              />
+                            </div>
+                          </div>
+                        ) : (
+                          <div>
+                            <label
+                              htmlFor="recovery-key-input"
+                              className="block text-xs font-medium text-ink-secondary mb-1.5"
+                            >
+                              Emergency Recovery Key
+                            </label>
+                            <input
+                              id="recovery-key-input"
+                              type="text"
+                              value={recoveryKeyInput}
+                              onChange={(e) => {
+                                setRecoveryKeyInput(e.target.value);
+                                setInkActive(true);
+                                if (error) setError(null);
+                              }}
+                              placeholder="QUILL-XXXX-XXXX-XXXX-XXXX"
+                              autoComplete="off"
+                              spellCheck={false}
+                              className="input-tactile w-full px-3.5 py-2.5 text-xs sm:text-sm font-mono-tabular uppercase tracking-wide"
+                            />
+                          </div>
                         )}
-                      </button>
-                    </form>
+
+                        <div>
+                          <label
+                            htmlFor="recovery-new-passphrase"
+                            className="block text-xs font-medium text-ink-secondary mb-1.5"
+                          >
+                            Choose a New Passphrase
+                          </label>
+                          <ManuscriptPasswordInput
+                            id="recovery-new-passphrase"
+                            value={newRecoveryPass}
+                            onChange={(next) => {
+                              setNewRecoveryPass(next);
+                              if (error) setError(null);
+                            }}
+                            placeholder="At least 6 characters"
+                            autoComplete="new-password"
+                            showValue={showNewRecoveryPass}
+                            onToggleShow={() => setShowNewRecoveryPass((v) => !v)}
+                          />
+                        </div>
+
+                        <div>
+                          <label
+                            htmlFor="recovery-confirm-passphrase"
+                            className="block text-xs font-medium text-ink-secondary mb-1.5"
+                          >
+                            Confirm New Passphrase
+                          </label>
+                          <ManuscriptPasswordInput
+                            id="recovery-confirm-passphrase"
+                            value={confirmRecoveryPass}
+                            onChange={(next) => {
+                              setConfirmRecoveryPass(next);
+                              if (error) setError(null);
+                            }}
+                            placeholder="Re-enter new passphrase"
+                            autoComplete="new-password"
+                            showValue={showNewRecoveryPass}
+                            showToggleButton={false}
+                          />
+                        </div>
+
+                        {error && (
+                          <div
+                            role="alert"
+                            className="p-3 rounded-lg border border-status-danger-border bg-status-danger-soft text-xs text-status-danger leading-relaxed"
+                          >
+                            {error}
+                          </div>
+                        )}
+
+                        <button
+                          type="submit"
+                          disabled={busy}
+                          data-testid="recovery-reset-submit"
+                          className="btn-primary group w-full inline-flex items-center justify-center gap-2 px-4 py-2.5 text-sm font-medium whitespace-nowrap"
+                        >
+                          <KeyRound className="w-3.5 h-3.5" aria-hidden="true" />
+                          <span>
+                            {busy
+                              ? 'Unlocking & re-sealing...'
+                              : 'Unlock & Reset Passphrase'}
+                          </span>
+                          {!busy && (
+                            <ArrowRight
+                              className="w-3.5 h-3.5 transition-transform duration-200 group-hover:translate-x-1"
+                              aria-hidden="true"
+                            />
+                          )}
+                        </button>
+                      </form>
+                    </>
                   ) : (
                     <div className="p-3.5 rounded-lg border border-border-subtle bg-subtle/50 text-xs text-ink-secondary leading-relaxed">
-                      This Offline Space was created before Recovery Keys were enabled, so no automatic reset key is attached to it.
+                      This Offline Space was created before local recovery lockboxes were enabled, so no automatic reset key is attached to it.
                     </div>
                   )}
 
-                  {/* Path 3: Honest Zero-Knowledge Safety Net */}
+                  {/* Honest Zero-Knowledge Safety Net */}
                   <div className="pt-3.5 border-t border-border-subtle space-y-2.5">
                     <p className="text-xs text-ink-muted leading-relaxed">
-                      Do not have your Recovery Key handy? You can still protect your encrypted pages now in case your passphrase comes back to you later, restore an older backup, or begin a fresh notebook.
+                      Do not have your answer or Recovery Key handy? You can still save an encrypted copy of your pages for later, restore an older backup, or begin a fresh notebook.
                     </p>
 
                     <div className="flex flex-col gap-2">
@@ -1105,6 +1307,14 @@ export function OfflineSpacePage({
                     >
                       {generatedRecoveryKey}
                     </div>
+                    {generatedSecurityQuestion && (
+                      <div className="flex items-center gap-1.5 text-[11px] text-status-success pt-0.5">
+                        <ShieldCheck className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+                        <span>
+                          Your Personal Security Question is also sealed locally as a backup lock.
+                        </span>
+                      </div>
+                    )}
                     <div className="grid grid-cols-2 gap-2">
                       <button
                         type="button"

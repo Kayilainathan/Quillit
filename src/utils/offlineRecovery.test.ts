@@ -1,78 +1,120 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  SECURITY_QUESTION_PRESETS,
   buildRecoveryCardText,
   decryptPassphraseWithRecoveryKey,
+  decryptPassphraseWithSecurityAnswer,
   encryptRecoveryLockbox,
   generateRecoveryKey,
+  hasSecurityQuestionLockbox,
   normalizeRecoveryKey,
-  validatePassphraseHint,
+  normalizeSecurityAnswer,
+  validateSecurityQuestionAndAnswer,
 } from './offlineRecovery';
-import { decryptVault, encryptVault } from './crypto';
-import { createEmptyVaultPayload } from './analytics';
 
-test('generateRecoveryKey creates formatted 80-bit key and normalizeRecoveryKey handles sloppy formatting', () => {
+test('generateRecoveryKey creates formatted 4-group QUILL keys', () => {
   const key = generateRecoveryKey();
   assert.match(key, /^QUILL-[A-Z2-9]{4}-[A-Z2-9]{4}-[A-Z2-9]{4}-[A-Z2-9]{4}$/);
-
-  const rawBody = key.replace(/^QUILL-/, '').replace(/-/g, '').toLowerCase();
-  assert.equal(normalizeRecoveryKey(`  ${rawBody}  `), key);
-  assert.equal(normalizeRecoveryKey(`quill ${rawBody}`), key);
 });
 
-test('validatePassphraseHint blocks accidental passphrase disclosure and trims safely', () => {
-  const ok = validatePassphraseHint('  Favorite street + debut album year  ', 'mySecretPass42');
-  assert.equal(ok.ok, true);
-  assert.equal(ok.cleaned, 'Favorite street + debut album year');
+test('normalizeRecoveryKey tolerates lowercase, spaces, and missing hyphens', () => {
+  const raw = 'quill abcd efgh jklm npqr';
+  assert.equal(normalizeRecoveryKey(raw), 'QUILL-ABCD-EFGH-JKLM-NPQR');
 
-  const leaked = validatePassphraseHint('It starts with mySecretPass42!', 'mySecretPass42');
-  assert.equal(leaked.ok, false);
-
-  const empty = validatePassphraseHint('   ', 'mySecretPass42');
-  assert.equal(empty.ok, true);
-  assert.equal(empty.cleaned, '');
+  const compact = 'abcdefghjklmnpqr';
+  assert.equal(normalizeRecoveryKey(compact), 'QUILL-ABCD-EFGH-JKLM-NPQR');
 });
 
-test('encryptRecoveryLockbox round-trips passphrase and unlocks a real encrypted vault when passphrase is forgotten', async () => {
-  const originalPassphrase = 'autumn-notebook-42';
-  const recoveryKey = generateRecoveryKey();
-
-  // Encrypt an actual vault with the original passphrase
-  const payload = createEmptyVaultPayload();
-  payload.settings.studentProfile = {
-    displayName: 'Kavya',
-    age: 20,
-    collegeName: 'Anna University',
-    collegeDegree: '',
-    semester: '',
-    onboardingCompleted: true,
-  };
-  const encryptedVault = await encryptVault(payload, originalPassphrase);
-
-  // Seal the recovery lockbox with the recovery key + memory hint
-  const lockbox = await encryptRecoveryLockbox(
-    originalPassphrase,
-    recoveryKey,
-    'Season + desk item + answer'
+test('normalizeSecurityAnswer trims, lowercases, and collapses spacing', () => {
+  assert.equal(
+    normalizeSecurityAnswer('  The   Little  Prince  '),
+    'the little prince'
   );
-  assert.equal(lockbox.hint, 'Season + desk item + answer');
-  assert.equal(JSON.stringify(lockbox).includes(originalPassphrase), false);
+});
 
-  // Wrong recovery key must fail cleanly
+test('validateSecurityQuestionAndAnswer blocks matching passphrase or half-filled setup', () => {
+  const bothBlank = validateSecurityQuestionAndAnswer('', '', 'mySecretInk42');
+  assert.equal(bothBlank.ok, true);
+  assert.equal(bothBlank.setup, undefined);
+
+  const missingAnswer = validateSecurityQuestionAndAnswer(
+    SECURITY_QUESTION_PRESETS[0],
+    '',
+    'mySecretInk42'
+  );
+  assert.equal(missingAnswer.ok, false);
+
+  const leaksPass = validateSecurityQuestionAndAnswer(
+    SECURITY_QUESTION_PRESETS[0],
+    'mySecretInk42',
+    'mySecretInk42'
+  );
+  assert.equal(leaksPass.ok, false);
+
+  const tooShort = validateSecurityQuestionAndAnswer(
+    SECURITY_QUESTION_PRESETS[0],
+    'ab',
+    'mySecretInk42'
+  );
+  assert.equal(tooShort.ok, false);
+
+  const valid = validateSecurityQuestionAndAnswer(
+    SECURITY_QUESTION_PRESETS[0],
+    'The Little Prince',
+    'mySecretInk42'
+  );
+  assert.equal(valid.ok, true);
+  assert.equal(valid.setup?.answer, 'the little prince');
+});
+
+test('encryptRecoveryLockbox seals dual zero-knowledge paths without storing plaintext answer', async () => {
+  const passphrase = 'FountainPen#2026!';
+  const recoveryKey = generateRecoveryKey();
+  const question = SECURITY_QUESTION_PRESETS[0];
+  const answer = 'The Little Prince';
+
+  const lockbox = await encryptRecoveryLockbox(passphrase, recoveryKey, {
+    question,
+    answer,
+  });
+
+  assert.equal(hasSecurityQuestionLockbox(lockbox), true);
+
+  // Zero plaintext secret leakage check
+  const serialized = JSON.stringify(lockbox).toLowerCase();
+  assert.equal(serialized.includes('little prince'), false);
+  assert.equal(serialized.includes('fountainpen'), false);
+
+  // Path 1: Unlock via Recovery Key (with flexible casing/spacing)
+  const fromKey = await decryptPassphraseWithRecoveryKey(
+    lockbox,
+    recoveryKey.toLowerCase().replace(/-/g, ' ')
+  );
+  assert.equal(fromKey, passphrase);
+
+  // Path 2: Unlock via Personal Security Answer (tolerates extra spaces & case)
+  const fromAnswer = await decryptPassphraseWithSecurityAnswer(
+    lockbox,
+    '  the   LITTLE prince '
+  );
+  assert.equal(fromAnswer, passphrase);
+
+  // Wrong answer is cryptographically rejected
+  await assert.rejects(
+    () => decryptPassphraseWithSecurityAnswer(lockbox, 'Moby Dick'),
+    /did not match/i
+  );
+
+  // Wrong key is cryptographically rejected
   await assert.rejects(
     () => decryptPassphraseWithRecoveryKey(lockbox, generateRecoveryKey()),
     /did not match/i
   );
 
-  // Correct recovery key (even pasted lowercase without dashes) recovers original passphrase and decrypts the real vault
-  const sloppyKey = recoveryKey.toLowerCase().replace(/-/g, ' ');
-  const recoveredPass = await decryptPassphraseWithRecoveryKey(lockbox, sloppyKey);
-  assert.equal(recoveredPass, originalPassphrase);
-
-  const decryptedVault = await decryptVault(encryptedVault, recoveredPass);
-  assert.equal(decryptedVault.settings.studentProfile?.displayName, 'Kavya');
-
-  const cardText = buildRecoveryCardText(recoveryKey, lockbox.hint);
-  assert.equal(cardText.includes(recoveryKey), true);
-  assert.equal(cardText.includes('Season + desk item + answer'), true);
+  // Recovery card lists question only, never the private answer
+  const card = buildRecoveryCardText(recoveryKey, question);
+  assert.equal(card.includes(recoveryKey), true);
+  assert.equal(card.includes(question), true);
+  assert.equal(card.toLowerCase().includes('little prince'), false);
 });

@@ -67,6 +67,8 @@ import {
   runOfflineProofread,
   type OfflineProofIssue,
 } from '../utils/offlineProofreader';
+import { computeDailyInkProgress } from '../utils/inkGoal';
+import { InkDropGoalWell } from './InkDropGoalWell';
 
 interface EvaluationPayload {
   evaluationStatus?: 'completed' | 'queued_for_reset';
@@ -105,6 +107,7 @@ interface WriteStudioProps {
   scheduleError: string | null;
   activeAiModelLabel?: string;
   pendingEvalSessionsCount?: number;
+  dailyWordGoal?: number;
   liveOfflineCheckEnabled?: boolean;
   onToggleLiveOfflineCheck?: () => void;
   onRefreshTriWeeklySchedule: () => void;
@@ -142,6 +145,7 @@ export function WriteStudio({
   studentProfile,
   coachContext,
   pendingEvalSessionsCount = 0,
+  dailyWordGoal,
   liveOfflineCheckEnabled = true,
   onToggleLiveOfflineCheck,
   onUpdateSlot,
@@ -250,6 +254,25 @@ export function WriteStudio({
 
   const diagnostics = useMemo(() => analyzeDraftLocally(content), [content]);
   const readability = useMemo(() => computeReadabilityStats(content), [content]);
+  const effectiveDailyWordGoal =
+    dailyWordGoal || studentProfile?.targetWordGoal || 250;
+  const dailyInkProgress = useMemo(
+    () =>
+      computeDailyInkProgress({
+        todayISO,
+        sessions,
+        currentWordCount: diagnostics.wordCount,
+        activeDraftId,
+        dailyWordGoal: effectiveDailyWordGoal,
+      }),
+    [
+      todayISO,
+      sessions,
+      diagnostics.wordCount,
+      activeDraftId,
+      effectiveDailyWordGoal,
+    ]
+  );
 
   const offlineIssues = useMemo(
     () => (liveOfflineCheckEnabled ? runOfflineProofread(debouncedContent) : []),
@@ -834,9 +857,9 @@ export function WriteStudio({
             <h1 className="font-display text-2xl sm:text-3xl font-medium tracking-tight text-ink-primary">
               {focusMode
                 ? 'Focused Manuscript'
-                : studentProfile?.displayName
-                  ? `Write, ${studentProfile.displayName}`
-                  : 'Writing Studio'}
+                : studentProfile?.displayName?.trim()
+                  ? `Write, ${studentProfile.displayName.trim()}`
+                  : 'Write'}
             </h1>
             {pendingEvalSessionsCount > 0 && (
               <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-sm text-[11px] font-mono-tabular border border-status-warning-border bg-status-warning-soft text-status-warning">
@@ -1455,11 +1478,14 @@ export function WriteStudio({
                             ? 'Explain the core idea clearly, step by step, without jargon...'
                             : mode === 'creative'
                               ? 'Begin with a concrete image, sound, or turning point...'
-                              : 'Begin writing freely — your words stay private and encrypted...'
+                              : 'Begin writing freely. Your words stay private and encrypted...'
                   }
                   className="w-full bg-transparent text-[15px] sm:text-base leading-[1.85] text-ink-primary placeholder:text-ink-muted resize-y focus:outline-none"
                 />
               </div>
+
+              {/* Tactile Pen-and-Paper Daily Word Goal Ink-Drop Well */}
+              <InkDropGoalWell progress={dailyInkProgress} />
 
               {/* Instant Live Offline Proofreader Strip (0 API tokens, updates live on type) */}
               {liveOfflineCheckEnabled &&
@@ -1518,7 +1544,7 @@ export function WriteStudio({
                             key={issue.id}
                             type="button"
                             onClick={() => handleApplySingleOfflineFix(issue)}
-                            title={`${issue.rule} — click to apply`}
+                            title={`${issue.rule}. Click to apply`}
                             className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md border border-border-default bg-surface hover:border-border-strong text-[11px] transition-colors cursor-pointer"
                           >
                             <span className="line-through text-ink-muted">
@@ -1579,7 +1605,7 @@ export function WriteStudio({
                       <button
                         type="button"
                         onClick={onToggleLiveOfflineCheck}
-                        title="Instant offline grammar & punctuation check is active — click to pause"
+                        title="Instant offline grammar and punctuation check is active. Click to pause"
                         className="inline-flex items-center gap-1 text-status-success hover:opacity-80 cursor-pointer"
                       >
                         <CheckCircle2 className="w-3 h-3" aria-hidden="true" />
