@@ -7,6 +7,7 @@ export interface DailyInkProgressInput {
   sessions: WritingSession[];
   currentWordCount: number;
   activeDraftId?: string | null;
+  activeLoggedSessionId?: string | null;
   dailyWordGoal?: number;
 }
 
@@ -27,14 +28,16 @@ const MIN_DAILY_WORD_GOAL = 25;
 
 /**
  * Computes today's cumulative ink progress toward the writer's daily word goal.
- * Excludes the currently open draft ID from saved today sessions so live typing
- * never double-counts words already saved in that same draft.
+ * Excludes the currently open draft ID and currently auto-logged session ID from
+ * saved today sessions so live typing never double-counts words already saved in
+ * that same piece.
  */
 export function computeDailyInkProgress({
   todayISO,
   sessions,
   currentWordCount,
   activeDraftId = null,
+  activeLoggedSessionId = null,
   dailyWordGoal = DEFAULT_DAILY_WORD_GOAL,
 }: DailyInkProgressInput): DailyInkProgress {
   const goalWords = Math.max(
@@ -49,6 +52,7 @@ export function computeDailyInkProgress({
   const savedWordsToday = sessions.reduce((sum, session) => {
     if (session.date !== todayISO) return sum;
     if (activeDraftId && session.id === activeDraftId) return sum;
+    if (activeLoggedSessionId && session.id === activeLoggedSessionId) return sum;
     const words = Number.isFinite(session.wordCount)
       ? Math.max(0, Math.round(session.wordCount))
       : 0;

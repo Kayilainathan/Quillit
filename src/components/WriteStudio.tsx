@@ -24,7 +24,6 @@ import {
   Sun,
   Trash2,
   Unlock,
-  Wand2,
   X,
 } from 'lucide-react';
 import type {
@@ -32,7 +31,6 @@ import type {
   FeedbackImplementedStatus,
   GrammarFix,
   InternationalMetrics,
-  RealtimeAssistResult,
   RubricScores,
   StudentProfile,
   ToneSetting,
@@ -47,9 +45,7 @@ import {
   TONE_LABELS,
   analyzeDraftLocally,
   applyMultipleReplacements,
-  buildQueuedProvisionalEvaluation,
   computePercentage,
-  computeReadabilityStats,
   computeTotalScore,
   deriveInternationalMetrics,
   getVisibleWritePageTasks,
@@ -67,6 +63,12 @@ import {
   runOfflineProofread,
   type OfflineProofIssue,
 } from '../utils/offlineProofreader';
+import {
+  buildInstantLocalEvaluation,
+  getStudioGreeting,
+  inferSuitableTitle,
+  resolveRandomTopicDismiss,
+} from '../utils/fastEvaluate';
 import { computeDailyInkProgress } from '../utils/inkGoal';
 import { InkDropGoalWell } from './InkDropGoalWell';
 
@@ -76,6 +78,8 @@ interface EvaluationPayload {
   thinkingLevelUsed?: string;
   downgraded?: boolean;
   cached?: boolean;
+  isProvisionalInstant?: boolean;
+  suggestedTitle?: string;
   quotaResetSeconds?: number;
   quotaResetAt?: string;
   scores: RubricScores;
@@ -193,15 +197,20 @@ export function WriteStudio({
       : null
   );
 
-  // Non-repeating zero-API random topic deck (simulated AI shimmer, 0 tokens)
+  // Non-repeating zero-API random topic deck (smart dismiss tracks post-click writing)
   const deckStateRef = useRef<TopicDeckState | null>(loadPersistedDeckState());
   const topicTimerRef = useRef<number | null>(null);
+  const contentSnapshotAtTopicPickRef = useRef<string>('');
+  const previousTopicAtPickRef = useRef<string>('');
+  const loadedRandomTopicRef = useRef<string | null>(null);
+  const activeLoggedSessionIdRef = useRef<string | null>(null);
+  const autoTitledSessionRef = useRef<boolean>(false);
+  const latestTopicRef = useRef<string>(topic);
+
   const [suggestingTopic, setSuggestingTopic] = useState(false);
   const [suggestedTopicMeta, setSuggestedTopicMeta] = useState<{
     hint: string;
     category: string;
-    position: number;
-    total: number;
   } | null>(null);
 
   // Universal Pivot controls when a slot is loaded
@@ -213,9 +222,6 @@ export function WriteStudio({
   const [showOfflinePanel, setShowOfflinePanel] = useState(true);
   const [showAllDueTasks, setShowAllDueTasks] = useState(false);
 
-  const [realtimeLoading, setRealtimeLoading] = useState(false);
-  const [realtimeResult, setRealtimeResult] =
-    useState<RealtimeAssistResult | null>(null);
   const [liveAppliedNotice, setLiveAppliedNotice] = useState<string | null>(
     null
   );
@@ -225,8 +231,10 @@ export function WriteStudio({
   );
 
   const [evaluating, setEvaluating] = useState(false);
+  const [refiningWithAI, setRefiningWithAI] = useState(false);
   const [evaluation, setEvaluation] = useState<EvaluationPayload | null>(null);
   const [savedSuccess, setSavedSuccess] = useState(false);
+  const [autoTitledBanner, setAutoTitledBanner] = useState<string | null>(null);
   const [promotedVocabBanner, setPromotedVocabBanner] = useState<string[] | null>(
     null
   );
@@ -236,11 +244,15 @@ export function WriteStudio({
   const [resetCountdown, setResetCountdown] = useState<number>(0);
   const [initialResetTotal, setInitialResetTotal] = useState<number>(30);
 
-  // Debounce content lightly (~120ms) for silky-smooth instant live offline proofreading
+  useEffect(() => {
+    latestTopicRef.current = topic;
+  }, [topic]);
+
+  // Crisp 80ms debounce for lightning-fast offline live spelling & basic grammar check
   useEffect(() => {
     const t = window.setTimeout(() => {
       setDebouncedContent(content);
-    }, 120);
+    }, 80);
     return () => window.clearTimeout(t);
   }, [content]);
 
@@ -253,7 +265,6 @@ export function WriteStudio({
   }, []);
 
   const diagnostics = useMemo(() => analyzeDraftLocally(content), [content]);
-  const readability = useMemo(() => computeReadabilityStats(content), [content]);
   const effectiveDailyWordGoal =
     dailyWordGoal || studentProfile?.targetWordGoal || 250;
   const dailyInkProgress = useMemo(
@@ -263,6 +274,7 @@ export function WriteStudio({
         sessions,
         currentWordCount: diagnostics.wordCount,
         activeDraftId,
+        activeLoggedSessionId: activeLoggedSessionIdRef.current,
         dailyWordGoal: effectiveDailyWordGoal,
       }),
     [
@@ -270,6 +282,7 @@ export function WriteStudio({
       sessions,
       diagnostics.wordCount,
       activeDraftId,
+      savedSuccess,
       effectiveDailyWordGoal,
     ]
   );
@@ -324,11 +337,20 @@ export function WriteStudio({
     setErrorMessage(null);
     setSuggestingTopic(true);
 
+    // Snapshot the body and original non-random topic BEFORE loading a random spark
+    const isReplacingExistingRandom =
+      suggestedTopicMeta !== null &&
+      loadedRandomTopicRef.current !== null &&
+      topic.trim() === loadedRandomTopicRef.current.trim();
+    if (!isReplacingExistingRandom) {
+      previousTopicAtPickRef.current = topic;
+    }
+    contentSnapshotAtTopicPickRef.current = content;
+
     if (topicTimerRef.current !== null) {
       window.clearTimeout(topicTimerRef.current);
     }
 
-    // Crisp simulated AI thinking beat — zero network calls, zero API tokens
     topicTimerRef.current = window.setTimeout(() => {
       const draw = drawNextRandomTopic(deckStateRef.current);
       deckStateRef.current = draw.nextState;
@@ -338,6 +360,7 @@ export function WriteStudio({
         setActiveSlotId(undefined);
         setPreLoadSnapshot(null);
       }
+      loadedRandomTopicRef.current = draw.topic.title;
       setTopic(draw.topic.title);
       setMode(draw.topic.mode);
       setTone(draw.topic.tone);
@@ -345,11 +368,24 @@ export function WriteStudio({
       setSuggestedTopicMeta({
         hint: draw.topic.hint,
         category: draw.topic.category,
-        position: draw.positionInCycle,
-        total: draw.totalInCycle,
       });
       setSuggestingTopic(false);
-    }, 520);
+    }, 280);
+  }
+
+  function handleDismissRandomTopic() {
+    const resolution = resolveRandomTopicDismiss({
+      currentTopic: topic,
+      currentContent: content,
+      loadedRandomTopic: loadedRandomTopicRef.current,
+      contentSnapshotAtPick: contentSnapshotAtTopicPickRef.current,
+      previousTopicAtPick: previousTopicAtPickRef.current,
+    });
+    if (!resolution.keptTopic) {
+      setTopic(resolution.nextTopic);
+    }
+    loadedRandomTopicRef.current = null;
+    setSuggestedTopicMeta(null);
   }
 
   function handleSaveDraftClick() {
@@ -417,9 +453,11 @@ export function WriteStudio({
     setDaySlot(draft.daySlot || 'Draft');
     setContent(draft.content);
     setSuggestedTopicMeta(null);
+    loadedRandomTopicRef.current = null;
     setEvaluation(null);
-    setRealtimeResult(null);
     setSavedSuccess(false);
+    setAutoTitledBanner(null);
+    activeLoggedSessionIdRef.current = null;
     setDraftSavedLabel('Loaded draft');
     setShowDraftsShelf(false);
   }
@@ -563,31 +601,6 @@ export function WriteStudio({
     setErrorMessage(null);
   }
 
-  function handleApplyAllLiveSuggestions() {
-    if (!realtimeResult) return;
-    const pairs = [
-      ...realtimeResult.grammarAlerts.map((fix) => ({
-        original: fix.original,
-        replacement: fix.corrected,
-      })),
-      ...realtimeResult.vocabUpgrades.map((v) => ({
-        original: v.used,
-        replacement: v.betterAlternative,
-      })),
-    ];
-    const { updatedText, appliedCount } = applyMultipleReplacements(
-      content,
-      pairs
-    );
-    setContent(updatedText);
-    setErrorMessage(null);
-    setLiveAppliedNotice(
-      appliedCount > 0
-        ? `Applied ${appliedCount} live suggestion${appliedCount === 1 ? '' : 's'} to your draft.`
-        : 'All suggested phrases have already been applied.'
-    );
-  }
-
   function handleApplyAllEvaluationFixes() {
     if (!evaluation) return;
     const pairs = evaluation.grammarFixes.map((fix) => ({
@@ -624,163 +637,53 @@ export function WriteStudio({
     setSavedVocabKeys((prev) => new Set(prev).add(key));
   }
 
-  async function handleRealtimeAssist() {
-    setErrorMessage(null);
-    if (content.trim().length < 15) {
-      setErrorMessage(
-        'Write at least one full sentence before running live vocabulary & grammar assist.'
-      );
-      return;
-    }
-    setRealtimeLoading(true);
-    try {
-      const res = await fetch('/api/realtime-assist', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          content,
-          mode: MODE_LABELS[mode],
-          tone: TONE_LABELS[tone],
-        }),
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        throw new Error(data.error || 'Live assist request failed.');
-      }
-      setRealtimeResult(data as RealtimeAssistResult);
-    } catch {
-      const fallback = buildQueuedProvisionalEvaluation(content, mode, tone);
-      setRealtimeResult({
-        toneAlignment: fallback.toneVerdict,
-        clarityNudge: fallback.flowVerdict,
-        grammarAlerts: fallback.grammarFixes,
-        vocabUpgrades: [],
-        modelUsed: 'queued-pending-reset',
-        thinkingLevelUsed: 'LOCAL',
-        downgraded: true,
-        quotaQueued: true,
-      });
-    } finally {
-      setRealtimeLoading(false);
-    }
-  }
-
-  async function handleEvaluateDraft(isAutoRetry = false) {
-    setErrorMessage(null);
-    if (!isAutoRetry) {
-      setSavedSuccess(false);
-      setPromotedVocabBanner(null);
-    }
-
-    const effectiveTopic =
-      topic.trim() ||
-      activeLinkedSlot?.topic ||
-      `${MODE_LABELS[mode]} Practice (${todayISO})`;
-    if (!topic.trim()) {
-      setTopic(effectiveTopic);
-    }
-
-    if (content.trim().length < 20) {
-      setErrorMessage(
-        'Write at least 20 characters before requesting a full rubric evaluation.'
-      );
-      return;
-    }
-
-    setEvaluating(true);
-    try {
-      const res = await fetch('/api/evaluate', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          content,
-          mode: MODE_LABELS[mode],
-          tone: TONE_LABELS[tone],
-          topic: effectiveTopic,
-          topicPrimer: activeLinkedSlot?.topicPrimer || '',
-          previousSessionSummary: coachContext.previousSessionSummary,
-          practicingVocab: coachContext.practicingWords.map(
-            (v) => v.betterAlternative
-          ),
-          studentProfile,
-        }),
-      });
-      const data = (await res.json()) as EvaluationPayload & { error?: string };
-      if (!res.ok) {
-        throw new Error(data.error || 'Evaluation request failed.');
-      }
-      setEvaluation(data);
-      if (data.evaluationStatus === 'queued_for_reset') {
-        const secs = data.quotaResetSeconds || 30;
-        setInitialResetTotal(secs);
-        setResetCountdown(secs);
-      } else {
-        setResetCountdown(0);
-      }
-    } catch {
-      const fallback = buildQueuedProvisionalEvaluation(content, mode, tone);
-      setInitialResetTotal(30);
-      setResetCountdown(30);
-      setEvaluation({
-        evaluationStatus: 'queued_for_reset',
-        modelUsed: 'queued-pending-reset',
-        thinkingLevelUsed: 'LOCAL',
-        downgraded: true,
-        quotaResetSeconds: 30,
-        ...fallback,
-      });
-    } finally {
-      setEvaluating(false);
-    }
-  }
-
-  function handleSaveEvaluatedSession() {
-    if (!evaluation) return;
-    const isQueued = evaluation.evaluationStatus === 'queued_for_reset';
-    const totalScore = computeTotalScore(evaluation.scores);
+  function persistEvaluatedSession(
+    evalPayload: EvaluationPayload,
+    resolvedTopic: string,
+    draftText: string,
+    stableSessionId: string
+  ) {
+    const isQueued = evalPayload.evaluationStatus === 'queued_for_reset';
+    const totalScore = computeTotalScore(evalPayload.scores);
     const percentage = computePercentage(totalScore);
-    const sessionId = `SESSION_${todayISO.replace(/-/g, '')}_${Math.random()
-      .toString(36)
-      .slice(2, 5)
-      .toUpperCase()}`;
+    const draftDiagnostics = analyzeDraftLocally(draftText);
 
     const intl = deriveInternationalMetrics({
-      scores: evaluation.scores,
-      content: content.trim(),
-      internationalMetrics: evaluation.internationalMetrics,
+      scores: evalPayload.scores,
+      content: draftText.trim(),
+      internationalMetrics: evalPayload.internationalMetrics,
     });
 
-    const newSession: WritingSession = {
-      id: sessionId,
+    const sessionRecord: WritingSession = {
+      id: stableSessionId,
       date: todayISO,
       daySlot: daySlot || 'Studio Session',
       mode,
       promptCategory: MODE_LABELS[mode],
       tone,
-      topicDescription:
-        topic.trim() || `${MODE_LABELS[mode]} Practice (${todayISO})`,
-      content: content.trim(),
-      wordCount: diagnostics.wordCount,
-      scores: evaluation.scores,
+      topicDescription: resolvedTopic,
+      content: draftText.trim(),
+      wordCount: draftDiagnostics.wordCount,
+      scores: evalPayload.scores,
       totalScore,
       percentage,
-      cefrLevel: evaluation.cefrLevel,
+      cefrLevel: evalPayload.cefrLevel,
       internationalMetrics: intl,
-      toneVerdict: evaluation.toneVerdict,
-      flowVerdict: evaluation.flowVerdict,
-      feedbackImplemented: evaluation.feedbackImplemented,
-      whatImproved: evaluation.whatImproved,
-      strictImprovements: evaluation.strictImprovements,
-      grammarFixes: evaluation.grammarFixes,
-      vocabUpgrades: evaluation.vocabUpgrades,
+      toneVerdict: evalPayload.toneVerdict,
+      flowVerdict: evalPayload.flowVerdict,
+      feedbackImplemented: evalPayload.feedbackImplemented,
+      whatImproved: evalPayload.whatImproved,
+      strictImprovements: evalPayload.strictImprovements,
+      grammarFixes: evalPayload.grammarFixes,
+      vocabUpgrades: evalPayload.vocabUpgrades,
       status: 'Completed',
       evaluationPending: isQueued,
-      modelUsed: evaluation.modelUsed || 'gemini-2.5-flash',
+      modelUsed: evalPayload.modelUsed || 'gemini-3.1-flash-lite',
       queuedAt: isQueued ? new Date().toISOString() : undefined,
       createdAt: new Date().toISOString(),
     };
 
-    const newVocab: VocabEntry[] = evaluation.vocabUpgrades
+    const newVocab: VocabEntry[] = (evalPayload.vocabUpgrades || [])
       .filter((v) => {
         const key = `${v.used.toLowerCase()}->${v.betterAlternative.toLowerCase()}`;
         return !existingVocabSet.has(key) && !savedVocabKeys.has(key);
@@ -790,23 +693,156 @@ export function WriteStudio({
         used: v.used,
         betterAlternative: v.betterAlternative,
         explanation: v.explanation,
-        contextSnippet: v.contextSnippet || topic.trim(),
+        contextSnippet: v.contextSnippet || resolvedTopic,
         mode,
         dateAdded: todayISO,
         mastered: false,
-        sessionId,
+        sessionId: stableSessionId,
       }));
 
     const promoted = onSaveSession(
-      newSession,
+      sessionRecord,
       newVocab,
       activeSlotId,
-      evaluation.masteredWordsUsed
+      evalPayload.masteredWordsUsed
     );
-    if (promoted.length > 0) {
+    if (promoted && promoted.length > 0) {
       setPromotedVocabBanner(promoted);
     }
+    if (activeDraftId && onDeleteDraft) {
+      onDeleteDraft(activeDraftId);
+      setActiveDraftId(null);
+      setDraftSavedLabel(null);
+    }
     setSavedSuccess(true);
+  }
+
+  async function handleEvaluateDraft(isAutoRetry = false) {
+    setErrorMessage(null);
+    const trimmedDraft = content.trim();
+
+    if (trimmedDraft.length < 20) {
+      setErrorMessage(
+        'Write at least 20 characters before requesting an evaluation.'
+      );
+      return;
+    }
+
+    const wasTopicBlank = !topic.trim() && !activeLinkedSlot?.topic;
+    const instantTopic =
+      topic.trim() ||
+      activeLinkedSlot?.topic ||
+      inferSuitableTitle(trimmedDraft, mode);
+
+    if (wasTopicBlank) {
+      setTopic(instantTopic);
+      autoTitledSessionRef.current = true;
+      setAutoTitledBanner(instantTopic);
+    } else if (!isAutoRetry) {
+      autoTitledSessionRef.current = false;
+      setAutoTitledBanner(null);
+    }
+
+    if (!isAutoRetry) {
+      setPromotedVocabBanner(null);
+    }
+
+    const stableSessionId =
+      activeLoggedSessionIdRef.current ||
+      `SESSION_${todayISO.replace(/-/g, '')}_${Math.random()
+        .toString(36)
+        .slice(2, 6)
+        .toUpperCase()}`;
+    activeLoggedSessionIdRef.current = stableSessionId;
+
+    // Layer 1: Instant (<15ms) local evaluation + automatic journal log
+    const currentOfflineIssues = runOfflineProofread(trimmedDraft);
+    const instantEval = buildInstantLocalEvaluation(
+      trimmedDraft,
+      mode,
+      tone,
+      currentOfflineIssues,
+      instantTopic
+    );
+
+    if (!isAutoRetry) {
+      setEvaluation(instantEval);
+      persistEvaluatedSession(
+        instantEval,
+        instantTopic,
+        trimmedDraft,
+        stableSessionId
+      );
+    }
+
+    // Layer 2: Ultra-fast Gemini pass upgrades scores & auto-title in-place (gracefully skips on static GitHub Pages)
+    setEvaluating(true);
+    setRefiningWithAI(true);
+    try {
+      const apiBase = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/$/, '');
+      const res = await fetch(`${apiBase}/api/evaluate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          content: trimmedDraft,
+          mode: MODE_LABELS[mode],
+          tone: TONE_LABELS[tone],
+          topic: wasTopicBlank ? '' : instantTopic,
+          needsAutoTitle: wasTopicBlank,
+          topicPrimer: activeLinkedSlot?.topicPrimer || '',
+          previousSessionSummary: coachContext.previousSessionSummary,
+          practicingVocab: coachContext.practicingWords.map(
+            (v) => v.betterAlternative
+          ),
+          studentProfile,
+        }),
+      });
+      const contentType = res.headers.get('content-type') || '';
+      if (!res.ok || !contentType.includes('application/json')) {
+        throw new Error('Static host or API unavailable');
+      }
+      const data = (await res.json()) as EvaluationPayload & { error?: string };
+
+      let finalTopic = latestTopicRef.current.trim() || instantTopic;
+      if (
+        autoTitledSessionRef.current &&
+        data.suggestedTitle &&
+        data.suggestedTitle.trim().length >= 4 &&
+        latestTopicRef.current.trim() === instantTopic
+      ) {
+        finalTopic = data.suggestedTitle.trim();
+        setTopic(finalTopic);
+        setAutoTitledBanner(finalTopic);
+      }
+
+      const upgradedEval: EvaluationPayload = {
+        ...data,
+        isProvisionalInstant: false,
+      };
+      setEvaluation(upgradedEval);
+
+      // Upsert exact same sessionId so there are never duplicate entries
+      persistEvaluatedSession(
+        upgradedEval,
+        finalTopic,
+        trimmedDraft,
+        stableSessionId
+      );
+
+      if (data.evaluationStatus === 'queued_for_reset') {
+        const secs = data.quotaResetSeconds || 30;
+        setInitialResetTotal(secs);
+        setResetCountdown(secs);
+      } else {
+        setResetCountdown(0);
+      }
+    } catch {
+      // On static hosting (e.g. GitHub Pages) or offline, the instant local score & auto-log stay cleanly active
+      setResetCountdown(0);
+    } finally {
+      setEvaluating(false);
+      setRefiningWithAI(false);
+    }
   }
 
   const evalTotal = evaluation ? computeTotalScore(evaluation.scores) : 0;
@@ -819,7 +855,28 @@ export function WriteStudio({
       })
     : null;
 
-  const hasRightCoachingDrawer = Boolean(realtimeResult || evaluation);
+  const hasRightCoachingDrawer = !focusMode && Boolean(evaluation);
+  const studioGreeting = useMemo(
+    () => getStudioGreeting(studentProfile?.displayName),
+    [studentProfile?.displayName]
+  );
+
+  const offlineCategorySummary = useMemo(() => {
+    let spelling = 0;
+    let grammar = 0;
+    let punctuation = 0;
+    for (const item of offlineIssues) {
+      if (item.category === 'spelling') spelling += 1;
+      else if (item.category === 'grammar') grammar += 1;
+      else punctuation += 1;
+    }
+    const parts: string[] = [];
+    if (spelling > 0) parts.push(`${spelling} spelling`);
+    if (grammar > 0) parts.push(`${grammar} grammar`);
+    if (punctuation > 0) parts.push(`${punctuation} spacing`);
+    return parts.join(' · ');
+  }, [offlineIssues]);
+
   const targetWordGoal = activeLinkedSlot?.targetWords || 200;
   const wordGoalPct = Math.min(
     100,
@@ -854,12 +911,11 @@ export function WriteStudio({
       >
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2.5">
-            <h1 className="font-display text-2xl sm:text-3xl font-medium tracking-tight text-ink-primary">
-              {focusMode
-                ? 'Focused Manuscript'
-                : studentProfile?.displayName?.trim()
-                  ? `Write, ${studentProfile.displayName.trim()}`
-                  : 'Write'}
+            <h1
+              data-testid="studio-greeting-headline"
+              className="font-display text-2xl sm:text-3xl font-medium tracking-tight text-ink-primary"
+            >
+              {focusMode ? 'Focused Manuscript' : studioGreeting.headline}
             </h1>
             {pendingEvalSessionsCount > 0 && (
               <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-sm text-[11px] font-mono-tabular border border-status-warning-border bg-status-warning-soft text-status-warning">
@@ -869,8 +925,10 @@ export function WriteStudio({
             )}
           </div>
           {!focusMode && (
-            <p className="text-xs text-ink-muted mt-1 font-mono-tabular">
-              {formattedToday}
+            <p className="text-xs text-ink-muted mt-1 flex flex-wrap items-center gap-x-2">
+              <span>{studioGreeting.sublinePrefix}</span>
+              <span aria-hidden="true">·</span>
+              <span className="font-mono-tabular">{formattedToday}</span>
             </p>
           )}
         </div>
@@ -1401,24 +1459,29 @@ export function WriteStudio({
                     </span>
                     {suggestedTopicMeta.hint}
                   </div>
-                  <div className="flex items-center gap-2 shrink-0 text-[11px] font-mono-tabular text-ink-muted">
-                    <span>
-                      {suggestedTopicMeta.position}/{suggestedTopicMeta.total}
-                    </span>
+                  <div className="flex items-center gap-1.5 shrink-0">
                     <button
                       type="button"
+                      data-testid="new-spark-button"
                       onClick={handleSuggestRandomTopic}
-                      className="inline-link-tactile text-ink-secondary hover:text-ink-primary font-sans font-medium"
+                      disabled={suggestingTopic}
+                      title="Draw a fresh writing spark"
+                      className="group/spark inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md border border-border-default bg-surface hover:border-border-strong text-[11px] font-medium text-ink-secondary hover:text-ink-primary transition-colors cursor-pointer"
                     >
-                      Another
+                      <Shuffle
+                        className="w-3 h-3 transition-transform duration-300 group-hover/spark:rotate-180"
+                        aria-hidden="true"
+                      />
+                      <span>{suggestingTopic ? 'Drawing...' : 'New spark'}</span>
                     </button>
                     <button
                       type="button"
-                      onClick={() => setSuggestedTopicMeta(null)}
+                      data-testid="dismiss-random-topic-button"
+                      onClick={handleDismissRandomTopic}
                       aria-label="Dismiss topic hint"
-                      className="btn-ghost p-0.5"
+                      className="btn-ghost p-1"
                     >
-                      <X className="w-3 h-3" aria-hidden="true" />
+                      <X className="w-3.5 h-3.5" aria-hidden="true" />
                     </button>
                   </div>
                 </div>
@@ -1434,6 +1497,8 @@ export function WriteStudio({
                   value={topic}
                   onChange={(e) => {
                     setTopic(e.target.value.replace(/\r?\n/g, ' '));
+                    autoTitledSessionRef.current = false;
+                    setAutoTitledBanner(null);
                     setDraftSavedLabel(null);
                   }}
                   onKeyDown={(e) => {
@@ -1442,7 +1507,7 @@ export function WriteStudio({
                       document.getElementById('writing-editor')?.focus();
                     }
                   }}
-                  placeholder="Give your draft a title..."
+                  placeholder="Give your draft a title (or leave blank to auto-title)..."
                   className="w-full font-display text-xl sm:text-2xl leading-snug font-medium bg-transparent text-ink-primary placeholder:text-ink-muted focus:outline-none resize-none overflow-hidden"
                 />
               </div>
@@ -1459,6 +1524,7 @@ export function WriteStudio({
                     setSavedSuccess(false);
                     setDraftSavedLabel(null);
                     setPromotedVocabBanner(null);
+                    activeLoggedSessionIdRef.current = null;
                   }}
                   onKeyDown={(e) => {
                     if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 's') {
@@ -1487,23 +1553,22 @@ export function WriteStudio({
               {/* Tactile Pen-and-Paper Daily Word Goal Ink-Drop Well */}
               <InkDropGoalWell progress={dailyInkProgress} />
 
-              {/* Instant Live Offline Proofreader Strip (0 API tokens, updates live on type) */}
+              {/* Instant Live Offline Proofreader Strip (0 API tokens, spelling + basic grammar) */}
               {liveOfflineCheckEnabled &&
                 offlineIssues.length > 0 &&
                 showOfflinePanel && (
                   <div
                     data-testid="live-offline-proofreader"
-                    className="rounded-lg border border-border-default bg-subtle/60 px-3.5 py-2.5 space-y-2"
+                    className="rounded-md border border-border-subtle bg-subtle/45 px-3.5 py-2.5 space-y-2"
                   >
                     <div className="flex flex-wrap items-center justify-between gap-2 text-[11px]">
-                      <div className="flex items-center gap-2 text-ink-secondary">
-                        <span className="font-semibold text-ink-primary">
-                          Live Proofreader
+                      <div className="flex flex-wrap items-center gap-1.5 text-ink-secondary">
+                        <span className="font-medium text-ink-primary">
+                          Offline Proofreader
                         </span>
                         <span className="text-ink-muted">·</span>
                         <span className="font-mono-tabular text-ink-muted">
-                          {offlineIssues.length}{' '}
-                          {offlineIssues.length === 1 ? 'fix' : 'fixes'} · Offline
+                          {offlineCategorySummary}
                         </span>
                       </div>
                       <div className="flex items-center gap-2">
@@ -1512,7 +1577,7 @@ export function WriteStudio({
                           onClick={handleApplyAllOfflineFixes}
                           className="inline-link-tactile text-ink-primary font-medium"
                         >
-                          Fix all
+                          Fix all ({offlineIssues.length})
                         </button>
                         <button
                           type="button"
@@ -1545,7 +1610,7 @@ export function WriteStudio({
                             type="button"
                             onClick={() => handleApplySingleOfflineFix(issue)}
                             title={`${issue.rule}. Click to apply`}
-                            className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md border border-border-default bg-surface hover:border-border-strong text-[11px] transition-colors cursor-pointer"
+                            className="inline-flex items-center gap-1.5 px-2 py-1 rounded-sm border border-border-subtle bg-surface hover:border-border-strong text-[11px] transition-colors cursor-pointer"
                           >
                             <span className="line-through text-ink-muted">
                               {displayOriginal}
@@ -1583,8 +1648,6 @@ export function WriteStudio({
                     <>
                       <span>·</span>
                       <span>{diagnostics.sentenceCount} sentences</span>
-                      <span>·</span>
-                      <span>FK {readability.fkGradeLevel}</span>
                     </>
                   )}
 
@@ -1597,7 +1660,7 @@ export function WriteStudio({
                         className="inline-flex items-center gap-1 text-status-warning hover:underline cursor-pointer"
                       >
                         <span>
-                          {offlineIssues.length} live{' '}
+                          {offlineIssues.length}{' '}
                           {offlineIssues.length === 1 ? 'fix' : 'fixes'}
                         </span>
                       </button>
@@ -1605,7 +1668,7 @@ export function WriteStudio({
                       <button
                         type="button"
                         onClick={onToggleLiveOfflineCheck}
-                        title="Instant offline grammar and punctuation check is active. Click to pause"
+                        title="Instant offline spelling and grammar check is active. Click to pause"
                         className="inline-flex items-center gap-1 text-status-success hover:opacity-80 cursor-pointer"
                       >
                         <CheckCircle2 className="w-3 h-3" aria-hidden="true" />
@@ -1616,7 +1679,7 @@ export function WriteStudio({
                     <button
                       type="button"
                       onClick={onToggleLiveOfflineCheck}
-                      title="Enable instant offline grammar & punctuation check"
+                      title="Enable instant offline spelling and grammar check"
                       className="text-ink-muted hover:text-ink-primary cursor-pointer"
                     >
                       Live Check Off
@@ -1651,24 +1714,16 @@ export function WriteStudio({
 
                   <button
                     type="button"
-                    onClick={handleRealtimeAssist}
-                    disabled={realtimeLoading || evaluating}
-                    title="Deep AI tone & vocabulary check"
-                    className="btn-ghost inline-flex items-center gap-1.5 px-2.5 py-2 text-xs font-medium whitespace-nowrap"
-                  >
-                    <Wand2 className="w-3.5 h-3.5" aria-hidden="true" />
-                    <span>{realtimeLoading ? 'Checking...' : 'AI Polish'}</span>
-                  </button>
-
-                  <button
-                    type="button"
+                    data-testid="evaluate-score-button"
                     onClick={() => handleEvaluateDraft(false)}
-                    disabled={evaluating || realtimeLoading}
+                    disabled={evaluating}
                     className="btn-primary inline-flex items-center gap-1.5 px-4 py-2 text-xs font-medium whitespace-nowrap"
                   >
                     <Sparkles className="w-3.5 h-3.5" aria-hidden="true" />
                     <span>
-                      {evaluating ? 'Evaluating...' : 'Evaluate & Score'}
+                      {refiningWithAI
+                        ? 'Refining...'
+                        : 'Evaluate & Score'}
                     </span>
                   </button>
                 </div>
@@ -1686,161 +1741,42 @@ export function WriteStudio({
           )}
         </div>
 
-        {/* Right Column Coaching Drawer */}
+        {/* Right Column Coaching Drawer (Evaluation only, auto-logged) */}
         {hasRightCoachingDrawer && (
           <aside className="lg:col-span-5 space-y-5">
-            {realtimeResult && (
-              <div className="card-surface p-5 space-y-4">
-                <div className="flex items-start justify-between gap-3">
-                  <div>
-                    <div className="flex items-center gap-2">
-                      <h2 className="text-sm font-semibold text-ink-primary">
-                        Real-Time Coach
-                      </h2>
-                      {realtimeResult.modelUsed && (
-                        <span className="text-[10px] font-mono-tabular px-2 py-0.5 rounded-sm bg-subtle border border-border-subtle text-ink-secondary">
-                          {realtimeResult.modelUsed}
-                          {realtimeResult.thinkingLevelUsed
-                            ? ` · ${realtimeResult.thinkingLevelUsed}`
-                            : ''}
-                        </span>
-                      )}
-                    </div>
-                    <p className="text-xs text-ink-secondary mt-1 leading-relaxed">
-                      {realtimeResult.toneAlignment}
-                    </p>
-                    <p className="text-xs text-ink-primary mt-1.5 leading-relaxed">
-                      <span className="font-medium">Clarity nudge:</span> {realtimeResult.clarityNudge}
-                    </p>
-                  </div>
-
-                  <div className="flex items-center gap-1.5 shrink-0">
-                    {(realtimeResult.grammarAlerts.length > 0 ||
-                      realtimeResult.vocabUpgrades.length > 0) && (
-                      <button
-                        type="button"
-                        onClick={handleApplyAllLiveSuggestions}
-                        className="btn-primary inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium whitespace-nowrap"
-                      >
-                        <Check className="w-3.5 h-3.5" aria-hidden="true" />
-                        <span>Apply All</span>
-                      </button>
-                    )}
-                    <button
-                      type="button"
-                      onClick={() => setRealtimeResult(null)}
-                      aria-label="Close live coach"
-                      className="btn-ghost p-1.5"
-                    >
-                      <X className="w-4 h-4" aria-hidden="true" />
-                    </button>
-                  </div>
-                </div>
-
+            {evaluation && evalIntl && (
+              <div
+                data-testid="evaluation-result-card"
+                className="card-surface p-5 space-y-4"
+              >
                 {liveAppliedNotice && (
                   <div className="p-2.5 rounded-md border border-status-success-border bg-status-success-soft text-xs text-status-success">
                     {liveAppliedNotice}
                   </div>
                 )}
 
-                {realtimeResult.grammarAlerts.length > 0 && (
-                  <div className="space-y-2">
-                    <h3 className="text-xs font-semibold text-ink-secondary">
-                      Grammar Quick Fixes
-                    </h3>
-                    {realtimeResult.grammarAlerts.map((fix, idx) => (
-                      <div
-                        key={idx}
-                        className="p-2.5 rounded-md bg-subtle border border-border-subtle text-xs space-y-1"
-                      >
-                        <div className="flex items-center justify-between gap-2">
-                          <span>
-                            <span className="line-through text-ink-muted">
-                              {fix.original}
-                            </span>{' '}
-                            →{' '}
-                            <span className="font-semibold text-status-success">
-                              {fix.corrected}
-                            </span>
-                          </span>
-                          <button
-                            type="button"
-                            onClick={() =>
-                              applyTextReplacement(fix.original, fix.corrected)
-                            }
-                            className="inline-link-tactile text-[11px] font-medium whitespace-nowrap cursor-pointer"
-                          >
-                            Apply
-                          </button>
-                        </div>
-                        <div className="text-[11px] text-ink-muted">
-                          {fix.category} · {fix.rule}
-                        </div>
-                      </div>
-                    ))}
+                {autoTitledBanner && (
+                  <div
+                    data-testid="auto-title-banner"
+                    className="px-3 py-2 rounded-md border border-border-subtle bg-subtle/60 text-[11px] text-ink-secondary flex items-center justify-between gap-2"
+                  >
+                    <span className="truncate">
+                      <span className="font-medium text-ink-primary">
+                        Auto-titled:{' '}
+                      </span>
+                      {autoTitledBanner}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setAutoTitledBanner(null)}
+                      aria-label="Dismiss auto-title note"
+                      className="btn-ghost p-0.5 shrink-0"
+                    >
+                      <X className="w-3 h-3" aria-hidden="true" />
+                    </button>
                   </div>
                 )}
 
-                {realtimeResult.vocabUpgrades.length > 0 && (
-                  <div className="space-y-2">
-                    <h3 className="text-xs font-semibold text-ink-secondary">
-                      Real-Time Vocabulary Upgrades
-                    </h3>
-                    {realtimeResult.vocabUpgrades.map((v, idx) => {
-                      const key = `${v.used.toLowerCase()}->${v.betterAlternative.toLowerCase()}`;
-                      const alreadySaved =
-                        existingVocabSet.has(key) || savedVocabKeys.has(key);
-                      return (
-                        <div
-                          key={idx}
-                          className="p-2.5 rounded-md bg-subtle border border-border-subtle text-xs space-y-1"
-                        >
-                          <div className="flex items-center justify-between gap-2">
-                            <span>
-                              <span className="line-through text-ink-muted">
-                                {v.used}
-                              </span>{' '}
-                              →{' '}
-                              <span className="font-semibold text-ink-primary">
-                                {v.betterAlternative}
-                              </span>
-                            </span>
-                            <div className="flex items-center gap-2">
-                              <button
-                                type="button"
-                                onClick={() =>
-                                  applyTextReplacement(
-                                    v.used,
-                                    v.betterAlternative
-                                  )
-                                }
-                                className="inline-link-tactile text-[11px] font-medium cursor-pointer"
-                              >
-                                Use
-                              </button>
-                              <button
-                                type="button"
-                                disabled={alreadySaved}
-                                onClick={() => handleSaveVocabItem(v)}
-                                className="inline-link-tactile text-[11px] font-medium disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
-                              >
-                                {alreadySaved ? 'Saved' : '+ Library'}
-                              </button>
-                            </div>
-                          </div>
-                          <div className="text-[11px] text-ink-muted">
-                            {v.explanation}
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                )}
-              </div>
-            )}
-
-            {evaluation && evalIntl && (
-              <div className="card-surface p-5 space-y-4">
                 {evaluation.evaluationStatus === 'queued_for_reset' && (
                   <div
                     role="status"
@@ -1849,12 +1785,9 @@ export function WriteStudio({
                   >
                     <div className="flex items-center justify-between gap-2">
                       <div className="flex items-center gap-2 text-xs font-semibold text-status-warning">
-                        <Clock
-                          className="w-4 h-4"
-                          aria-hidden="true"
-                        />
+                        <Clock className="w-4 h-4" aria-hidden="true" />
                         <span>
-                          Writing Accepted · Evaluation Done When Limit Resets
+                          Writing Logged · Deep AI Resumes When Limit Resets
                         </span>
                       </div>
                       <span className="text-[11px] font-mono-tabular font-semibold text-status-warning">
@@ -1864,16 +1797,12 @@ export function WriteStudio({
                       </span>
                     </div>
 
-                    <div className="w-full h-2 rounded-full bg-border-subtle overflow-hidden">
+                    <div className="w-full h-1.5 rounded-full bg-border-subtle overflow-hidden">
                       <div
                         className="h-full bg-status-warning transition-all duration-500"
                         style={{ width: `${queueProgressPct}%` }}
                       />
                     </div>
-
-                    <p className="text-[11px] text-ink-secondary leading-relaxed">
-                      All AI model tiers reached their current rate limit. Your writing is accepted now with provisional metrics below and will automatically finalize full AI evaluation when the limit resets.
-                    </p>
 
                     <div className="flex flex-wrap items-center gap-2 pt-1">
                       <button
@@ -1896,7 +1825,9 @@ export function WriteStudio({
 
                 {promotedVocabBanner && promotedVocabBanner.length > 0 && (
                   <div className="p-3 rounded-md border border-status-success-border bg-status-success-soft text-xs text-status-success">
-                    <span className="font-semibold">Auto-Mastered in Library: </span>
+                    <span className="font-semibold">
+                      Auto-Mastered in Library:{' '}
+                    </span>
                     {promotedVocabBanner.join(', ')}
                   </div>
                 )}
@@ -1909,13 +1840,6 @@ export function WriteStudio({
                         {evalIntl.ieltsBand.toFixed(1)} · TOEFL{' '}
                         {evalIntl.toeflEquivalent}/30
                       </span>
-                      {evaluation.modelUsed && (
-                        <span className="px-2 py-0.5 rounded-sm text-[10px] font-mono-tabular bg-subtle border border-border-subtle text-ink-secondary">
-                          {evaluation.modelUsed === 'queued-pending-reset'
-                            ? 'Provisional · Queued'
-                            : `${evaluation.modelUsed}${evaluation.thinkingLevelUsed ? ` (${evaluation.thinkingLevelUsed})` : ''}`}
-                        </span>
-                      )}
                     </div>
                     <div className="text-2xl font-semibold font-mono-tabular text-ink-primary mt-0.5">
                       {evalTotal}/60{' '}
@@ -1925,32 +1849,23 @@ export function WriteStudio({
                     </div>
                   </div>
 
-                  <button
-                    type="button"
-                    onClick={handleSaveEvaluatedSession}
-                    disabled={savedSuccess}
-                    className="btn-primary inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-medium whitespace-nowrap"
-                  >
-                    {savedSuccess ? (
-                      <>
+                  {/* Quiet Automatic Logged Status */}
+                  <div className="flex flex-col items-end gap-1 shrink-0">
+                    {savedSuccess && (
+                      <span
+                        data-testid="auto-logged-indicator"
+                        className="inline-flex items-center gap-1 text-[11px] font-medium text-status-success"
+                      >
                         <Check className="w-3.5 h-3.5" aria-hidden="true" />
-                        <span>
-                          {evaluation.evaluationStatus === 'queued_for_reset'
-                            ? 'Accepted & Queued'
-                            : 'Saved to Studio'}
-                        </span>
-                      </>
-                    ) : (
-                      <>
-                        <Plus className="w-3.5 h-3.5" aria-hidden="true" />
-                        <span>
-                          {evaluation.evaluationStatus === 'queued_for_reset'
-                            ? 'Accept & Save Writing'
-                            : 'Save Session'}
-                        </span>
-                      </>
+                        <span>Logged to journal</span>
+                      </span>
                     )}
-                  </button>
+                    {refiningWithAI && (
+                      <span className="text-[11px] text-ink-muted animate-pulse">
+                        Refining with AI...
+                      </span>
+                    )}
+                  </div>
                 </div>
 
                 <div className="grid grid-cols-2 gap-2">
@@ -1971,12 +1886,12 @@ export function WriteStudio({
 
                 <div className="p-3 rounded-md bg-subtle border border-border-subtle space-y-2">
                   <div className="flex items-center justify-between text-xs font-semibold text-ink-primary">
-                    <span>International Validation Benchmarks</span>
+                    <span>Writing Benchmarks</span>
                     <span className="font-mono-tabular text-ink-secondary">
                       Feedback Applied: {evaluation.feedbackImplemented}
                     </span>
                   </div>
-                  <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 text-[11px] font-mono-tabular">
+                  <div className="grid grid-cols-2 gap-2 text-[11px] font-mono-tabular">
                     <div>
                       <span className="text-ink-muted">Lexical Resource:</span>{' '}
                       <span className="font-semibold text-ink-primary">
@@ -1999,18 +1914,6 @@ export function WriteStudio({
                       <span className="text-ink-muted">Register Control:</span>{' '}
                       <span className="font-semibold text-ink-primary">
                         {evalIntl.registerControl}/10
-                      </span>
-                    </div>
-                    <div>
-                      <span className="text-ink-muted">Flesch Ease:</span>{' '}
-                      <span className="font-semibold text-ink-primary">
-                        {evalIntl.fleschReadingEase}
-                      </span>
-                    </div>
-                    <div>
-                      <span className="text-ink-muted">FK Grade:</span>{' '}
-                      <span className="font-semibold text-ink-primary">
-                        {evalIntl.fkGradeLevel}
                       </span>
                     </div>
                   </div>

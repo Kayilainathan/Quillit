@@ -150,8 +150,7 @@ function selectDynamicThinkingProfile(
 ): { level: ThinkingLevel; label: 'HIGH' | 'MEDIUM' | 'LOW' | 'MINIMAL' } {
   if (model === 'gemini-4-hydrogen') {
     if (task === 'evaluate') {
-      if (complexityMetric >= 230) return { level: ThinkingLevel.HIGH, label: 'HIGH' };
-      if (complexityMetric >= 85) return { level: ThinkingLevel.MEDIUM, label: 'MEDIUM' };
+      // Keep evaluation snappy even on fallback tier
       return { level: ThinkingLevel.LOW, label: 'LOW' };
     }
     if (task === 'schedule') {
@@ -159,21 +158,14 @@ function selectDynamicThinkingProfile(
         ? { level: ThinkingLevel.MEDIUM, label: 'MEDIUM' }
         : { level: ThinkingLevel.LOW, label: 'LOW' };
     }
-    if (task === 'realtime') {
-      return complexityMetric >= 170
-        ? { level: ThinkingLevel.MEDIUM, label: 'MEDIUM' }
-        : { level: ThinkingLevel.LOW, label: 'LOW' };
-    }
     return { level: ThinkingLevel.LOW, label: 'LOW' };
   }
 
-  // gemini-3.1-flash-lite
+  // gemini-3.1-flash-lite: MINIMAL delivers zero thinking latency for instant-feeling evaluation
   if (task === 'evaluate') {
-    if (complexityMetric >= 230) return { level: ThinkingLevel.MEDIUM, label: 'MEDIUM' };
-    if (complexityMetric >= 85) return { level: ThinkingLevel.LOW, label: 'LOW' };
     return { level: ThinkingLevel.MINIMAL, label: 'MINIMAL' };
   }
-  if (task === 'schedule' && complexityMetric > 4) {
+  if (task === 'schedule' && complexityMetric > 6) {
     return { level: ThinkingLevel.LOW, label: 'LOW' };
   }
   return { level: ThinkingLevel.MINIMAL, label: 'MINIMAL' };
@@ -191,6 +183,7 @@ async function executeCascadingJsonCall(params: {
   allowCache?: boolean;
   task?: CoachTaskKind;
   complexityMetric?: number;
+  preferFastTier?: boolean;
 }): Promise<{
   parsed: Record<string, unknown>;
   modelUsed: ModelTier;
@@ -206,6 +199,7 @@ async function executeCascadingJsonCall(params: {
     allowCache = true,
     task = 'evaluate',
     complexityMetric = 120,
+    preferFastTier = false,
   } = params;
 
   if (allowCache) {
@@ -235,12 +229,18 @@ async function executeCascadingJsonCall(params: {
 
   const taskPromise = (async () => {
     const ai = getAiClient();
-    const candidates = getCandidateModelOrder();
+    const baseCandidates = getCandidateModelOrder();
+    const candidates = preferFastTier
+      ? [
+          ...baseCandidates.filter((m) => m === 'gemini-3.1-flash-lite'),
+          ...baseCandidates.filter((m) => m !== 'gemini-3.1-flash-lite'),
+        ]
+      : baseCandidates;
     let lastErr: unknown;
 
     for (let i = 0; i < candidates.length; i += 1) {
       const model = candidates[i];
-      const downgraded = model !== 'gemini-4-hydrogen';
+      const downgraded = !preferFastTier && model !== 'gemini-4-hydrogen';
       const thinking = selectDynamicThinkingProfile(task, complexityMetric, model);
 
       try {
@@ -467,84 +467,88 @@ const FALLBACK_POOLS: Record<
       ],
     },
     {
-      slotLabel: 'Slot 1 · Tech & Interview',
+      slotLabel: 'Domain & Interview',
       slotTime: '18:19',
       mode: 'technical',
       tone: 'academic-technical',
       pillar: 'technical-concept',
       promptCategory: 'Technical & Interview Expression',
-      topic: 'Defend PID Anti-Windup & Derivative-on-Measurement Trade-offs',
+      topic:
+        'Why You Cannot Wire a Tiny Temperature Sensor Straight Into a Microcontroller',
       topicPrimer:
-        'Sudden setpoint steps cause sharp actuator spikes (derivative kick), while long thermal lags cause integrators to saturate (integral windup). Industrial PID controllers avoid both by differentiating the process variable and clamping integrator limits.',
+        'Raw sensor signals are often tiny (millivolts) and buried in electrical noise. Signal conditioning amplifies and filters that signal so the ADC can read it cleanly without losing resolution.',
       pivotRule:
-        'Universal Pivot: Swap to tuning any closed-loop motor speed, heater, or level controller you know.',
+        'Universal Pivot: Swap to any audio mic, ECG, strain gauge, or transducer setup you have worked with in lab.',
       feedbackReminder:
-        'Keep verbs direct ("clamps", "prevents") and avoid starting consecutive sentences with "This".',
-      targetWords: 220,
+        'Explain it out loud in plain English with zero equations, keeping verbs direct and concrete.',
+      targetWords: 200,
       suggestions: [
-        'Explain derivative kick with a concrete step-change analogy.',
-        'Show how clamping stops overshoot when a valve hits 100%.',
-        'Close with a practical PT100 thermal chamber tuning takeaway.',
+        'Explain why millivolt outputs get drowned out by noise.',
+        'Walk through what amplification and filtering do before the ADC.',
+        'Wrap up with one quick bench debugging lesson.',
       ],
     },
   ],
   'linkedin-email': [
     {
-      slotLabel: 'Slot 2 · LinkedIn & Email',
-      slotTime: '18:19',
-      mode: 'linkedin',
-      tone: 'professional-warm',
-      pillar: 'linkedin-email',
-      promptCategory: 'LinkedIn, Email & Soft Skills',
-      topic: 'LinkedIn Post: What Oscilloscope Ringing Taught Me About Ground Loops',
-      topicPrimer:
-        'Hiring managers remember honest bench debugging notes far more than textbook summaries. Walking readers through one noisy scope trace and how you isolated the return path proves hands-on ownership.',
-      pivotRule:
-        'Universal Pivot: Swap to any real lab setback (loose jumper, baud mismatch, or op-amp drift) and its lesson.',
-      feedbackReminder:
-        'Eliminate fillers ("basically", "actually") and apply "diagnosed" or "resolved".',
-      targetWords: 180,
-      suggestions: [
-        'Hook with the surprising waveform you saw on the scope.',
-        'Explain one methodical test that isolated the ground path.',
-        'End with a sharp takeaway for fellow engineering students.',
-      ],
-    },
-    {
-      slotLabel: 'Slot 2 · LinkedIn & Email',
+      slotLabel: 'LinkedIn, Email & Soft Skills',
       slotTime: '18:19',
       mode: 'email',
       tone: 'formal-executive',
       pillar: 'linkedin-email',
       promptCategory: 'LinkedIn, Email & Soft Skills',
-      topic: 'Cold Email to a Process Automation Lead for a Summer EIE Internship',
+      topic:
+        'Crisp 15-Minute Feedback Email on Your Capstone Hardware Architecture',
       topicPrimer:
-        'Engineering leads scan outreach in under 15 seconds for clear context, real hardware experience, and a low-friction ask. Opening with one measurable 6th-semester instrumentation project sets your email apart.',
+        'Strong professional emails respect the reader’s time: lead with brief context, state one specific question or bottleneck you are facing, and make it effortless to say yes.',
       pivotRule:
-        'Universal Pivot: Swap to emailing a capstone advisor or an industry alumnus for a brief coffee chat.',
+        'Universal Pivot: Swap to a cold LinkedIn message to a recruiter or a diplomatic note to a teammate about a missed deadline.',
       feedbackReminder:
-        'Check modal verbs carefully and keep the body under three crisp paragraphs.',
-      targetWords: 165,
+        'Sound respectful and confident without sounding needy or vague, and cut filler phrases.',
+      targetWords: 170,
       suggestions: [
-        'Write a crisp subject line naming EIE instrumentation & PLC/embedded focus.',
-        'Summarize one tangible lab calibration or control loop outcome in two lines.',
-        'Ask politely for a 10-minute chat window.',
+        'Open with one clear sentence of context on your hardware architecture.',
+        'Ask one specific technical question they can react to quickly.',
+        'Offer two easy 15-minute windows so replying takes ten seconds.',
       ],
     },
     {
-      slotLabel: 'Slot 2 · LinkedIn & Email',
+      slotLabel: 'LinkedIn, Email & Soft Skills',
+      slotTime: '18:19',
+      mode: 'linkedin',
+      tone: 'professional-warm',
+      pillar: 'linkedin-email',
+      promptCategory: 'LinkedIn, Email & Soft Skills',
+      topic:
+        'LinkedIn Reflection: What Oscilloscope Ringing Taught Me About Ground Loops',
+      topicPrimer:
+        'Hiring managers remember honest bench debugging notes far more than textbook summaries. Walking readers through one noisy scope trace and how you isolated the return path proves real ownership.',
+      pivotRule:
+        'Universal Pivot: Swap to any real lab setback (loose jumper, baud mismatch, or op-amp drift) and its lesson.',
+      feedbackReminder:
+        'Tell it as if sharing a story over coffee with an engineering mentor, eliminating filler words.',
+      targetWords: 185,
+      suggestions: [
+        'Hook with the surprising waveform or failure you first noticed.',
+        'Explain one methodical test that isolated the real root cause.',
+        'End with a crisp takeaway for fellow builders.',
+      ],
+    },
+    {
+      slotLabel: 'LinkedIn, Email & Soft Skills',
       slotTime: '18:19',
       mode: 'email',
       tone: 'professional-warm',
       pillar: 'linkedin-email',
       promptCategory: 'LinkedIn, Email & Soft Skills',
-      topic: 'Diplomatic Team Update: Explaining a Capstone PCB Delay Without Blame',
+      topic:
+        'Diplomatic Team Update: Explaining a Capstone PCB Delay Without Blame',
       topicPrimer:
-        'Owning a schedule delay transparently builds trust faster than excuses. Effective team emails lead with the revised milestone, summarize the technical blocker cleanly, and propose concrete parallel next steps.',
+        'Owning a schedule delay transparently builds trust faster than excuses. Effective team notes lead with the revised milestone, name the technical blocker cleanly, and propose parallel next steps.',
       pivotRule:
         'Universal Pivot: Swap to any real coordination note (rescheduling a lab demo or dividing sprint tasks).',
       feedbackReminder:
-        'Use active ownership verbs ("overlooked", "stabilized") instead of passive blaming.',
+        'Use calm, active ownership verbs instead of defensive excuses.',
       targetWords: 175,
       suggestions: [
         'State the revised test milestone in the opening line.',
@@ -555,20 +559,43 @@ const FALLBACK_POOLS: Record<
   ],
   'creative-story': [
     {
-      slotLabel: 'Slot 3 · Creative & Fantasy',
+      slotLabel: 'Creative & Storytelling',
       slotTime: '18:19',
       mode: 'creative',
       tone: 'narrative-vivid',
       pillar: 'creative-story',
       promptCategory: 'Creative Fantasy & Expressive Storytelling',
-      topic: 'The Clockwork Cartographer: An Irreversible Choice in a Sunken Brass City',
+      topic:
+        'A Veteran Alchemist and a Runaway Apprentice Trapped Inside a Cellar During an Elemental Storm',
       topicPrimer:
-        'Beneath a sea wall, a brass city runs on pressurized brine mains and ticking gear-trains. Tonight an apprentice cartographer discovers an unmapped submerged ward—ten minutes before the floodgates open.',
+        'Keep spoken lines brief and natural, letting pauses, gestures, and background thunder carry the unspoken tension between them. Neither fully trusts the other, yet the cellar door will not hold until dawn.',
+      pivotRule:
+        'Universal Pivot: Swap to any two contrasting characters stuck together during a crisis.',
+      feedbackReminder:
+        'Read dialogue aloud in your head so each line carries natural spoken cadence and subtext.',
+      targetWords: 220,
+      suggestions: [
+        'Open mid-gesture as thunder shakes dust from the cellar beams.',
+        'Use short, charged dialogue where what they hide matters most.',
+        'End on a quiet shift in trust or a revealing gesture.',
+      ],
+    },
+    {
+      slotLabel: 'Creative & Storytelling',
+      slotTime: '18:19',
+      mode: 'creative',
+      tone: 'narrative-vivid',
+      pillar: 'creative-story',
+      promptCategory: 'Creative Fantasy & Expressive Storytelling',
+      topic:
+        'The Clockwork Cartographer: An Irreversible Choice in a Sunken Brass City',
+      topicPrimer:
+        'Beneath a sea wall, a brass city runs on pressurized brine mains and ticking gear-trains. Tonight an apprentice cartographer discovers an unmapped submerged ward ten minutes before the floodgates open.',
       pivotRule:
         'Universal Pivot: Swap to any character facing a time-critical moral choice in a world you invent.',
       feedbackReminder:
         'Show emotion through physical detail and vocal cadence rather than flat adjectives.',
-      targetWords: 240,
+      targetWords: 230,
       suggestions: [
         'Anchor the opening in two physical textures (salt crust, lantern hiss).',
         'Reveal tension through a short, sharp exchange of dialogue.',
@@ -576,28 +603,7 @@ const FALLBACK_POOLS: Record<
       ],
     },
     {
-      slotLabel: 'Slot 3 · Creative & Fantasy',
-      slotTime: '18:19',
-      mode: 'creative',
-      tone: 'narrative-vivid',
-      pillar: 'creative-story',
-      promptCategory: 'Creative Fantasy & Expressive Storytelling',
-      topic: 'The Glass Frequency: Hearing a Forbidden Signal Inside a Quiet Valley',
-      topicPrimer:
-        'Across a misty valley, messages travel as sung harmonics through quartz relay pylons. During a 3:00 AM listening watch, a crystalline tone hums inside the receiver—carrying a voice thought lost years ago.',
-      pivotRule:
-        'Universal Pivot: Swap to any quiet night-watch scene interrupted by an impossible transmission.',
-      feedbackReminder:
-        'Alternate short punchy sentences with longer lyrical ones for stronger rhythm.',
-      targetWords: 240,
-      suggestions: [
-        'Describe the acoustic sensation of the hidden frequency.',
-        'Contrast boring night-shift habits with sudden awe.',
-        'Stop right as your protagonist chooses whether to log it.',
-      ],
-    },
-    {
-      slotLabel: 'Slot 3 · Creative & Fantasy',
+      slotLabel: 'Creative & Storytelling',
       slotTime: '18:19',
       mode: 'creative',
       tone: 'narrative-vivid',
@@ -661,7 +667,8 @@ async function createApp() {
       content,
       mode = 'Personal Journal',
       tone = 'Professional-Warm',
-      topic = 'Untitled',
+      topic = '',
+      needsAutoTitle = false,
       previousSessionSummary = '',
       practicingVocab = [],
       topicPrimer = '',
@@ -676,35 +683,36 @@ async function createApp() {
     }
 
     const trimmedContent = content.trim();
+    const trimmedTopic = typeof topic === 'string' ? topic.trim() : '';
+    const shouldInferTitle = Boolean(needsAutoTitle) || trimmedTopic.length === 0;
     const wordCount = trimmedContent.split(/\s+/).filter(Boolean).length;
     const vocabList = Array.isArray(practicingVocab)
-      ? practicingVocab.slice(0, 12).map(String)
+      ? practicingVocab.slice(0, 10).map(String)
       : [];
 
     const studentDescriptor =
       studentProfile && studentProfile.collegeDegree
-        ? `${studentProfile.semester || 'college'} ${studentProfile.collegeDegree} student${studentProfile.collegeName ? ` at ${studentProfile.collegeName}` : ''}${studentProfile.age ? ` (age ${studentProfile.age})` : ''}`
-        : 'college engineering student';
+        ? `${studentProfile.semester || 'college'} ${studentProfile.collegeDegree} student${studentProfile.collegeName ? ` at ${studentProfile.collegeName}` : ''}`
+        : 'focused writer';
 
-    const cacheKey = makeCacheKey('evaluate', {
+    const cacheKey = makeCacheKey('evaluate-fast-v2', {
       content: trimmedContent,
       mode,
       tone,
+      shouldInferTitle,
       vocabList,
       studentDescriptor,
     });
 
-    const systemInstruction = `Strict, insightful writing & communication coach for a ${studentDescriptor}.
-Do NOT inflate scores—score strictly across 6 metrics (1-10 integers):
-- naturalVoiceFlow, claritySimplicity, grammarMechanics, toneEngagement (aligned with ${mode}/${tone}), sentenceVarietyCadence, concisenessDirectness.
-Check whether previous feedback was applied (feedbackImplemented: "Baseline" | "Yes" | "Partial" | "No"), explain concrete progress in whatImproved, give pinpointed quoted critiques + rules in strictImprovements, provide grammarFixes, 2-4 high-value vocabUpgrades (used -> betterAlternative), and list any target practicing vocabulary words naturally used in the draft inside masteredWordsUsed.
-Also provide cefrLevel (B1+..C2), ieltsBand (4.0-9.0), toeflEquivalent (8-30), lexicalResource (1-10), coherenceCohesion (1-10), taskAchievement (1-10), registerControl (1-10).`;
+    const systemInstruction = `Fast, sharp writing coach for a ${studentDescriptor}.
+Score strictly (1-10 integers, no inflation) on: naturalVoiceFlow, claritySimplicity, grammarMechanics, toneEngagement (${mode}/${tone}), sentenceVarietyCadence, concisenessDirectness.
+Keep every text field crisp and concise (1-2 sentences max, no em-dashes).
+${shouldInferTitle ? 'The writer left the title blank: craft a natural, specific 3-7 word editorial title in suggestedTitle based directly on the content.' : 'Echo or lightly refine the existing topic in suggestedTitle.'}
+Return up to 4 real grammarFixes and 2-3 high-value vocabUpgrades (used -> betterAlternative). List any target practicing vocabulary words naturally used inside masteredWordsUsed.
+Also rate cefrLevel (A2..C2), ieltsBand (4.0-9.0), toeflEquivalent (8-30), lexicalResource, coherenceCohesion, taskAchievement, registerControl (1-10).`;
 
-    const prompt = `Mode:${mode}|Tone:${tone}|Topic:${topic}
-Primer:${topicPrimer || 'N/A'}
-Previous Feedback:${previousSessionSummary || 'Baseline (no prior session)'}
-Target Practicing Vocab:${vocabList.length > 0 ? vocabList.join(', ') : 'None yet'}
-Student Draft:
+    const prompt = `Mode:${mode}|Tone:${tone}|Topic:${trimmedTopic || '(blank - infer title)'}
+${topicPrimer ? `Brief:${topicPrimer}\n` : ''}${previousSessionSummary ? `Prev:${previousSessionSummary}\n` : ''}${vocabList.length > 0 ? `Vocab:${vocabList.join(', ')}\n` : ''}Draft:
 """
 ${trimmedContent}
 """`;
@@ -717,9 +725,11 @@ ${trimmedContent}
           systemInstruction,
           task: 'evaluate',
           complexityMetric: wordCount,
+          preferFastTier: true,
           responseSchema: {
             type: Type.OBJECT,
             properties: {
+              suggestedTitle: { type: Type.STRING },
               scores: {
                 type: Type.OBJECT,
                 properties: {
@@ -788,6 +798,7 @@ ${trimmedContent}
               },
             },
             required: [
+              'suggestedTitle',
               'scores',
               'cefrLevel',
               'ieltsBand',
@@ -825,12 +836,18 @@ ${trimmedContent}
           ? 'Partial'
           : 'Baseline';
 
+      const suggestedTitle = String(parsed.suggestedTitle || '')
+        .replace(/^["']+|["']+$/g, '')
+        .trim()
+        .slice(0, 72);
+
       res.json({
         evaluationStatus: 'completed',
         modelUsed,
         thinkingLevelUsed,
         downgraded,
         cached,
+        suggestedTitle,
         scores: safeScores,
         cefrLevel: String(parsed.cefrLevel || 'B2'),
         internationalMetrics: {
@@ -1075,37 +1092,49 @@ ${trimmedContent}
       focusNote,
       performanceContext,
       studentProfile,
+      adaptiveWritingProfile,
     } = req.body ?? {};
 
     type DateSpec = {
       scheduledDate: string;
-      dayOfWeek: 'Wednesday' | 'Friday' | 'Sunday';
+      dayOfWeek: string;
       pillar: 'technical-concept' | 'linkedin-email' | 'creative-story';
     };
+
+    const VALID_PILLARS = new Set([
+      'technical-concept',
+      'linkedin-email',
+      'creative-story',
+    ]);
+    const PILLAR_CYCLE: DateSpec['pillar'][] = [
+      'technical-concept',
+      'linkedin-email',
+      'creative-story',
+    ];
 
     let targetSpecs: DateSpec[] = [];
 
     if (Array.isArray(customDates) && customDates.length > 0) {
-      targetSpecs = customDates.slice(0, 16).map((item: Record<string, unknown>) => {
-        const day = String(item.dayOfWeek || 'Wednesday');
-        const safeDay: DateSpec['dayOfWeek'] =
-          day === 'Friday'
-            ? 'Friday'
-            : day === 'Sunday'
-              ? 'Sunday'
-              : 'Wednesday';
-        const safePillar: DateSpec['pillar'] =
-          safeDay === 'Wednesday'
-            ? 'technical-concept'
-            : safeDay === 'Friday'
-              ? 'linkedin-email'
-              : 'creative-story';
-        return {
-          scheduledDate: String(item.scheduledDate),
-          dayOfWeek: safeDay,
-          pillar: safePillar,
-        };
-      });
+      targetSpecs = customDates
+        .slice(0, 24)
+        .map((item: Record<string, unknown>, idx: number) => {
+          const day = String(item.dayOfWeek || 'Wednesday');
+          const rawPillar = String(item.pillar || '');
+          const safePillar: DateSpec['pillar'] = VALID_PILLARS.has(rawPillar)
+            ? (rawPillar as DateSpec['pillar'])
+            : day === 'Wednesday'
+              ? 'technical-concept'
+              : day === 'Friday'
+                ? 'linkedin-email'
+                : day === 'Sunday'
+                  ? 'creative-story'
+                  : PILLAR_CYCLE[idx % PILLAR_CYCLE.length];
+          return {
+            scheduledDate: String(item.scheduledDate),
+            dayOfWeek: day,
+            pillar: safePillar,
+          };
+        });
     } else {
       const wed = String(cycleDates?.wednesday || '');
       const fri = String(cycleDates?.friday || '');
@@ -1125,24 +1154,62 @@ ${trimmedContent}
     }
 
     const avoidList = Array.isArray(existingTopics)
-      ? existingTopics.slice(-10).join('; ')
+      ? existingTopics.slice(-12).join('; ')
       : '';
 
+    const practicingList = Array.isArray(performanceContext?.practicingWords)
+      ? performanceContext.practicingWords.slice(0, 3)
+      : Array.isArray(adaptiveWritingProfile?.practicingVocab)
+        ? adaptiveWritingProfile.practicingVocab.slice(0, 3)
+        : [];
+
+    const recurringRules = Array.isArray(adaptiveWritingProfile?.recurringGrammarRules)
+      ? adaptiveWritingProfile.recurringGrammarRules.slice(0, 2)
+      : Array.isArray(performanceContext?.recentStrictFixes)
+        ? performanceContext.recentStrictFixes.slice(0, 2)
+        : [];
+
     const perfSummary = performanceContext
-      ? `Avg:${performanceContext.avgPercentage || 75}% | Weakest Pillar:${performanceContext.weakestPillarLabel || 'Grammar & Mechanics'} (${performanceContext.weakestPillarScore || 7.5}/10) | Practicing Vocab:${Array.isArray(performanceContext.practicingWords) ? performanceContext.practicingWords.slice(0, 5).join(', ') : 'None'} | Recent Fixes:${Array.isArray(performanceContext.recentStrictFixes) ? performanceContext.recentStrictFixes.slice(0, 2).join(' ; ') : 'Vary openers'}`
-      : 'No prior score history yet';
+      ? `Avg:${performanceContext.avgPercentage || 75}% | Weakest Pillar:${performanceContext.weakestPillarLabel || 'Natural Voice & Flow'} (${performanceContext.weakestPillarScore || 7.5}/10) | Practicing Vocab:${practicingList.length > 0 ? practicingList.join(', ') : 'None yet'} | Recurring Fixes:${recurringRules.length > 0 ? recurringRules.join(' ; ') : 'Vary sentence rhythm'}`
+      : 'Baseline writer (no prior score history yet)';
 
-    const studentLine =
-      studentProfile && studentProfile.collegeDegree
+    const domainTrack =
+      adaptiveWritingProfile?.domainTrack ||
+      (studentProfile?.collegeDegree &&
+      /\b(eie|electronics|instrumentation|embedded|control|sensor|pcb)\b/i.test(
+        String(studentProfile.collegeDegree)
+      )
+        ? 'eie-engineering'
+        : studentProfile?.collegeDegree
+          ? 'stem-technical'
+          : 'general-writer');
+
+    const writerPersona =
+      adaptiveWritingProfile?.personaSummary ||
+      (studentProfile && studentProfile.collegeDegree
         ? `${studentProfile.semester || 'Current Semester'} · ${studentProfile.collegeDegree}${studentProfile.collegeName ? ` · ${studentProfile.collegeName}` : ''}${studentProfile.age ? ` · Age ${studentProfile.age}` : ''}`
-        : '3rd-year 6th-semester Electronics & Instrumentation Engineering (EIE)';
+        : studentProfile?.age
+          ? `Everyday writer (Age ${studentProfile.age}) developing natural spoken flow and expressive clarity`
+          : 'Electronics and Instrumentation Engineering (EIE) undergraduate (end of 5th semester moving into 6th semester)');
 
-    const cacheKey = makeCacheKey('schedule-triweekly', {
+    const recentWriterThemes =
+      Array.isArray(adaptiveWritingProfile?.recentTopics) &&
+      adaptiveWritingProfile.recentTopics.length > 0
+        ? adaptiveWritingProfile.recentTopics.slice(0, 5).join('; ')
+        : 'None yet';
+
+    const domainAnchorRule =
+      domainTrack === 'eie-engineering'
+        ? 'Domain Anchor (EIE & Embedded): Anchor technical-concept and linkedin-email prompts in real sensors, ADCs, op-amps, signal conditioning, PID/control loops, PCB/breadboard debugging, and 5th-to-6th-sem capstone & internship experiences rather than generic corporate filler.'
+        : `Domain Anchor (Adaptive to Writer Profile): Tailor technical-concept and linkedin-email prompts specifically to this writer's real age, background, field (${writerPersona}), and past writing themes (${recentWriterThemes}). Never force EIE hardware jargon onto a non-EIE writer.`;
+
+    const cacheKey = makeCacheKey('schedule-adaptive-v2', {
       targetSpecs,
       avoidList,
       focusNote,
       perfSummary,
-      studentLine,
+      writerPersona,
+      domainTrack,
     });
 
     try {
@@ -1155,21 +1222,33 @@ ${trimmedContent}
           contents: `Slots to generate (${targetSpecs.length}): ${targetSpecs
             .map((t) => `${t.dayOfWeek}=${t.scheduledDate} (${t.pillar})`)
             .join(', ')}
-Student: ${studentLine}
-Performance & Coach Context: ${perfSummary}
+Writer Persona: ${writerPersona}
+Recent Topics Written by User: ${recentWriterThemes}
+Performance & Closed-Loop Targets: ${perfSummary}
 Avoid repeating: ${avoidList || 'none'}
-Focus note: ${focusNote || 'Fresh, motivating tri-weekly Wed/Fri/Sun rotation'}`,
-          systemInstruction: `Generate exactly ${targetSpecs.length} Wed/Fri/Sun writing slots tailored specifically to this student (${studentLine}) & performance context. Never mention specific clock times in topic titles or text:
-- Wednesday (pillar: "technical-concept", mode: "technical", tone: "academic-technical"): Spoken interview answers, core concepts, debugging trade-offs, and practical lab explanations tailored to the student's degree and semester.
-- Friday (pillar: "linkedin-email", mode: "linkedin" or "email", tone: "professional-warm" or "formal-executive"): Crisp LinkedIn posts, cold internship emails, or diplomatic team updates tailored to their field.
-- Sunday (pillar: "creative-story", mode: "creative", tone: "narrative-vivid"): Vivid character scenes or imaginative fantasy storytelling to expand voice & cadence.
+Focus note: ${focusNote || 'Fresh spoken-first expressive rotation adapted to this writer'}`,
+          systemInstruction: `You design expressive, spoken-first writing prompts tailored to this specific writer (${writerPersona}).
+${domainAnchorRule}
+
+Apply ALL 5 PROMPT DESIGN RULES to every single slot (never use em-dashes, never mention clock times or word-count restrictions inside the prompt text):
+1. Spoken-First Framing: Frame the task around how words sound out loud (e.g., "Explain out loud as if talking to a curious friend", "Pitch aloud to an interviewer", or "Narrate the scene aloud").
+2. Expressive Pull: Push the writer to organize thoughts, contrast ideas, or convey tone and subtext, never dry textbook definitions.
+3. Beginner-Friendly Topic Primer: Write a 2-3 sentence plain-English brief in topicPrimer so zero external research is needed.
+4. Universal Pivot Rule: In pivotRule, explicitly let the writer swap to any familiar gadget, lab/work experience, email scenario, or story if the topic feels unfamiliar.
+5. Active Practice Targets: In feedbackReminder, weave in 1-2 of their recurring grammar/flow focus rules (${recurringRules.join('; ') || 'natural spoken cadence'}) and 2-3 of their practicing words (${practicingList.join(', ') || 'vivid active verbs'}) so improvement is cumulative.
+
+Pillar definitions:
+- technical-concept (mode: "technical", tone: "academic-technical"): Mock technical/domain screening answers, explaining a real concept in plain spoken English (no equations), or defending a practical design trade-off aloud.
+- linkedin-email (mode: "linkedin" or "email", tone: "professional-warm" or "formal-executive"): Candid project/lab reflections, crisp respectful emails to mentors/recruiters (asking for 15 minutes of feedback without sounding vague), or diplomatic team notes.
+- creative-story (mode: "creative", tone: "narrative-vivid"): Vivid worldbuilding, tense character dialogue with subtext, or sensory-driven scenes that stretch vocabulary, rhythm, and emotional range.
+
 For EVERY slot return:
-- topic (<=12 words, original)
-- topicPrimer (2-3 beginner-friendly explanatory sentences so zero external research is needed)
-- pivotRule (1 sentence letting student swap to a familiar project/email/story)
-- feedbackReminder (1 concise sentence referencing the student's weakest rubric pillar or practicing vocab)
-- targetWords (160-250)
-- suggestions (3 short writing angles, <=14 words each).`,
+- topic (crisp, natural, evocative title/prompt <= 15 words, zero word-count rules)
+- topicPrimer (2-3 plain-English sentences)
+- pivotRule (1 clear permission-to-swap sentence)
+- feedbackReminder (1 concise active practice target pulling their recurring fix + practicing vocab)
+- targetWords (soft guidance integer 160-240 for UI tracking only)
+- suggestions (3 short spoken-flow angles, <= 14 words each).`,
           responseSchema: {
             type: Type.OBJECT,
             properties: {
@@ -1269,8 +1348,8 @@ For EVERY slot return:
       res.json({ slots: normalized, modelUsed, thinkingLevelUsed, downgraded });
     } catch {
       const customReminder =
-        performanceContext?.weakestPillarLabel
-          ? `Focus on ${performanceContext.weakestPillarLabel} and weave in practicing vocabulary.`
+        practicingList.length > 0 || recurringRules.length > 0
+          ? `Practice target: ${recurringRules[0] || `strengthen ${performanceContext?.weakestPillarLabel || 'spoken flow'}`}${practicingList.length > 0 ? ` and weave in: ${practicingList.join(', ')}` : ''}.`
           : undefined;
 
       const slots = targetSpecs.map((spec, idx) => {

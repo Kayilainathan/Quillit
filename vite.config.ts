@@ -2,18 +2,24 @@ import tailwindcss from '@tailwindcss/vite';
 import react from '@vitejs/plugin-react';
 import fs from 'fs';
 import path from 'path';
-import {defineConfig} from 'vite';
+import { defineConfig } from 'vite';
 
-export default defineConfig(() => {
+export default defineConfig(({ command }) => {
+  // Use relative './' asset paths for production builds so the app works
+  // cleanly on any GitHub Pages repository subpath (/<repo>/) or custom domain,
+  // while keeping '/' for the local dev server.
+  const base =
+    command === 'build' ? process.env.VITE_BASE_PATH || './' : '/';
+
   return {
+    base,
     plugins: [
       react(),
       tailwindcss(),
-      // Copies src/assets into dist/ so root-relative URLs like
-      // "/src/assets/images/..." (e.g. generate_image output) still resolve
-      // in production builds. Do not remove.
+      // Copies src/assets into dist/ and emits GitHub Pages static-hosting files
+      // (.nojekyll + 404.html SPA fallback) automatically on every production build.
       {
-        name: 'copy-unbundled-src-assets',
+        name: 'quillit-static-pages-assets',
         apply: 'build',
         closeBundle(error?: Error): void {
           if (error) {
@@ -23,7 +29,16 @@ export default defineConfig(() => {
           const srcAssets = path.resolve(__dirname, 'src/assets');
           const distAssets = path.resolve(distDir, 'src/assets');
           if (fs.existsSync(distDir) && fs.existsSync(srcAssets)) {
-            fs.cpSync(srcAssets, distAssets, {recursive: true, force: true});
+            fs.cpSync(srcAssets, distAssets, { recursive: true, force: true });
+          }
+          if (fs.existsSync(distDir)) {
+            // Prevent GitHub Pages Jekyll processing so all Vite chunks load reliably
+            fs.writeFileSync(path.join(distDir, '.nojekyll'), '');
+            // Emit 404.html SPA fallback identical to index.html
+            const indexHtml = path.join(distDir, 'index.html');
+            if (fs.existsSync(indexHtml)) {
+              fs.copyFileSync(indexHtml, path.join(distDir, '404.html'));
+            }
           }
         },
       },

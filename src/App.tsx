@@ -23,13 +23,16 @@ import {
   detectPracticingVocabUsed,
   formatLocalDateISO,
   formatStudentProfileLabel,
-  getMonthTriWeeklyDates,
-  getTriWeeklyCycleDates,
   mergeVaultPayloads,
   stripPredefinedSeedData,
   summarizeCoachContext,
   swapSingleTriWeeklySlot,
 } from './utils/analytics';
+import {
+  buildAdaptivePromptContext,
+  getMonthPreferredDaySpecs,
+  getNextPreferredCycleSpecs,
+} from './utils/adaptivePromptProfile';
 import { decryptVault, encryptVault, isEncryptedEnvelope } from './utils/crypto';
 import {
   auth,
@@ -989,19 +992,23 @@ export default function App() {
       setScheduleError(null);
       setRefreshingSchedule(true);
       try {
-        const cycle = getTriWeeklyCycleDates(todayISO);
+        const preferredDays = vault.settings.studentProfile?.preferredDays;
+        const upcomingSpecs = getNextPreferredCycleSpecs(todayISO, preferredDays, 3);
+        const adaptiveWritingProfile = buildAdaptivePromptContext(
+          vault.settings.studentProfile,
+          vault.sessions,
+          vault.vocabulary,
+          todayISO
+        );
         const res = await fetch('/api/schedule-triweekly', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            cycleDates: {
-              wednesday: cycle.wednesday,
-              friday: cycle.friday,
-              sunday: cycle.sunday,
-            },
+            customDates: upcomingSpecs,
             existingTopics: vault.calendarSlots.map((s) => s.topic),
             focusNote,
             studentProfile: vault.settings.studentProfile,
+            adaptiveWritingProfile,
             performanceContext: {
               avgPercentage: coachContext.avgPercentage,
               weakestPillarLabel: coachContext.weakestPillarLabel,
@@ -1026,11 +1033,7 @@ export default function App() {
           ? data.slots
           : [];
         if (freshSlots.length > 0) {
-          const cycleDateSet = new Set([
-            cycle.wednesday,
-            cycle.friday,
-            cycle.sunday,
-          ]);
+          const cycleDateSet = new Set(upcomingSpecs.map((d) => d.scheduledDate));
           await updateVaultState((prev) => {
             const preserved = prev.calendarSlots.filter(
               (s) =>
@@ -1063,7 +1066,7 @@ export default function App() {
         setScheduleError(
           err instanceof Error
             ? err.message
-            : 'Unable to refresh tri-weekly AI schedule.'
+            : 'Unable to refresh AI writing schedule.'
         );
       } finally {
         setRefreshingSchedule(false);
@@ -1135,8 +1138,15 @@ export default function App() {
       setScheduleError(null);
       setRefreshingSchedule(true);
       try {
-        const monthDates = getMonthTriWeeklyDates(year, monthIndex0);
+        const preferredDays = vault.settings.studentProfile?.preferredDays;
+        const monthDates = getMonthPreferredDaySpecs(year, monthIndex0, preferredDays);
         if (monthDates.length === 0) return;
+        const adaptiveWritingProfile = buildAdaptivePromptContext(
+          vault.settings.studentProfile,
+          vault.sessions,
+          vault.vocabulary,
+          todayISO
+        );
 
         const res = await fetch('/api/schedule-triweekly', {
           method: 'POST',
@@ -1145,9 +1155,10 @@ export default function App() {
             customDates: monthDates,
             existingTopics: vault.calendarSlots.map((s) => s.topic),
             studentProfile: vault.settings.studentProfile,
+            adaptiveWritingProfile,
             focusNote:
               focusNote ||
-              `Adaptive monthly Wed/Fri/Sun curriculum targeting ${coachContext.weakestPillarLabel}`,
+              `Adaptive monthly spoken-first curriculum targeting ${coachContext.weakestPillarLabel}`,
             performanceContext: {
               avgPercentage: coachContext.avgPercentage,
               weakestPillarLabel: coachContext.weakestPillarLabel,
@@ -1565,9 +1576,14 @@ export default function App() {
         }
       }
 
+      const sessionExists = prev.sessions.some((s) => s.id === newSession.id);
+      const nextSessions = sessionExists
+        ? prev.sessions.map((s) => (s.id === newSession.id ? newSession : s))
+        : [...prev.sessions, newSession];
+
       return {
         ...prev,
-        sessions: [...prev.sessions, newSession],
+        sessions: nextSessions,
         vocabulary: [...updatedVocab, ...newVocabEntries],
         calendarSlots: updatedSlots,
       };
@@ -2085,6 +2101,7 @@ export default function App() {
             slots={vault.calendarSlots}
             sessions={vault.sessions}
             todayISO={todayISO}
+            preferredDays={vault.settings.studentProfile?.preferredDays}
             autoReloadSchedule={vault.settings.autoReloadSchedule !== false}
             refreshingSchedule={refreshingSchedule}
             scheduleError={scheduleError}

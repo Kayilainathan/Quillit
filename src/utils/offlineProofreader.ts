@@ -1,160 +1,383 @@
-export type OfflineIssueCategory = 'spelling' | 'punctuation' | 'grammar';
+/**
+ * High-speed, zero-token offline live proofreader for Quillit.
+ * Single-pass O(n) Map-based spelling lookup (185+ everyday typos & contractions)
+ * paired with crisp, high-precision basic grammar and punctuation checks.
+ */
+
+export type OfflineIssueCategory = 'spelling' | 'grammar' | 'punctuation';
 
 export interface OfflineProofIssue {
   id: string;
-  category: OfflineIssueCategory;
   start: number;
   end: number;
   original: string;
   replacement: string;
+  category: OfflineIssueCategory;
   rule: string;
 }
 
-const COMMON_TYPOS: Record<string, string> = {
-  teh: 'the',
-  hte: 'the',
-  adn: 'and',
-  nad: 'and',
-  taht: 'that',
-  waht: 'what',
-  wiht: 'with',
-  wtih: 'with',
-  form: 'from',
-  thier: 'their',
-  therei: 'their',
-  recieve: 'receive',
-  recieved: 'received',
-  beleive: 'believe',
-  beleived: 'believed',
-  acheive: 'achieve',
-  acheived: 'achieved',
-  definately: 'definitely',
-  definitly: 'definitely',
-  seperate: 'separate',
-  seperated: 'separated',
-  occured: 'occurred',
-  occuring: 'occurring',
-  untill: 'until',
-  becuase: 'because',
-  beacuse: 'because',
-  becouse: 'because',
-  wich: 'which',
-  whcih: 'which',
-  alot: 'a lot',
-  doesnt: "doesn't",
-  dont: "don't",
-  didnt: "didn't",
-  cant: "can't",
-  wont: "won't",
-  isnt: "isn't",
-  arent: "aren't",
-  wasnt: "wasn't",
-  werent: "weren't",
-  havent: "haven't",
-  hasnt: "hasn't",
-  hadnt: "hadn't",
-  shouldnt: "shouldn't",
-  couldnt: "couldn't",
-  wouldnt: "wouldn't",
-  im: "I'm",
-  ive: "I've",
-  youre: "you're",
-  theyre: "they're",
-  weve: "we've",
-  accomodate: 'accommodate',
-  arguement: 'argument',
-  begining: 'beginning',
-  calender: 'calendar',
-  commited: 'committed',
-  concious: 'conscious',
-  enviroment: 'environment',
-  existance: 'existence',
-  goverment: 'government',
-  grammer: 'grammar',
-  independant: 'independent',
-  intresting: 'interesting',
-  knowlege: 'knowledge',
-  neccessary: 'necessary',
-  occassion: 'occasion',
-  persistant: 'persistent',
-  posession: 'possession',
-  priviledge: 'privilege',
-  proffessional: 'professional',
-  publically: 'publicly',
-  realy: 'really',
-  reccomend: 'recommend',
-  refered: 'referred',
-  relevent: 'relevant',
-  rythm: 'rhythm',
-  sucessful: 'successful',
-  tommorow: 'tomorrow',
-  tomorow: 'tomorrow',
-  tounge: 'tongue',
-  truely: 'truly',
-  wierd: 'weird',
-  writting: 'writing',
-  langauge: 'language',
-  sentance: 'sentence',
-  puntuation: 'punctuation',
-  speeling: 'spelling',
-  freind: 'friend',
-  peopel: 'people',
-  poeple: 'people',
-  throught: 'through',
-  trough: 'through',
-  diffrent: 'different',
-  importent: 'important',
-  experiance: 'experience',
-  oppurtunity: 'opportunity',
-  oppertunity: 'opportunity',
-  developement: 'development',
-  managment: 'management',
-  perfomance: 'performance',
-  explaination: 'explanation',
-  maintenence: 'maintenance',
-  buisness: 'business',
-  collegue: 'colleague',
-  suprise: 'surprise',
-  usefull: 'useful',
-  helpfull: 'helpful',
-  thankfull: 'thankful',
-};
+const COMMON_TYPOS_ENTRIES: ReadonlyArray<readonly [string, string]> = [
+  // Everyday high-frequency typos
+  ['teh', 'the'],
+  ['hte', 'the'],
+  ['adn', 'and'],
+  ['nad', 'and'],
+  ['taht', 'that'],
+  ['tath', 'that'],
+  ['wiht', 'with'],
+  ['wtih', 'with'],
+  ['waht', 'what'],
+  ['whta', 'what'],
+  ['wher', 'where'],
+  ['wehn', 'when'],
+  ['becuase', 'because'],
+  ['beacuse', 'because'],
+  ['becasue', 'because'],
+  ['bcz', 'because'],
+  ['recieve', 'receive'],
+  ['recieved', 'received'],
+  ['recieving', 'receiving'],
+  ['beleive', 'believe'],
+  ['beleived', 'believed'],
+  ['acheive', 'achieve'],
+  ['acheived', 'achieved'],
+  ['acheivement', 'achievement'],
+  ['definately', 'definitely'],
+  ['definitly', 'definitely'],
+  ['definatly', 'definitely'],
+  ['seperate', 'separate'],
+  ['seperated', 'separated'],
+  ['seperately', 'separately'],
+  ['occured', 'occurred'],
+  ['occuring', 'occurring'],
+  ['occurence', 'occurrence'],
+  ['untill', 'until'],
+  ['tommorow', 'tomorrow'],
+  ['tomorow', 'tomorrow'],
+  ['tommorrow', 'tomorrow'],
+  ['goverment', 'government'],
+  ['enviroment', 'environment'],
+  ['enviornment', 'environment'],
+  ['wierd', 'weird'],
+  ['freind', 'friend'],
+  ['freinds', 'friends'],
+  ['freindly', 'friendly'],
+  ['thier', 'their'],
+  ['therefor', 'therefore'],
+  ['wich', 'which'],
+  ['whcih', 'which'],
+  ['writting', 'writing'],
+  ['writeing', 'writing'],
+  ['writen', 'written'],
+  ['begining', 'beginning'],
+  ['comming', 'coming'],
+  ['runing', 'running'],
+  ['stoping', 'stopping'],
+  ['planing', 'planning'],
+  ['geting', 'getting'],
+  ['makeing', 'making'],
+  ['takeing', 'taking'],
+  ['useing', 'using'],
+  ['haveing', 'having'],
+  ['giveing', 'giving'],
+  ['loveing', 'loving'],
+  ['moveing', 'moving'],
+  ['hopeing', 'hoping'],
+  ['liveing', 'living'],
+  ['neccessary', 'necessary'],
+  ['necesary', 'necessary'],
+  ['unneccessary', 'unnecessary'],
+  ['accomodate', 'accommodate'],
+  ['acommodate', 'accommodate'],
+  ['recomend', 'recommend'],
+  ['reccomend', 'recommend'],
+  ['recomended', 'recommended'],
+  ['embarass', 'embarrass'],
+  ['embarassing', 'embarrassing'],
+  ['independant', 'independent'],
+  ['maintainance', 'maintenance'],
+  ['maintenence', 'maintenance'],
+  ['persistant', 'persistent'],
+  ['relevent', 'relevant'],
+  ['irrelevent', 'irrelevant'],
+  ['succesful', 'successful'],
+  ['sucessful', 'successful'],
+  ['sucess', 'success'],
+  ['succes', 'success'],
+  ['calender', 'calendar'],
+  ['collegue', 'colleague'],
+  ['collegues', 'colleagues'],
+  ['knowlege', 'knowledge'],
+  ['knowladge', 'knowledge'],
+  ['languge', 'language'],
+  ['langauge', 'language'],
+  ['bussiness', 'business'],
+  ['buisness', 'business'],
+  ['intresting', 'interesting'],
+  ['intersting', 'interesting'],
+  ['diferent', 'different'],
+  ['diffrent', 'different'],
+  ['differnt', 'different'],
+  ['immediatly', 'immediately'],
+  ['imediatly', 'immediately'],
+  ['completly', 'completely'],
+  ['absolutly', 'absolutely'],
+  ['actualy', 'actually'],
+  ['basicly', 'basically'],
+  ['finaly', 'finally'],
+  ['realy', 'really'],
+  ['truely', 'truly'],
+  ['usualy', 'usually'],
+  ['especialy', 'especially'],
+  ['generaly', 'generally'],
+  ['naturaly', 'naturally'],
+  ['normaly', 'normally'],
+  ['originaly', 'originally'],
+  ['personalY', 'personally'],
+  ['personaly', 'personally'],
+  ['probly', 'probably'],
+  ['probaly', 'probably'],
+  ['similiar', 'similar'],
+  ['familar', 'familiar'],
+  ['particluar', 'particular'],
+  ['availble', 'available'],
+  ['avalable', 'available'],
+  ['posible', 'possible'],
+  ['imposible', 'impossible'],
+  ['responcible', 'responsible'],
+  ['responsable', 'responsible'],
+  ['importent', 'important'],
+  ['imporant', 'important'],
+  ['exampel', 'example'],
+  ['exmaple', 'example'],
+  ['probelm', 'problem'],
+  ['problme', 'problem'],
+  ['problmes', 'problems'],
+  ['peopel', 'people'],
+  ['poeple', 'people'],
+  ['persno', 'person'],
+  ['studnet', 'student'],
+  ['studnets', 'students'],
+  ['projcet', 'project'],
+  ['projcets', 'projects'],
+  ['enginer', 'engineer'],
+  ['enginering', 'engineering'],
+  ['developement', 'development'],
+  ['managment', 'management'],
+  ['expereince', 'experience'],
+  ['experiance', 'experience'],
+  ['oportunity', 'opportunity'],
+  ['oppertunity', 'opportunity'],
+  ['comunication', 'communication'],
+  ['communcation', 'communication'],
+  ['infomation', 'information'],
+  ['infromation', 'information'],
+  ['tecnology', 'technology'],
+  ['techology', 'technology'],
+  ['algoirthm', 'algorithm'],
+  ['algoritm', 'algorithm'],
+  ['softare', 'software'],
+  ['hardare', 'hardware'],
+  ['messge', 'message'],
+  ['mesage', 'message'],
+  ['mornign', 'morning'],
+  ['evning', 'evening'],
+  ['yestarday', 'yesterday'],
+  ['yesterdy', 'yesterday'],
+  ['alway', 'always'],
+  ['alwyas', 'always'],
+  ['alot', 'a lot'],
+  ['noone', 'no one'],
+  ['incase', 'in case'],
+  ['thankyou', 'thank you'],
+  ['everytime', 'every time'],
+  ['anyways', 'anyway'],
+  ['gratefull', 'grateful'],
+  ['greatful', 'grateful'],
+  ['helpfull', 'helpful'],
+  ['usefull', 'useful'],
+  ['carefull', 'careful'],
+  ['beautifull', 'beautiful'],
+  ['beutiful', 'beautiful'],
+  ['wonderfull', 'wonderful'],
+  ['powerfull', 'powerful'],
+  ['thoughtfull', 'thoughtful'],
+  ['succed', 'succeed'],
+  ['existance', 'existence'],
+  ['apparant', 'apparent'],
+  ['arguement', 'argument'],
+  ['judgement', 'judgment'],
+  ['commited', 'committed'],
+  ['concensus', 'consensus'],
+  ['dilema', 'dilemma'],
+  ['gaurantee', 'guarantee'],
+  ['harrass', 'harass'],
+  ['lisence', 'license'],
+  ['mispell', 'misspell'],
+  ['noticable', 'noticeable'],
+  ['peice', 'piece'],
+  ['privelege', 'privilege'],
+  ['publically', 'publicly'],
+  ['questionaire', 'questionnaire'],
+  ['rythm', 'rhythm'],
+  ['rythym', 'rhythm'],
+  ['scedule', 'schedule'],
+  ['shedule', 'schedule'],
+  ['sentance', 'sentence'],
+  ['sentances', 'sentences'],
+  ['grammer', 'grammar'],
+  ['vocabuary', 'vocabulary'],
+  ['vocaulary', 'vocabulary'],
+  ['pargraph', 'paragraph'],
+  ['paragrah', 'paragraph'],
+  ['explaination', 'explanation'],
+  ['disapear', 'disappear'],
+  ['disapoint', 'disappoint'],
+  ['disapointed', 'disappointed'],
+  ['foriegn', 'foreign'],
+  ['foward', 'forward'],
+  ['fourty', 'forty'],
+  ['happend', 'happened'],
+  ['hieght', 'height'],
+  ['lenght', 'length'],
+  ['strenght', 'strength'],
+  ['widht', 'width'],
+  ['wieght', 'weight'],
+  ['libary', 'library'],
+  ['medecine', 'medicine'],
+  ['minuite', 'minute'],
+  ['mischevious', 'mischievous'],
+  ['occassion', 'occasion'],
+  ['orginal', 'original'],
+  ['pastime', 'pastime'],
+  ['percieve', 'perceive'],
+  ['posession', 'possession'],
+  ['prefered', 'preferred'],
+  ['refered', 'referred'],
+  ['rember', 'remember'],
+  ['remeber', 'remember'],
+  ['remined', 'remind'],
+  ['scince', 'science'],
+  ['sincerly', 'sincerely'],
+  ['speling', 'spelling'],
+  ['supprise', 'surprise'],
+  ['suprise', 'surprise'],
+  ['temperture', 'temperature'],
+  ['thoughout', 'throughout'],
+  ['togther', 'together'],
+  ['togehter', 'together'],
+  ['unfortunatly', 'unfortunately'],
+  ['untill', 'until'],
+  ['vaccuum', 'vacuum'],
+  ['wheather', 'whether'],
+  // Missing apostrophes in everyday contractions
+  ['dont', "don't"],
+  ['cant', "can't"],
+  ['wont', "won't"],
+  ['doesnt', "doesn't"],
+  ['didnt', "didn't"],
+  ['isnt', "isn't"],
+  ['arent', "aren't"],
+  ['wasnt', "wasn't"],
+  ['werent', "weren't"],
+  ['hasnt', "hasn't"],
+  ['havent', "haven't"],
+  ['hadnt', "hadn't"],
+  ['shouldnt', "shouldn't"],
+  ['wouldnt', "wouldn't"],
+  ['couldnt', "couldn't"],
+  ['mustnt', "mustn't"],
+  ['im', "I'm"],
+  ['ive', "I've"],
+  ['id', "I'd"],
+  ['youre', "you're"],
+  ['youve', "you've"],
+  ['theyre', "they're"],
+  ['theyve', "they've"],
+  ['weve', "we've"],
+  ['hes', "he's"],
+  ['shes', "she's"],
+  ['thats', "that's"],
+  ['whats', "what's"],
+  ['whos', "who's"],
+  ['theres', "there's"],
+  ['heres', "here's"],
+  ['lets', "let's"],
+];
 
-// Exclude 'form' since it is a valid English word!
-delete COMMON_TYPOS.form;
+const COMMON_TYPOS = new Map<string, string>(
+  COMMON_TYPOS_ENTRIES.map(([k, v]) => [k.toLowerCase(), v])
+);
 
-const AN_EXCEPTIONS_NEED_A = new Set([
-  'uni',
-  'university',
-  'unique',
-  'uniform',
-  'union',
-  'unit',
-  'united',
-  'user',
-  'useful',
-  'usual',
-  'utensil',
-  'one',
-  'once',
-  'european',
-  'eulogy',
-]);
-
-const A_EXCEPTIONS_NEED_AN = new Set([
+const SILENT_H_AN_WORDS = new Set([
   'hour',
   'hours',
   'hourly',
   'honest',
   'honestly',
+  'honesty',
   'honor',
   'honour',
+  'honorable',
+  'honourable',
   'heir',
+  'heirs',
+  'heiress',
   'herb',
+  'herbal',
 ]);
 
-function matchCase(original: string, replacement: string): string {
-  if (!original || !replacement) return replacement;
+const CONSONANT_SOUND_U_WORDS =
+  /^(uni|use|user|used|useful|useless|usual|usually|utensil|utility|eu|one|once)/i;
+
+const IRREGULAR_PAST_AFTER_DID: Record<string, string> = {
+  went: 'go',
+  saw: 'see',
+  came: 'come',
+  did: 'do',
+  took: 'take',
+  ate: 'eat',
+  wrote: 'write',
+  spoke: 'speak',
+  broke: 'break',
+  chose: 'choose',
+  drove: 'drive',
+  fell: 'fall',
+  flew: 'fly',
+  forgot: 'forget',
+  gave: 'give',
+  knew: 'know',
+  made: 'make',
+  ran: 'run',
+  said: 'say',
+  told: 'tell',
+  thought: 'think',
+  got: 'get',
+  bought: 'buy',
+  brought: 'bring',
+  caught: 'catch',
+  taught: 'teach',
+  found: 'find',
+  heard: 'hear',
+  kept: 'keep',
+  left: 'leave',
+  lost: 'lose',
+  met: 'meet',
+  paid: 'pay',
+  sent: 'send',
+  spent: 'spend',
+  stood: 'stand',
+  understood: 'understand',
+  won: 'win',
+  began: 'begin',
+  drank: 'drink',
+  sang: 'sing',
+  swam: 'swim',
+  wore: 'wear',
+};
+
+function preserveCase(original: string, replacement: string): string {
+  if (!original) return replacement;
   if (replacement.startsWith("I'")) return replacement;
   if (original === original.toUpperCase() && original.length > 1) {
     return replacement.toUpperCase();
@@ -165,291 +388,377 @@ function matchCase(original: string, replacement: string): string {
   return replacement;
 }
 
-function overlapsExisting(
-  issues: OfflineProofIssue[],
+function overlaps(
+  existing: OfflineProofIssue[],
   start: number,
   end: number
 ): boolean {
-  return issues.some((item) => start < item.end && end > item.start);
+  for (const item of existing) {
+    if (start < item.end && end > item.start) {
+      return true;
+    }
+  }
+  return false;
 }
 
 /**
- * Instant, 100% offline deterministic spelling, punctuation, and grammar checker.
- * Zero network calls, zero API tokens — designed to run live as the user types.
+ * Runs a fast, single-pass-style offline proofreading scan over the draft.
+ * Zero network calls, zero API tokens, high precision (minimal false positives).
  */
 export function runOfflineProofread(text: string): OfflineProofIssue[] {
   if (!text || text.trim().length < 2) return [];
 
   const issues: OfflineProofIssue[] = [];
-  let seq = 0;
 
   const pushIssue = (
-    category: OfflineIssueCategory,
     start: number,
     end: number,
     original: string,
     replacement: string,
+    category: OfflineIssueCategory,
     rule: string
   ) => {
-    if (original === replacement) return;
-    if (overlapsExisting(issues, start, end)) return;
-    seq += 1;
+    if (start < 0 || end <= start || original === replacement) return;
+    if (overlaps(issues, start, end)) return;
     issues.push({
-      id: `off-${seq}-${start}-${end}`,
-      category,
+      id: `${category}-${start}-${end}-${replacement}`,
       start,
       end,
       original,
       replacement,
+      category,
       rule,
     });
   };
 
-  // 1. Common spelling typos & missing apostrophe contractions
-  const wordRegex = /\b([A-Za-z]+)\b/g;
-  let match: RegExpExecArray | null;
-  while ((match = wordRegex.exec(text)) !== null) {
-    const word = match[1];
-    const lower = word.toLowerCase();
-    const start = match.index;
-    const end = start + word.length;
-
-    // Skip if currently being typed at the very end of the buffer without trailing space/punct
-    // only for short partial contractions like "im" so we don't interrupt mid-word typing
-    if (end === text.length && lower.length <= 3) continue;
-
-    // Standalone lowercase 'i'
-    if (word === 'i') {
-      const prevChar = start > 0 ? text[start - 1] : ' ';
-      const nextChar = end < text.length ? text[end] : ' ';
-      if (/\s|[("'—-]/.test(prevChar) && /[\s.,!?;:)'"-]/.test(nextChar)) {
-        pushIssue('grammar', start, end, 'i', 'I', 'Capitalize pronoun "I"');
-      }
-      continue;
-    }
-
-    const fix = COMMON_TYPOS[lower];
-    if (fix) {
-      pushIssue(
-        'spelling',
-        start,
-        end,
-        word,
-        matchCase(word, fix),
-        fix.includes("'") ? 'Missing apostrophe in contraction' : 'Spelling typo'
-      );
-    }
-  }
-
-  // 2. Repeated consecutive words ("the the", "to to", "is is")
-  const dupWordRegex = /\b([A-Za-z]{1,14})\s+\1\b/gi;
-  while ((match = dupWordRegex.exec(text)) !== null) {
-    const full = match[0];
-    const single = match[1];
-    const lower = single.toLowerCase();
-    if (lower === 'had' || lower === 'that') continue; // valid constructions ("had had", "that that")
+  // 1. Standalone lowercase "i" pronoun
+  const standaloneI = /(^|[^A-Za-z0-9_'])i(?=[^A-Za-z0-9_']|$)/g;
+  let m: RegExpExecArray | null;
+  while ((m = standaloneI.exec(text)) !== null) {
+    const start = m.index + m[1].length;
     pushIssue(
+      start,
+      start + 1,
+      'i',
+      'I',
       'grammar',
-      match.index,
-      match.index + full.length,
-      full,
-      single,
-      'Repeated consecutive word'
+      'Capitalize the pronoun "I"'
     );
   }
 
-  // 3. Common grammar phrase slips ("should of", "more better", "very unique")
-  const phraseRules: Array<{ regex: RegExp; replace: (m: RegExpExecArray) => string; rule: string }> = [
-    {
-      regex: /\b(should|could|would|might|must)\s+of\b/gi,
-      replace: (m) => `${m[1]} have`,
-      rule: 'Use "have" instead of "of" after modal verb',
-    },
-    {
-      regex: /\bmore\s+(better|easier|faster|cleaner|stronger|smarter)\b/gi,
-      replace: (m) => matchCase(m[0], m[1].toLowerCase()),
-      rule: 'Avoid double comparative',
-    },
-    {
-      regex: /\bvery\s+unique\b/gi,
-      replace: (m) => matchCase(m[0], 'unique'),
-      rule: '"Unique" is already absolute',
-    },
-  ];
-
-  for (const pr of phraseRules) {
-    while ((match = pr.regex.exec(text)) !== null) {
-      pushIssue(
-        'grammar',
-        match.index,
-        match.index + match[0].length,
-        match[0],
-        pr.replace(match),
-        pr.rule
-      );
+  // 2. Repeated consecutive words ("the the", "is is", "to to")
+  const repeatedWord = /\b([A-Za-z]{2,})\s+(\1)\b/gi;
+  while ((m = repeatedWord.exec(text)) !== null) {
+    const first = m[1];
+    // Allow intentional "had had" or "that that"
+    if (first.toLowerCase() === 'had' || first.toLowerCase() === 'that') {
+      continue;
     }
-  }
-
-  // 4. Article agreement: "a" vs "an"
-  const articleRegex = /\b(a|an)\s+([A-Za-z]{2,})\b/gi;
-  while ((match = articleRegex.exec(text)) !== null) {
-    const article = match[1];
-    const nextWord = match[2];
-    const nextLower = nextWord.toLowerCase();
-    const startsWithVowel = /^[aeiou]/.test(nextLower);
-
-    const needsAn =
-      (startsWithVowel && !AN_EXCEPTIONS_NEED_A.has(nextLower)) ||
-      A_EXCEPTIONS_NEED_AN.has(nextLower);
-
-    if (article.toLowerCase() === 'a' && needsAn) {
-      pushIssue(
-        'grammar',
-        match.index,
-        match.index + match[0].length,
-        match[0],
-        `${matchCase(article, 'an')} ${nextWord}`,
-        'Use "an" before a vowel sound'
-      );
-    } else if (article.toLowerCase() === 'an' && !needsAn) {
-      pushIssue(
-        'grammar',
-        match.index,
-        match.index + match[0].length,
-        match[0],
-        `${matchCase(article, 'a')} ${nextWord}`,
-        'Use "a" before a consonant sound'
-      );
-    }
-  }
-
-  // 5. Lowercase start of a sentence (first character or after . ! ?)
-  const firstLetterMatch = /^(\s*)([a-z])/.exec(text);
-  if (firstLetterMatch && text.trim().length >= 6) {
-    const idx = firstLetterMatch[1].length;
-    const ch = firstLetterMatch[2];
     pushIssue(
+      m.index,
+      m.index + m[0].length,
+      m[0],
+      first,
       'grammar',
-      idx,
-      idx + 1,
-      ch,
-      ch.toUpperCase(),
+      'Remove repeated word'
+    );
+  }
+
+  // 3. Basic grammar: "should/could/would/must of" -> "... have"
+  const modalOf = /\b(should|could|would|must|might)\s+of\b/gi;
+  while ((m = modalOf.exec(text)) !== null) {
+    pushIssue(
+      m.index,
+      m.index + m[0].length,
+      m[0],
+      `${m[1]} have`,
+      'grammar',
+      `Use "${m[1]} have" instead of "${m[1]} of"`
+    );
+  }
+
+  // 4. Basic grammar: double comparatives / superlatives
+  const doubleComp = /\b(more\s+better|more\s+easier|more\s+faster|more\s+harder|most\s+best|most\s+easiest|most\s+fastest)\b/gi;
+  while ((m = doubleComp.exec(text)) !== null) {
+    const secondWord = m[0].split(/\s+/)[1];
+    pushIssue(
+      m.index,
+      m.index + m[0].length,
+      m[0],
+      preserveCase(m[0], secondWord),
+      'grammar',
+      `Avoid double comparison; use "${secondWord}"`
+    );
+  }
+
+  // 5. Basic grammar: "your welcome" -> "you're welcome"
+  const yourWelcome = /\b(your)\s+welcome\b/gi;
+  while ((m = yourWelcome.exec(text)) !== null) {
+    pushIssue(
+      m.index,
+      m.index + m[0].length,
+      m[0],
+      `${preserveCase(m[1], "you're")} welcome`,
+      'grammar',
+      'Use "you\'re welcome" (you are welcome)'
+    );
+  }
+
+  // 6. Basic grammar: high-confidence subject-verb agreement
+  // 6a. "I is" -> "I am", "I are" -> "I am"
+  const iBe = /\b(I)\s+(is|are)\b/g;
+  while ((m = iBe.exec(text)) !== null) {
+    pushIssue(
+      m.index,
+      m.index + m[0].length,
+      m[0],
+      'I am',
+      'grammar',
+      'Subject-verb agreement: use "I am"'
+    );
+  }
+
+  // 6b. "he/she/it are" -> "he/she/it is"; "he/she/it were" (excluding "if he/she/it were")
+  const singularAre = /\b(he|she|it)\s+are\b/gi;
+  while ((m = singularAre.exec(text)) !== null) {
+    pushIssue(
+      m.index,
+      m.index + m[0].length,
+      m[0],
+      `${m[1]} is`,
+      'grammar',
+      `Subject-verb agreement: use "${m[1]} is"`
+    );
+  }
+
+  // 6c. "they/we/you is" -> "they/we/you are"; "they/we/you was" -> "they/we/you were"
+  const pluralIs = /\b(they|we|you)\s+(is|was)\b/gi;
+  while ((m = pluralIs.exec(text)) !== null) {
+    const fixVerb = m[2].toLowerCase() === 'is' ? 'are' : 'were';
+    pushIssue(
+      m.index,
+      m.index + m[0].length,
+      m[0],
+      `${m[1]} ${fixVerb}`,
+      'grammar',
+      `Subject-verb agreement: use "${m[1]} ${fixVerb}"`
+    );
+  }
+
+  // 6d. "he/she/it don't" -> "he/she/it doesn't"
+  const singularDont = /\b(he|she|it)\s+don't\b/gi;
+  while ((m = singularDont.exec(text)) !== null) {
+    pushIssue(
+      m.index,
+      m.index + m[0].length,
+      m[0],
+      `${m[1]} doesn't`,
+      'grammar',
+      `Subject-verb agreement: use "${m[1]} doesn't"`
+    );
+  }
+
+  // 6e. "they/we/you/I doesn't" -> "... don't"
+  const pluralDoesnt = /\b(they|we|you|I)\s+doesn't\b/gi;
+  while ((m = pluralDoesnt.exec(text)) !== null) {
+    pushIssue(
+      m.index,
+      m.index + m[0].length,
+      m[0],
+      `${m[1]} don't`,
+      'grammar',
+      `Subject-verb agreement: use "${m[1]} don't"`
+    );
+  }
+
+  // 6f. "there is many/several/multiple/two/three/four/five/few" -> "there are ..."
+  const thereIsPlural = /\b(there)\s+is\s+(many|several|multiple|two|three|four|five|six|seven|eight|nine|ten)\b/gi;
+  while ((m = thereIsPlural.exec(text)) !== null) {
+    pushIssue(
+      m.index,
+      m.index + m[0].length,
+      m[0],
+      `${m[1]} are ${m[2]}`,
+      'grammar',
+      'Use "there are" with plural quantities'
+    );
+  }
+
+  // 7. Basic grammar: past tense verb directly after "did" / "didn't" / "didnt" / "did not"
+  const didPast = /\b(didn't|didnt|did\s+not)\s+([a-z]+)\b/gi;
+  while ((m = didPast.exec(text)) !== null) {
+    const verbLower = m[2].toLowerCase();
+    const baseVerb = IRREGULAR_PAST_AFTER_DID[verbLower];
+    if (baseVerb) {
+      const normalizedAux =
+        m[1].toLowerCase() === 'didnt' ? preserveCase(m[1], "didn't") : m[1];
+      pushIssue(
+        m.index,
+        m.index + m[0].length,
+        m[0],
+        `${normalizedAux} ${baseVerb}`,
+        'grammar',
+        `Use base verb "${baseVerb}" after "${normalizedAux}"`
+      );
+    }
+  }
+
+  // 8. Basic "a / an" article agreement
+  const articlePair = /\b(a|an)\s+([A-Za-z][A-Za-z'-]*)\b/gi;
+  while ((m = articlePair.exec(text)) !== null) {
+    const article = m[1];
+    const nextWord = m[2];
+    const lowerNext = nextWord.toLowerCase();
+    // Skip uppercase acronyms like "an API", "a URL"
+    if (nextWord === nextWord.toUpperCase() && nextWord.length >= 2) continue;
+
+    const startsWithVowelSound =
+      SILENT_H_AN_WORDS.has(lowerNext) ||
+      (/^[aeiou]/i.test(lowerNext) && !CONSONANT_SOUND_U_WORDS.test(lowerNext));
+
+    if (article.toLowerCase() === 'a' && startsWithVowelSound) {
+      pushIssue(
+        m.index,
+        m.index + article.length,
+        article,
+        preserveCase(article, 'an'),
+        'grammar',
+        `Use "an" before "${nextWord}"`
+      );
+    } else if (article.toLowerCase() === 'an' && !startsWithVowelSound) {
+      pushIssue(
+        m.index,
+        m.index + article.length,
+        article,
+        preserveCase(article, 'a'),
+        'grammar',
+        `Use "a" before "${nextWord}"`
+      );
+    }
+  }
+
+  // 9. Single-pass O(1)-lookup spelling & missing-apostrophe contractions
+  const wordRegex = /\b([A-Za-z']{2,})\b/g;
+  while ((m = wordRegex.exec(text)) !== null) {
+    const raw = m[1];
+    const lower = raw.toLowerCase();
+    // Skip "id" when user intentionally writes technical uppercase "ID"
+    if (raw === 'ID') continue;
+    // Skip "lets" when preceded by he/she/it/that/this/which (verb: "it lets us")
+    if (lower === 'lets') {
+      const before = text.slice(Math.max(0, m.index - 12), m.index);
+      if (/\b(he|she|it|that|this|which|what)\s+$/i.test(before)) {
+        continue;
+      }
+    }
+    const fix = COMMON_TYPOS.get(lower);
+    if (fix && fix !== raw) {
+      const cased = preserveCase(raw, fix);
+      const isContraction = fix.includes("'");
+      pushIssue(
+        m.index,
+        m.index + raw.length,
+        raw,
+        cased,
+        'spelling',
+        isContraction
+          ? `Add missing apostrophe: "${cased}"`
+          : `Spelling: "${raw}" -> "${cased}"`
+      );
+    }
+  }
+
+  // 10. Lowercase sentence start (start of draft or right after . ! ? + space/newline)
+  const sentenceStart = /(^|[.!?]\s+)([a-z])(?=[a-z'])/g;
+  while ((m = sentenceStart.exec(text)) !== null) {
+    const prefix = m[1];
+    const letter = m[2];
+    const letterIndex = m.index + prefix.length;
+    // Skip URLs or decimals like "e.g. something"
+    const lookbehind = text.slice(Math.max(0, letterIndex - 5), letterIndex);
+    if (/(?:e\.g\.|i\.e\.|etc\.|vs\.)\s+$/i.test(lookbehind)) continue;
+
+    pushIssue(
+      letterIndex,
+      letterIndex + 1,
+      letter,
+      letter.toUpperCase(),
+      'grammar',
       'Capitalize the start of the sentence'
     );
   }
 
-  const afterSentenceRegex = /([.!?]\s+)([a-z])/g;
-  while ((match = afterSentenceRegex.exec(text)) !== null) {
-    const letterIdx = match.index + match[1].length;
-    const ch = match[2];
+  // 11. Multiple spaces between words (preserve line breaks)
+  const doubleSpaces = /[^\S\r\n]{2,}/g;
+  while ((m = doubleSpaces.exec(text)) !== null) {
+    if (m.index === 0 || text[m.index - 1] === '\n') continue;
     pushIssue(
-      'grammar',
-      letterIdx,
-      letterIdx + 1,
-      ch,
-      ch.toUpperCase(),
-      'Capitalize after sentence-ending punctuation'
-    );
-  }
-
-  // 6. Punctuation: space before comma/period/question/exclamation/semicolon
-  const spaceBeforePunct = /(\S)([ \t]+)([,.;!?])/g;
-  while ((match = spaceBeforePunct.exec(text)) !== null) {
-    const start = match.index + 1;
-    const end = match.index + match[0].length;
-    pushIssue(
-      'punctuation',
-      start,
-      end,
-      match[2] + match[3],
-      match[3],
-      'Remove extra space before punctuation'
-    );
-  }
-
-  // 7. Punctuation: missing space after comma/semicolon/period before a letter
-  // Ignore URLs, domains (.com/.org/.io), decimals, and common abbreviations (e.g., i.e.)
-  const missingSpaceAfterPunct = /([,;!?])([A-Za-z])/g;
-  while ((match = missingSpaceAfterPunct.exec(text)) !== null) {
-    pushIssue(
-      'punctuation',
-      match.index,
-      match.index + match[0].length,
-      match[0],
-      `${match[1]} ${match[2]}`,
-      'Add a space after punctuation'
-    );
-  }
-
-  const DOMAIN_OR_EXT = new Set([
-    'com', 'org', 'net', 'io', 'dev', 'edu', 'gov', 'app', 'co', 'in', 'ai',
-    'uk', 'us', 'ca', 'de', 'fr', 'jp', 'js', 'ts', 'tsx', 'jsx', 'md', 'json',
-    'html', 'css', 'pdf', 'png', 'jpg', 'jpeg', 'svg', 'csv', 'txt', 'py',
-  ]);
-  const missingSpaceAfterPeriod = /([a-z]{2,})\.([A-Za-z][a-z]{1,})\b/g;
-  while ((match = missingSpaceAfterPeriod.exec(text)) !== null) {
-    const afterWord = match[2];
-    if (DOMAIN_OR_EXT.has(afterWord.toLowerCase())) continue;
-    const start = match.index + match[1].length;
-    const end = start + 1 + afterWord.length;
-    const capitalizedNext =
-      afterWord[0].toUpperCase() + afterWord.slice(1);
-    pushIssue(
-      'punctuation',
-      start,
-      end,
-      `.${afterWord}`,
-      `. ${capitalizedNext}`,
-      'Add a space after period'
-    );
-  }
-
-  // 8. Punctuation: double spaces inside a line
-  const multiSpaceRegex = /(\S)([ ]{2,})(\S)/g;
-  while ((match = multiSpaceRegex.exec(text)) !== null) {
-    const start = match.index + 1;
-    const end = start + match[2].length;
-    pushIssue(
-      'punctuation',
-      start,
-      end,
-      match[2],
+      m.index,
+      m.index + m[0].length,
+      m[0],
       ' ',
-      'Collapse multiple spaces into one'
-    );
-  }
-
-  // 9. Punctuation: accidental duplicate commas/semicolons
-  const dupPunctRegex = /(,,+|;;+)/g;
-  while ((match = dupPunctRegex.exec(text)) !== null) {
-    pushIssue(
       'punctuation',
-      match.index,
-      match.index + match[0].length,
-      match[0],
-      match[0][0],
-      'Remove repeated punctuation'
+      'Replace extra spaces with a single space'
     );
   }
 
-  return issues.sort((a, b) => a.start - b.start).slice(0, 20);
+  // 11b. Combined misplaced space around punctuation ("garden ,and" -> "garden, and")
+  const swappedPunctSpace = /[^\S\r\n]+([,;!?])([A-Za-z])/g;
+  while ((m = swappedPunctSpace.exec(text)) !== null) {
+    pushIssue(
+      m.index,
+      m.index + m[0].length,
+      m[0],
+      `${m[1]} ${m[2]}`,
+      'punctuation',
+      `Move space after "${m[1]}"`
+    );
+  }
+
+  // 12. Space placed before punctuation ("hello , world" or "done .")
+  const spaceBeforePunct = /\s+([,.;:!?])(?!\.)/g;
+  while ((m = spaceBeforePunct.exec(text)) !== null) {
+    if (m[0].includes('\n')) continue;
+    pushIssue(
+      m.index,
+      m.index + m[0].length,
+      m[0],
+      m[1],
+      'punctuation',
+      `Remove space before "${m[1]}"`
+    );
+  }
+
+  // 13. Missing space after comma / semicolon / colon / exclamation / question before a word
+  const missingSpaceAfter = /([,;!?])([A-Za-z])/g;
+  while ((m = missingSpaceAfter.exec(text)) !== null) {
+    pushIssue(
+      m.index,
+      m.index + m[0].length,
+      m[0],
+      `${m[1]} ${m[2]}`,
+      'punctuation',
+      `Add a space after "${m[1]}"`
+    );
+  }
+
+  issues.sort((a, b) => a.start - b.start);
+  return issues;
 }
 
 /**
- * Applies a single offline proofread issue cleanly by exact character offset.
+ * Applies a single offline proofreading issue cleanly without corrupting other text.
  */
 export function applyOfflineIssue(
   text: string,
   issue: OfflineProofIssue
 ): string {
-  if (text.slice(issue.start, issue.end) !== issue.original) {
-    const fallbackIdx = text.indexOf(issue.original);
-    if (fallbackIdx === -1) return text;
-    return (
-      text.slice(0, fallbackIdx) +
-      issue.replacement +
-      text.slice(fallbackIdx + issue.original.length)
-    );
+  if (
+    issue.start < 0 ||
+    issue.end > text.length ||
+    text.slice(issue.start, issue.end) !== issue.original
+  ) {
+    return text;
   }
   return (
     text.slice(0, issue.start) + issue.replacement + text.slice(issue.end)
@@ -457,35 +766,23 @@ export function applyOfflineIssue(
 }
 
 /**
- * Applies all non-overlapping offline proofread issues in reverse offset order
- * and runs a follow-up pass for cascading spacing/capitalization fixes (e.g. " ,and" -> ", and").
+ * Applies all non-overlapping offline issues from right to left in one pass.
  */
 export function applyAllOfflineIssues(
   text: string,
   issues: OfflineProofIssue[]
 ): string {
-  const applyPass = (source: string, list: OfflineProofIssue[]) => {
-    const sortedDesc = [...list].sort((a, b) => b.start - a.start);
-    let result = source;
-    for (const issue of sortedDesc) {
-      if (result.slice(issue.start, issue.end) === issue.original) {
-        result =
-          result.slice(0, issue.start) +
-          issue.replacement +
-          result.slice(issue.end);
-      }
+  const ordered = [...issues].sort((a, b) => b.start - a.start);
+  let next = text;
+  for (const issue of ordered) {
+    if (
+      issue.start >= 0 &&
+      issue.end <= next.length &&
+      next.slice(issue.start, issue.end) === issue.original
+    ) {
+      next =
+        next.slice(0, issue.start) + issue.replacement + next.slice(issue.end);
     }
-    return result;
-  };
-
-  let next = applyPass(text, issues);
-  // Up to 2 cascading passes for overlapping punctuation/capitalization pairs
-  for (let pass = 0; pass < 2; pass += 1) {
-    const remaining = runOfflineProofread(next);
-    if (remaining.length === 0) break;
-    const updated = applyPass(next, remaining);
-    if (updated === next) break;
-    next = updated;
   }
   return next;
 }
