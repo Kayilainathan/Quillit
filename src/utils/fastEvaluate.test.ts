@@ -49,8 +49,21 @@ test('buildInstantLocalEvaluation runs fast and returns valid 6-pillar scores + 
   for (const val of Object.values(result.scores)) {
     assert.ok(val >= 4 && val <= 10, `Score out of range: ${val}`);
   }
-  assert.ok(['A2', 'B1', 'B2', 'C1', 'C2'].includes(result.cefrLevel));
+  assert.ok(['A1', 'A2', 'B1', 'B2', 'B2+', 'C1', 'C2'].includes(result.cefrLevel));
   assert.ok(result.internationalMetrics.ieltsBand >= 4 && result.internationalMetrics.ieltsBand <= 9);
+
+  // Gibberish must NEVER receive inflated 7/10 scores
+  const gibberish = 'asdfghjkl qwertzuiop zxcvbnm lkjh fghjkl qwrtyp bcdfrt';
+  const gibRes = buildInstantLocalEvaluation(
+    gibberish,
+    'technical',
+    'academic-technical',
+    [],
+    'Signal Conditioning'
+  );
+  const gibTotal = Object.values(gibRes.scores).reduce((a, b) => a + b, 0);
+  assert.ok(gibTotal <= 12, `Expected gibberish <= 12/60, got ${gibTotal}/60`);
+  assert.equal(gibRes.cefrLevel, 'A1');
 });
 
 test('resolveRandomTopicDismiss removes topic if body is empty or unchanged after picking random', () => {

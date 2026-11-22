@@ -109,6 +109,12 @@ interface CalendarViewProps {
   onToggleSlotComplete: (slotId: string) => void;
   onDeleteSlot: (slotId: string) => void;
   onClearAllSlots: () => void;
+  periodicAiStatus?: {
+    shouldTrigger: boolean;
+    completedCount: number;
+    recentAveragePct: number;
+    reason: string;
+  };
   onLaunchSlotInStudio: (slot: CalendarSlot) => void;
   onOpenScheduledPopup: (slot: CalendarSlot) => void;
 }
@@ -158,6 +164,7 @@ export function CalendarView({
   onToggleSlotComplete,
   onDeleteSlot,
   onClearAllSlots,
+  periodicAiStatus,
   onLaunchSlotInStudio,
   onOpenScheduledPopup,
 }: CalendarViewProps) {
@@ -416,7 +423,7 @@ export function CalendarView({
             onClick={() => {
               onLoadMonthTriWeekly(viewYear, viewMonth);
               setMonthBanner(
-                `Filled ${formatMonthLabel(viewYear, viewMonth)} with writing slots.`
+                `Filled remaining upcoming writing days in ${formatMonthLabel(viewYear, viewMonth)} from your 52-week roadmap (past dates skipped).`
               );
             }}
             className="btn-secondary inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium whitespace-nowrap"
@@ -504,6 +511,43 @@ export function CalendarView({
           )}
         </div>
       </section>
+
+      {/* Responsible Periodic AI Progress Check-in (triggered every 3 scored sessions) */}
+      {periodicAiStatus?.shouldTrigger && (
+        <div
+          data-testid="periodic-ai-adaptation-banner"
+          className="card-surface px-4 py-3 flex flex-wrap items-center justify-between gap-3 bg-subtle/40"
+        >
+          <div className="flex items-start gap-2.5 min-w-0">
+            <Sparkles
+              className="w-4 h-4 text-ink-primary shrink-0 mt-0.5"
+              aria-hidden="true"
+            />
+            <div className="min-w-0">
+              <div className="text-xs font-medium text-ink-primary">
+                Periodic Progress Review Ready
+              </div>
+              <p className="text-[11px] text-ink-secondary mt-0.5 leading-relaxed">
+                {periodicAiStatus.reason}
+              </p>
+            </div>
+          </div>
+          <button
+            type="button"
+            disabled={refreshingSchedule}
+            onClick={() => onRefreshTriWeeklySchedule()}
+            className="btn-secondary inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium whitespace-nowrap shrink-0"
+          >
+            <RefreshCw
+              className={`w-3.5 h-3.5 ${refreshingSchedule ? 'animate-spin' : ''}`}
+              aria-hidden="true"
+            />
+            <span>
+              {refreshingSchedule ? 'Adapting...' : 'Adapt Upcoming with AI'}
+            </span>
+          </button>
+        </div>
+      )}
 
       {/* Optional AI Plan Drawer */}
       {showAiPlanBox && (

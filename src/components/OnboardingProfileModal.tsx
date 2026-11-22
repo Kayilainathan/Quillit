@@ -106,7 +106,7 @@ export function OnboardingProfileModal({
   const [liveOfflineCheck, setLiveOfflineCheck] = useState(
     initialLiveOfflineCheck
   );
-  const [rebuildSchedule, setRebuildSchedule] = useState(!isEditingExisting);
+  const [rebuildSchedule, setRebuildSchedule] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   // Dynamic ink-fill progress (0..100) responding smoothly to field completion + step
@@ -185,7 +185,7 @@ export function OnboardingProfileModal({
         defaultMode,
         targetWordGoal,
       },
-      rebuildMonthSchedule: true,
+      rebuildMonthSchedule: false,
       notificationsEnabled,
       dailyWordGoal: targetWordGoal,
       liveOfflineCheck,
@@ -214,7 +214,7 @@ export function OnboardingProfileModal({
         defaultMode: initialProfile?.defaultMode ?? 'journal',
         targetWordGoal: initialProfile?.targetWordGoal ?? 250,
       },
-      rebuildMonthSchedule: true,
+      rebuildMonthSchedule: false,
       notificationsEnabled: false,
       dailyWordGoal: initialProfile?.targetWordGoal ?? 250,
       liveOfflineCheck: true,

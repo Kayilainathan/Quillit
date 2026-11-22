@@ -18,6 +18,7 @@ import type { EncryptedEnvelope } from '../types';
 import type { SecurityQuestionSetup } from '../utils/offlineRecovery';
 import { ManuscriptPasswordInput } from './ManuscriptPasswordInput';
 import { OfflineSpacePage, type OfflinePageMode } from './OfflineSpacePage';
+import { QuillitLogo } from './QuillitLogo';
 
 type OfflineModalMode = 'none' | 'first-time' | 'returning' | 'overwrite-guard';
 
@@ -427,8 +428,9 @@ export function VaultGate({
   return (
     <div className="min-h-screen flex flex-col bg-canvas text-ink-primary page-glide-enter">
       <header className="w-full max-w-5xl mx-auto px-5 sm:px-8 h-16 flex items-center justify-between">
-        <span className="font-display text-xl font-semibold tracking-tight text-ink-primary">
-          Quillit
+        <span className="inline-flex items-center gap-2 font-display text-xl font-semibold tracking-tight text-ink-primary">
+          <QuillitLogo size="md" />
+          <span>Quillit</span>
         </span>
         <button
           type="button"
@@ -449,7 +451,10 @@ export function VaultGate({
 
       <main className="flex-1 flex items-center justify-center px-4 py-8 sm:py-12">
         <div className="w-full max-w-[400px] space-y-6">
-          <div className="text-center space-y-2">
+          <div className="text-center space-y-2.5">
+            <div className="flex justify-center">
+              <QuillitLogo size="lg" />
+            </div>
             <h1 className="font-display text-3xl font-medium tracking-tight text-ink-primary">
               Sign in to Quillit
             </h1>

@@ -2,6 +2,7 @@ import type {
   FeedbackImplementedStatus,
   GrammarFix,
   InternationalMetrics,
+  RewrittenSample,
   RubricScores,
   ToneSetting,
   VocabSuggestion,
@@ -9,11 +10,16 @@ import type {
 } from '../types';
 import {
   analyzeDraftLocally,
-  computeTotalScore,
   deriveInternationalMetrics,
   MODE_LABELS,
   TONE_LABELS,
 } from './analytics';
+import {
+  assessDraftIntegrity,
+  calibrateEvaluationScores,
+  computeTopicOverlap,
+  filterGroundedGrammarFixes,
+} from './evaluationCalibration';
 import type { OfflineProofIssue } from './offlineProofreader';
 
 export interface InstantEvaluationResult {
@@ -30,6 +36,7 @@ export interface InstantEvaluationResult {
   feedbackImplemented: FeedbackImplementedStatus;
   whatImproved: string;
   strictImprovements: string;
+  rewrittenSample?: RewrittenSample;
   grammarFixes: GrammarFix[];
   vocabUpgrades: VocabSuggestion[];
 }
@@ -231,6 +238,24 @@ const WEAK_VOCAB_UPGRADES: Array<{
   reason: string;
 }> = [
   {
+    pattern: /\bdue\s+to\s+the\s+fact\s+that\b/i,
+    original: 'due to the fact that',
+    better: 'because',
+    reason: 'Replaces five bloated words with one clean causal link.',
+  },
+  {
+    pattern: /\bin\s+order\s+to\b/i,
+    original: 'in order to',
+    better: 'to',
+    reason: 'Cuts unnecessary padding immediately.',
+  },
+  {
+    pattern: /\bat\s+the\s+end\s+of\s+the\s+day\b/i,
+    original: 'at the end of the day',
+    better: 'ultimately',
+    reason: 'Replaces a tired cliché with crisp spoken clarity.',
+  },
+  {
     pattern: /\bvery\s+good\b/i,
     original: 'very good',
     better: 'compelling',
@@ -251,14 +276,14 @@ const WEAK_VOCAB_UPGRADES: Array<{
   {
     pattern: /\ba\s+lot\s+of\b/i,
     original: 'a lot of',
-    better: 'numerous',
-    reason: 'Reads more crisply in structured writing.',
+    better: 'heavy',
+    reason: 'Replaces vague quantity filler with concrete specificity.',
   },
   {
     pattern: /\bvery\s+fast\b/i,
     original: 'very fast',
     better: 'rapid',
-    reason: 'Single strong word improves pacing.',
+    reason: 'Single strong word sharpens pacing.',
   },
   {
     pattern: /\bvery\s+hard\b/i,
@@ -270,24 +295,102 @@ const WEAK_VOCAB_UPGRADES: Array<{
     pattern: /\bmake\s+sure\b/i,
     original: 'make sure',
     better: 'ensure',
-    reason: 'More direct and concise phrasing.',
+    reason: 'Tighter, more direct verb choice.',
   },
   {
-    pattern: /\bin\s+order\s+to\b/i,
-    original: 'in order to',
-    better: 'to',
-    reason: 'Cuts unnecessary padding immediately.',
+    pattern: /\bget\s+rid\s+of\b/i,
+    original: 'get rid of',
+    better: 'eliminate',
+    reason: 'Stronger single verb for clear technical or professional speech.',
+  },
+  {
+    pattern: /\bfind\s+out\b/i,
+    original: 'find out',
+    better: 'pinpoint',
+    reason: 'More active and concrete than a generic phrasal verb.',
+  },
+  {
+    pattern: /\blook\s+into\b/i,
+    original: 'look into',
+    better: 'investigate',
+    reason: 'Sounds decisive and accountable in interviews or emails.',
+  },
+  {
+    pattern: /\bkind\s+of\b/i,
+    original: 'kind of',
+    better: 'somewhat',
+    reason: 'Tightens vague conversational hedging for clearer conviction.',
+  },
+  {
+    pattern: /\bsort\s+of\b/i,
+    original: 'sort of',
+    better: 'roughly',
+    reason: 'Replaces vague hedging with crisp everyday precision.',
   },
 ];
 
-function clampScore(value: number): number {
-  return Math.max(4, Math.min(10, Math.round(value)));
+function clampRawScore(value: number): number {
+  return Math.max(1, Math.min(10, Math.round(value)));
+}
+
+function buildLocalRewriteSample(
+  content: string,
+  vocabUpgrades: VocabSuggestion[]
+): RewrittenSample | undefined {
+  const sentences = content
+    .split(/(?<=[.!?])\s+|\n+/)
+    .map((s) => s.trim())
+    .filter((s) => s.length >= 25 && s.length <= 220);
+
+  if (sentences.length === 0) return undefined;
+
+  // Prefer rewriting a sentence that contains removable filler words
+  const fillerRegex = /\b(basically|actually|literally|really|just|very)\s+/gi;
+  const fillerCandidate = sentences.find((s) => fillerRegex.test(s));
+  if (fillerCandidate) {
+    fillerRegex.lastIndex = 0;
+    const cleaned = fillerCandidate
+      .replace(fillerRegex, '')
+      .replace(/\s{2,}/g, ' ')
+      .replace(/^([a-z])/, (m) => m.toUpperCase())
+      .trim();
+    if (cleaned.length >= 16 && cleaned.toLowerCase() !== fillerCandidate.toLowerCase()) {
+      return {
+        original: fillerCandidate,
+        improved: cleaned,
+        why: 'Stripping spoken hedge words immediately sharpens conviction and rhythm.',
+      };
+    }
+  }
+
+  // Otherwise apply the top concrete vocab upgrade to its containing sentence
+  const directUpgrade = vocabUpgrades.find(
+    (v) => !v.betterAlternative.includes('/')
+  );
+  if (directUpgrade) {
+    const escaped = directUpgrade.used.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const re = new RegExp(`\\b${escaped}\\b`, 'i');
+    const hitSentence = sentences.find((s) => re.test(s));
+    if (hitSentence) {
+      const improved = hitSentence.replace(re, directUpgrade.betterAlternative);
+      if (improved !== hitSentence) {
+        return {
+          original: hitSentence,
+          improved,
+          why: directUpgrade.explanation,
+        };
+      }
+    }
+  }
+
+  return undefined;
 }
 
 /**
- * Instant (<15ms) local evaluation engine so "Evaluate & Score" feels
- * lightning fast the moment the writer clicks it. Seamlessly upgrades
- * in-place when the fast Gemini server pass completes moments later.
+ * Instant (<15ms) calibrated local evaluation engine so "Evaluate & Score" responds
+ * immediately while the deep Gemini Coach (gemini-4-hydrogen, MEDIUM thinking) runs.
+ * Uses strict integrity checks (gibberish/short-draft/rhythm/topic alignment) so it
+ * never hands out inflated scores even offline or on static GitHub Pages.
  */
 export function buildInstantLocalEvaluation(
   content: string,
@@ -297,101 +400,115 @@ export function buildInstantLocalEvaluation(
   existingTopic?: string
 ): InstantEvaluationResult {
   const diag = analyzeDraftLocally(content);
+  const integrity = assessDraftIntegrity(content);
   const words = Math.max(1, diag.wordCount);
   const sentences = Math.max(1, diag.sentenceCount);
-  const tokens = content.toLowerCase().match(/[a-z']+/g) ?? [];
-  const uniqueTokens = new Set(tokens);
-  const lexicalDiversity =
-    tokens.length > 0 ? uniqueTokens.size / tokens.length : 0.5;
+  const lexicalDiversity = integrity.uniqueWordRatio;
   const fillerCount = diag.fillerHits.reduce((sum, hit) => sum + hit.count, 0);
   const repeatedOpenerCount = diag.repeatedOpeners.length;
+  const passiveCount = diag.passiveMarkers;
 
   const spellingCount = offlineIssues.filter((i) => i.category === 'spelling').length;
   const grammarCount = offlineIssues.filter((i) => i.category === 'grammar').length;
   const punctCount = offlineIssues.filter((i) => i.category === 'punctuation').length;
   const issueDensity =
-    (spellingCount * 1.15 + grammarCount * 1.3 + punctCount * 0.6) /
-    Math.max(25, words);
+    (spellingCount * 1.2 + grammarCount * 1.4 + punctCount * 0.65) /
+    Math.max(20, words);
 
-  // Compute nuanced 6-pillar scores (4..10) from concrete writing signals
-  const lengthBoost =
-    words >= 120 ? 1.1 : words >= 60 ? 0.6 : words >= 30 ? 0.2 : -0.6;
+  // Depth curve: 140+ words can earn full depth; <35 words is penalized honestly
+  const depthFactor =
+    words >= 140
+      ? 1.0
+      : words >= 85
+        ? 0.5
+        : words >= 45
+          ? 0.0
+          : words >= 25
+            ? -0.8
+            : -1.8;
+
   const avgLen = diag.avgWordsPerSentence;
+  const cadenceBonus =
+    sentences >= 3 && integrity.sentenceLengthStdDev >= 4.0
+      ? 1.0
+      : sentences >= 2 && integrity.sentenceLengthStdDev >= 2.2
+        ? 0.4
+        : -0.6;
   const balancedSentenceLen =
-    avgLen >= 10 && avgLen <= 22 ? 1.0 : avgLen >= 7 && avgLen <= 28 ? 0.4 : -0.5;
+    avgLen >= 10 && avgLen <= 22 ? 0.8 : avgLen >= 7 && avgLen <= 27 ? 0.2 : -0.8;
 
-  const grammarMechanics = clampScore(
-    9.2 - issueDensity * 18 - Math.min(2.2, (spellingCount + grammarCount) * 0.42)
-  );
-  const claritySimplicity = clampScore(
-    7.4 +
-      balancedSentenceLen -
-      Math.min(1.6, fillerCount * 0.28) +
-      (words >= 45 ? 0.4 : 0)
-  );
-  const naturalVoiceFlow = clampScore(
-    7.2 +
-      lengthBoost * 0.6 +
-      (sentences >= 3 ? 0.6 : 0) -
-      Math.min(1.2, repeatedOpenerCount * 0.45)
-  );
-  const toneEngagement = clampScore(
-    7.1 + lengthBoost * 0.55 + (lexicalDiversity >= 0.55 ? 0.7 : 0.1)
-  );
-  const sentenceVarietyCadence = clampScore(
-    6.8 +
-      (sentences >= 4 ? 0.7 : 0.1) +
-      (lexicalDiversity >= 0.6 ? 0.8 : lexicalDiversity >= 0.48 ? 0.4 : -0.3) -
-      Math.min(1.4, repeatedOpenerCount * 0.5)
-  );
-  const concisenessDirectness = clampScore(
-    8.1 -
-      Math.min(1.8, fillerCount * 0.35) -
-      (avgLen > 28 ? 1.0 : avgLen > 24 ? 0.4 : 0)
-  );
+  const topicOverlap = computeTopicOverlap(content, existingTopic);
+  const topicPenalty =
+    topicOverlap !== null && topicOverlap === 0 && words >= 25 ? -1.0 : 0;
 
-  const scores: RubricScores = {
-    naturalVoiceFlow,
-    claritySimplicity,
-    grammarMechanics,
-    toneEngagement,
-    sentenceVarietyCadence,
-    concisenessDirectness,
+  const rawScores: RubricScores = {
+    naturalVoiceFlow: clampRawScore(
+      6.4 +
+        depthFactor * 0.8 +
+        cadenceBonus * 0.6 -
+        Math.min(2.0, fillerCount * 0.35) -
+        Math.min(1.5, repeatedOpenerCount * 0.5)
+    ),
+    claritySimplicity: clampRawScore(
+      6.8 +
+        balancedSentenceLen -
+        Math.min(1.8, fillerCount * 0.3) -
+        Math.min(1.5, passiveCount * 0.35) -
+        Math.min(1.5, issueDensity * 10)
+    ),
+    grammarMechanics: clampRawScore(
+      8.5 -
+        issueDensity * 22 -
+        Math.min(3.5, (spellingCount + grammarCount) * 0.55)
+    ),
+    toneEngagement: clampRawScore(
+      6.3 +
+        depthFactor * 0.7 +
+        (lexicalDiversity >= 0.58 ? 0.8 : lexicalDiversity >= 0.48 ? 0.2 : -0.6) +
+        topicPenalty
+    ),
+    sentenceVarietyCadence: clampRawScore(
+      6.0 +
+        cadenceBonus +
+        (sentences >= 4 ? 0.6 : -0.4) -
+        Math.min(1.8, repeatedOpenerCount * 0.6) -
+        (integrity.longestSentenceWords > 36 ? 0.8 : 0)
+    ),
+    concisenessDirectness: clampRawScore(
+      7.4 -
+        Math.min(2.2, fillerCount * 0.42) -
+        Math.min(1.5, passiveCount * 0.35) -
+        (avgLen > 28 ? 1.2 : avgLen > 24 ? 0.5 : 0)
+    ),
   };
 
-  const totalScore = computeTotalScore(scores);
-  const cefrLevel =
-    totalScore >= 54
-      ? 'C2'
-      : totalScore >= 49
-        ? 'C1'
-        : totalScore >= 43
-          ? 'B2'
-          : totalScore >= 36
-            ? 'B1'
-            : 'A2';
-
-  const internationalMetrics = deriveInternationalMetrics({
-    scores,
+  const grammarFixes: GrammarFix[] = filterGroundedGrammarFixes(
     content,
+    offlineIssues.slice(0, 6).map((issue) => ({
+      original: issue.original,
+      corrected: issue.replacement,
+      rule: issue.rule,
+      category: issue.category,
+    }))
+  );
+
+  const calibrated = calibrateEvaluationScores({
+    content,
+    scores: rawScores,
+    grammarFixesCount: grammarFixes.length,
   });
 
-  const grammarFixes: GrammarFix[] = offlineIssues.slice(0, 6).map((issue) => ({
-    original: issue.original,
-    corrected: issue.replacement,
-    rule: issue.rule,
-    category: issue.category,
-  }));
-
   const vocabUpgrades: VocabSuggestion[] = [];
-  for (const candidate of WEAK_VOCAB_UPGRADES) {
-    if (candidate.pattern.test(content)) {
-      vocabUpgrades.push({
-        used: candidate.original,
-        betterAlternative: candidate.better,
-        explanation: candidate.reason,
-      });
-      if (vocabUpgrades.length >= 4) break;
+  if (!calibrated.integrity.isGibberishOrLowEffort) {
+    for (const candidate of WEAK_VOCAB_UPGRADES) {
+      if (candidate.pattern.test(content)) {
+        vocabUpgrades.push({
+          used: candidate.original,
+          betterAlternative: candidate.better,
+          explanation: candidate.reason,
+        });
+        if (vocabUpgrades.length >= 3) break;
+      }
     }
   }
 
@@ -400,53 +517,147 @@ export function buildInstantLocalEvaluation(
       ? existingTopic.trim()
       : inferSuitableTitle(content, mode);
 
-  const whatImproved =
-    lexicalDiversity >= 0.58
-      ? `Clear ${TONE_LABELS[tone].toLowerCase()} focus across ${words} words with varied word choice.`
-      : `Steady ${MODE_LABELS[mode].toLowerCase()} rhythm across ${sentences} ${sentences === 1 ? 'sentence' : 'sentences'} with a direct central point.`;
+  const internationalMetrics = deriveInternationalMetrics({
+    scores: calibrated.scores,
+    content,
+    internationalMetrics: {
+      ieltsBand: calibrated.ieltsBand,
+      toeflEquivalent: calibrated.toeflEquivalent,
+      lexicalResource: calibrated.integrity.isGibberishOrLowEffort
+        ? 1
+        : clampRawScore(
+            (calibrated.scores.claritySimplicity +
+              calibrated.scores.concisenessDirectness) /
+              2
+          ),
+      coherenceCohesion: calibrated.integrity.isGibberishOrLowEffort
+        ? 1
+        : clampRawScore(
+            (calibrated.scores.naturalVoiceFlow +
+              calibrated.scores.sentenceVarietyCadence) /
+              2
+          ),
+      taskAchievement: calibrated.integrity.isGibberishOrLowEffort
+        ? 1
+        : clampRawScore(
+            (calibrated.scores.claritySimplicity +
+              calibrated.scores.toneEngagement) /
+              2 +
+              topicPenalty
+          ),
+      registerControl: calibrated.scores.toneEngagement,
+      grammarAccuracy: calibrated.scores.grammarMechanics,
+      fleschReadingEase: 0,
+      fkGradeLevel: 0,
+    },
+  });
+
+  if (calibrated.integrity.isGibberishOrLowEffort) {
+    return {
+      evaluationStatus: 'completed',
+      modelUsed: 'instant-local',
+      thinkingLevelUsed: 'LOCAL',
+      isProvisionalInstant: true,
+      suggestedTitle,
+      scores: calibrated.scores,
+      cefrLevel: calibrated.cefrLevel,
+      internationalMetrics,
+      toneVerdict:
+        calibrated.integrity.reason ||
+        'This input does not contain enough coherent English sentences to grade.',
+      flowVerdict: `Detected ${words} tokens with low recognizable word coherence.`,
+      feedbackImplemented: 'Baseline',
+      whatImproved: 'Write at least 3 to 4 genuine sentences so the coach can evaluate your voice.',
+      strictImprovements:
+        'Replace scrambled or repeated text with a real spoken-style response to your topic.',
+      grammarFixes,
+      vocabUpgrades: [],
+    };
+  }
+
+  const strengthParts: string[] = [];
+  if (integrity.sentenceLengthStdDev >= 4.0 && sentences >= 3) {
+    strengthParts.push(
+      `Natural sentence-length variation across ${sentences} sentences keeps spoken pacing lively.`
+    );
+  } else if (lexicalDiversity >= 0.6 && words >= 35) {
+    strengthParts.push(
+      `Fresh vocabulary range (${Math.round(lexicalDiversity * 100)}% unique words) avoids flat repetition.`
+    );
+  } else {
+    strengthParts.push(
+      `Clear ${MODE_LABELS[mode].toLowerCase()} focus across ${words} words (${sentences} ${sentences === 1 ? 'sentence' : 'sentences'}).`
+    );
+  }
 
   const strictParts: string[] = [];
+  if (words < 45) {
+    strictParts.push(
+      `At ${words} words, this draft is still brief; expand with one concrete example or counter-point.`
+    );
+  }
   if (grammarFixes.length > 0) {
     strictParts.push(
-      `Tighten ${grammarFixes.length} spelling or grammar ${grammarFixes.length === 1 ? 'slip' : 'slips'} before finalizing.`
+      `Fix ${grammarFixes.length} flagged mechanics ${grammarFixes.length === 1 ? 'slip' : 'slips'} (starting with "${grammarFixes[0].original}").`
     );
   }
-  if (diag.fillerHits.length >= 2) {
-    const sampleFillers = diag.fillerHits.slice(0, 2).map((f) => f.word);
+  if (diag.fillerHits.length > 0) {
+    const sampleFillers = diag.fillerHits.slice(0, 2).map((f) => `"${f.word}"`);
     strictParts.push(
-      `Trim filler words like "${sampleFillers.join('" and "')}" for sharper cadence.`
+      `Cut filler hedges like ${sampleFillers.join(' and ')} to make your claims hit harder.`
     );
   }
-  if (avgLen > 24) {
+  if (integrity.longestSentenceWords > 30) {
     strictParts.push(
-      'Split your longest sentences to improve breathing room and clarity.'
+      `Your longest sentence runs ${integrity.longestSentenceWords} words; split it into two crisp breaths.`
+    );
+  }
+  if (repeatedOpenerCount > 0) {
+    strictParts.push(
+      `You open multiple sentences with "${diag.repeatedOpeners[0].opener}"; vary your sentence starters.`
+    );
+  }
+  if (passiveCount >= 2) {
+    strictParts.push(
+      `Convert ${passiveCount} passive constructions into direct active verbs.`
+    );
+  }
+  if (topicPenalty < 0 && existingTopic) {
+    strictParts.push(
+      `Tie your draft more explicitly back to the stated prompt ("${existingTopic.slice(0, 48)}").`
     );
   }
   if (strictParts.length === 0) {
     strictParts.push(
-      'Push specificity one notch deeper with a concrete detail or example.'
+      'Sharpen one abstract claim with a concrete physical detail, number, or real conversation beat.'
     );
   }
+
+  const rewrittenSample = buildLocalRewriteSample(content, vocabUpgrades);
 
   return {
     evaluationStatus: 'completed',
     modelUsed: 'instant-local',
-    thinkingLevelUsed: 'INSTANT',
+    thinkingLevelUsed: 'LOCAL',
     isProvisionalInstant: true,
     suggestedTitle,
-    scores,
-    cefrLevel,
+    scores: calibrated.scores,
+    cefrLevel: calibrated.cefrLevel,
     internationalMetrics,
-    toneVerdict: `Aligned with ${TONE_LABELS[tone]} (${MODE_LABELS[mode]}).`,
+    toneVerdict:
+      topicPenalty < 0
+        ? `Reads in a ${TONE_LABELS[tone].toLowerCase()} voice, though topical alignment with the prompt looks light.`
+        : `Fits ${TONE_LABELS[tone]} register for ${MODE_LABELS[mode]} across ${words} words.`,
     flowVerdict:
       avgLen >= 10 && avgLen <= 22
-        ? `Balanced cadence averaging ${avgLen} words per sentence.`
+        ? `Averaging ${avgLen} words/sentence (spread ${integrity.sentenceLengthStdDev}w).`
         : avgLen < 10
-          ? `Brisk pacing averaging ${avgLen} words per sentence; link related ideas smoothly.`
-          : `Dense sentences averaging ${avgLen} words; vary with shorter punchy lines.`,
+          ? `Short choppy pacing at ${avgLen} words/sentence; connect closely linked thoughts.`
+          : `Dense pacing at ${avgLen} words/sentence (longest: ${integrity.longestSentenceWords}w); break up long clauses.`,
     feedbackImplemented: 'Baseline',
-    whatImproved,
-    strictImprovements: strictParts.join(' '),
+    whatImproved: strengthParts.join(' '),
+    strictImprovements: strictParts.slice(0, 2).join(' '),
+    rewrittenSample,
     grammarFixes,
     vocabUpgrades,
   };

@@ -783,6 +783,84 @@
   animation: inkSealPop 380ms var(--ease-out-expo) both;
 }
 
+/* Welcome Topic Flashcard: Smooth Calligraphic Fountain-Pen Writing Loop */
+@keyframes welcomeInkTrace {
+  0% {
+    stroke-dashoffset: 240;
+    opacity: 0.35;
+  }
+  18% {
+    opacity: 1;
+  }
+  65% {
+    stroke-dashoffset: 0;
+    opacity: 1;
+  }
+  88% {
+    stroke-dashoffset: 0;
+    opacity: 0.9;
+  }
+  100% {
+    stroke-dashoffset: 0;
+    opacity: 0.9;
+  }
+}
+
+@keyframes welcomeSubInkTrace {
+  0%,
+  35% {
+    stroke-dashoffset: 150;
+    opacity: 0;
+  }
+  50% {
+    opacity: 0.85;
+  }
+  100% {
+    stroke-dashoffset: 0;
+    opacity: 0.85;
+  }
+}
+
+@keyframes welcomePenGlide {
+  0% {
+    transform: translate(-196px, 5px) rotate(-9deg);
+    opacity: 0;
+  }
+  12% {
+    opacity: 1;
+  }
+  45% {
+    transform: translate(-96px, -2px) rotate(-5deg);
+    opacity: 1;
+  }
+  75% {
+    transform: translate(0px, 0px) rotate(-2deg);
+    opacity: 1;
+  }
+  100% {
+    transform: translate(4px, -3px) rotate(1deg);
+    opacity: 1;
+  }
+}
+
+.welcome-ink-path {
+  stroke-dasharray: 240;
+  stroke-dashoffset: 240;
+  animation: welcomeInkTrace 1.9s var(--ease-out-expo) 120ms forwards;
+}
+
+.welcome-ink-subpath {
+  stroke-dasharray: 150;
+  stroke-dashoffset: 150;
+  animation: welcomeSubInkTrace 1.6s var(--ease-out-expo) 520ms forwards;
+}
+
+.welcome-pen-nib {
+  transform-box: fill-box;
+  transform-origin: bottom left;
+  animation: welcomePenGlide 1.9s var(--ease-out-expo) 120ms both;
+}
+
 /* Reduced Motion Compliance */
 @media (prefers-reduced-motion: reduce) {
   *,
@@ -819,8 +897,15 @@
   .ink-drop-bead,
   .ink-drop-ripple,
   .ink-well-meniscus-track,
-  .ink-goal-seal {
+  .ink-goal-seal,
+  .welcome-pen-nib {
     transform: none !important;
+    animation: none !important;
+  }
+
+  .welcome-ink-path,
+  .welcome-ink-subpath {
+    stroke-dashoffset: 0 !important;
     animation: none !important;
   }
 }

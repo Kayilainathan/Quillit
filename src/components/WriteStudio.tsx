@@ -32,6 +32,7 @@ import type {
   FeedbackImplementedStatus,
   GrammarFix,
   InternationalMetrics,
+  RewrittenSample,
   RubricScores,
   StudentProfile,
   ToneSetting,
@@ -52,12 +53,8 @@ import {
   getVisibleWritePageTasks,
   type CoachPerformanceContext,
 } from '../utils/analytics';
-import {
-  drawNextRandomTopic,
-  loadPersistedDeckState,
-  savePersistedDeckState,
-  type TopicDeckState,
-} from '../utils/topicDeck';
+import { drawNextCurriculumRandomTopic } from '../utils/topicDeck';
+import { buildAdaptivePromptContext } from '../utils/adaptivePromptProfile';
 import { getApiUrl, safeParseJsonResponse } from '../utils/apiBase';
 import { QuickAddVocabModal } from './QuickAddVocabModal';
 import {
@@ -93,6 +90,7 @@ interface EvaluationPayload {
   feedbackImplemented: FeedbackImplementedStatus;
   whatImproved: string;
   strictImprovements: string;
+  rewrittenSample?: RewrittenSample;
   masteredWordsUsed?: string[];
   grammarFixes: GrammarFix[];
   vocabUpgrades: VocabSuggestion[];
@@ -136,6 +134,8 @@ interface WriteStudioProps {
   ) => string[];
   onSaveDraft?: (draft: WritingSession) => void;
   onDeleteDraft?: (draftId: string) => void;
+  usedCurriculumIds?: string[];
+  onRecordUsedCurriculumId?: (curriculumId: string) => void;
   onAddVocabEntry: (entry: VocabEntry) => void;
   onOpenScheduledPopup: (slot: CalendarSlot) => void;
 }
@@ -164,6 +164,8 @@ export function WriteStudio({
   onSaveSession,
   onSaveDraft,
   onDeleteDraft,
+  usedCurriculumIds = [],
+  onRecordUsedCurriculumId,
   onAddVocabEntry,
   onOpenScheduledPopup,
 }: WriteStudioProps) {
@@ -200,8 +202,8 @@ export function WriteStudio({
       : null
   );
 
-  // Non-repeating zero-API random topic deck (smart dismiss tracks post-click writing)
-  const deckStateRef = useRef<TopicDeckState | null>(loadPersistedDeckState());
+  // Non-repeating 52-week curriculum randomizer (smart dismiss tracks post-click writing)
+  const lastDrawnCurriculumIdRef = useRef<string | null>(null);
   const topicTimerRef = useRef<number | null>(null);
   const contentSnapshotAtTopicPickRef = useRef<string>('');
   const previousTopicAtPickRef = useRef<string>('');
@@ -211,9 +213,11 @@ export function WriteStudio({
   const latestTopicRef = useRef<string>(topic);
 
   const [suggestingTopic, setSuggestingTopic] = useState(false);
+  const [askingAiTopic, setAskingAiTopic] = useState(false);
   const [suggestedTopicMeta, setSuggestedTopicMeta] = useState<{
     hint: string;
     category: string;
+    isAi?: boolean;
   } | null>(null);
 
   // Universal Pivot controls when a slot is loaded
@@ -339,7 +343,7 @@ export function WriteStudio({
   }, [todayISO]);
 
   function handleSuggestRandomTopic() {
-    if (suggestingTopic) return;
+    if (suggestingTopic || askingAiTopic) return;
     setErrorMessage(null);
     setSuggestingTopic(true);
 
@@ -357,26 +361,127 @@ export function WriteStudio({
       window.clearTimeout(topicTimerRef.current);
     }
 
+    const usedTitles = [
+      ...calendarSlots.map((s) => s.topic),
+      ...sessions.map((s) => s.topicDescription),
+      ...(loadedRandomTopicRef.current ? [loadedRandomTopicRef.current] : []),
+    ];
+
     topicTimerRef.current = window.setTimeout(() => {
-      const draw = drawNextRandomTopic(deckStateRef.current);
-      deckStateRef.current = draw.nextState;
-      savePersistedDeckState(draw.nextState);
+      const draw = drawNextCurriculumRandomTopic({
+        usedCurriculumIds,
+        usedTopicTitles: usedTitles,
+        lastShownId: lastDrawnCurriculumIdRef.current,
+      });
+      lastDrawnCurriculumIdRef.current = draw.id;
+      if (draw.curriculumId && onRecordUsedCurriculumId) {
+        onRecordUsedCurriculumId(draw.curriculumId);
+      }
 
       if (activeSlotId) {
         setActiveSlotId(undefined);
         setPreLoadSnapshot(null);
       }
-      loadedRandomTopicRef.current = draw.topic.title;
-      setTopic(draw.topic.title);
-      setMode(draw.topic.mode);
-      setTone(draw.topic.tone);
-      setDaySlot(draw.topic.category);
+      loadedRandomTopicRef.current = draw.title;
+      setTopic(draw.title);
+      setMode(draw.mode);
+      setTone(draw.tone);
+      setDaySlot(draw.category);
       setSuggestedTopicMeta({
-        hint: draw.topic.hint,
-        category: draw.topic.category,
+        hint: draw.hint,
+        category: draw.category,
+        isAi: false,
       });
       setSuggestingTopic(false);
-    }, 280);
+    }, 220);
+  }
+
+  async function handleAskAiForFreshTopic() {
+    if (askingAiTopic || suggestingTopic) return;
+    setErrorMessage(null);
+    setAskingAiTopic(true);
+
+    const isReplacingExistingRandom =
+      suggestedTopicMeta !== null &&
+      loadedRandomTopicRef.current !== null &&
+      topic.trim() === loadedRandomTopicRef.current.trim();
+    if (!isReplacingExistingRandom) {
+      previousTopicAtPickRef.current = topic;
+    }
+    contentSnapshotAtTopicPickRef.current = content;
+
+    const existingTopics = [
+      ...calendarSlots.map((s) => s.topic),
+      ...sessions.map((s) => s.topicDescription),
+      ...(topic.trim() ? [topic.trim()] : []),
+    ];
+
+    try {
+      const adaptiveWritingProfile = buildAdaptivePromptContext(
+        studentProfile,
+        sessions,
+        vocabulary,
+        todayISO
+      );
+      const res = await fetch(getApiUrl('/api/topics'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          mode: MODE_LABELS[mode],
+          tone: TONE_LABELS[tone],
+          existingTopics,
+          studentProfile,
+          adaptiveWritingProfile,
+        }),
+      });
+      const data = await safeParseJsonResponse<{
+        prompts?: Array<{
+          title: string;
+          guidance: string;
+          category: string;
+          targetWords?: number;
+        }>;
+      }>(res);
+      const firstPrompt = data?.prompts?.[0];
+      if (!res.ok || !firstPrompt?.title) {
+        throw new Error('AI topic generator unavailable');
+      }
+      if (activeSlotId) {
+        setActiveSlotId(undefined);
+        setPreLoadSnapshot(null);
+      }
+      loadedRandomTopicRef.current = firstPrompt.title;
+      setTopic(firstPrompt.title);
+      setDaySlot(`AI Topic · ${firstPrompt.category || MODE_LABELS[mode]}`);
+      setSuggestedTopicMeta({
+        hint: firstPrompt.guidance,
+        category: `AI Fresh Topic · ${firstPrompt.category || MODE_LABELS[mode]}`,
+        isAi: true,
+      });
+    } catch {
+      // Seamless fallback to next unused 52-week curriculum topic offline/static
+      const draw = drawNextCurriculumRandomTopic({
+        usedCurriculumIds,
+        usedTopicTitles: existingTopics,
+        lastShownId: lastDrawnCurriculumIdRef.current,
+      });
+      lastDrawnCurriculumIdRef.current = draw.id;
+      if (draw.curriculumId && onRecordUsedCurriculumId) {
+        onRecordUsedCurriculumId(draw.curriculumId);
+      }
+      loadedRandomTopicRef.current = draw.title;
+      setTopic(draw.title);
+      setMode(draw.mode);
+      setTone(draw.tone);
+      setDaySlot(draw.category);
+      setSuggestedTopicMeta({
+        hint: draw.hint,
+        category: draw.category,
+        isAi: false,
+      });
+    } finally {
+      setAskingAiTopic(false);
+    }
   }
 
   function handleDismissRandomTopic() {
@@ -685,6 +790,7 @@ export function WriteStudio({
       feedbackImplemented: evalPayload.feedbackImplemented,
       whatImproved: evalPayload.whatImproved,
       strictImprovements: evalPayload.strictImprovements,
+      rewrittenSample: evalPayload.rewrittenSample,
       grammarFixes: evalPayload.grammarFixes,
       vocabUpgrades: evalPayload.vocabUpgrades,
       status: 'Completed',
@@ -694,22 +800,24 @@ export function WriteStudio({
       createdAt: new Date().toISOString(),
     };
 
-    const newVocab: VocabEntry[] = (evalPayload.vocabUpgrades || [])
-      .filter((v) => {
-        const key = `${v.used.toLowerCase()}->${v.betterAlternative.toLowerCase()}`;
-        return !existingVocabSet.has(key) && !savedVocabKeys.has(key);
-      })
-      .map((v, idx) => ({
-        id: `vocab-${Date.now()}-${idx}`,
-        used: v.used,
-        betterAlternative: v.betterAlternative,
-        explanation: v.explanation,
-        contextSnippet: v.contextSnippet || resolvedTopic,
-        mode,
-        dateAdded: todayISO,
-        mastered: false,
-        sessionId: stableSessionId,
-      }));
+    const newVocab: VocabEntry[] = evalPayload.isProvisionalInstant
+      ? []
+      : (evalPayload.vocabUpgrades || [])
+          .filter((v) => {
+            const key = `${v.used.toLowerCase()}->${v.betterAlternative.toLowerCase()}`;
+            return !existingVocabSet.has(key) && !savedVocabKeys.has(key);
+          })
+          .map((v, idx) => ({
+            id: `vocab-${Date.now()}-${idx}`,
+            used: v.used,
+            betterAlternative: v.betterAlternative,
+            explanation: v.explanation,
+            contextSnippet: v.contextSnippet || resolvedTopic,
+            mode,
+            dateAdded: todayISO,
+            mastered: false,
+            sessionId: stableSessionId,
+          }));
 
     const promoted = onSaveSession(
       sessionRecord,
@@ -1488,8 +1596,8 @@ export function WriteStudio({
                       type="button"
                       data-testid="new-spark-button"
                       onClick={handleSuggestRandomTopic}
-                      disabled={suggestingTopic}
-                      title="Draw a fresh writing spark"
+                      disabled={suggestingTopic || askingAiTopic}
+                      title="Draw the next non-repeating topic from the 52-week roadmap"
                       className="group/spark inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md border border-border-default bg-surface hover:border-border-strong text-[11px] font-medium text-ink-secondary hover:text-ink-primary transition-colors cursor-pointer"
                     >
                       <Shuffle
@@ -1497,6 +1605,20 @@ export function WriteStudio({
                         aria-hidden="true"
                       />
                       <span>{suggestingTopic ? 'Drawing...' : 'New spark'}</span>
+                    </button>
+                    <button
+                      type="button"
+                      data-testid="ask-ai-topic-button"
+                      onClick={() => void handleAskAiForFreshTopic()}
+                      disabled={askingAiTopic || suggestingTopic}
+                      title="Ask AI to craft a brand-new custom topic"
+                      className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md border border-border-default bg-surface hover:border-border-strong text-[11px] font-medium text-ink-secondary hover:text-ink-primary transition-colors cursor-pointer"
+                    >
+                      <Sparkles
+                        className={`w-3 h-3 ${askingAiTopic ? 'animate-pulse text-ink-primary' : ''}`}
+                        aria-hidden="true"
+                      />
+                      <span>{askingAiTopic ? 'Asking AI...' : 'Ask AI'}</span>
                     </button>
                     <button
                       type="button"
@@ -1884,9 +2006,20 @@ export function WriteStudio({
                         <span>Logged to journal</span>
                       </span>
                     )}
-                    {refiningWithAI && (
+                    {refiningWithAI ? (
                       <span className="text-[11px] text-ink-muted animate-pulse">
-                        Refining with AI...
+                        Refining with AI Coach...
+                      </span>
+                    ) : evaluation.isProvisionalInstant ? (
+                      <span className="text-[11px] text-ink-muted">
+                        Offline rubric
+                      </span>
+                    ) : (
+                      <span
+                        data-testid="ai-coach-verified-label"
+                        className="text-[11px] text-ink-muted"
+                      >
+                        AI Coach
                       </span>
                     )}
                   </div>
@@ -1971,6 +2104,48 @@ export function WriteStudio({
                     </span>
                   </div>
                 </div>
+
+                {evaluation.rewrittenSample && (
+                  <div
+                    data-testid="coach-rewrite-sample"
+                    className="p-3 rounded-md bg-subtle border border-border-subtle space-y-2 text-xs"
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="font-semibold text-ink-primary">
+                        Coach Rewrite
+                      </span>
+                      {content
+                        .toLowerCase()
+                        .includes(
+                          evaluation.rewrittenSample.original.toLowerCase()
+                        ) && (
+                        <button
+                          type="button"
+                          onClick={() =>
+                            applyTextReplacement(
+                              evaluation.rewrittenSample!.original,
+                              evaluation.rewrittenSample!.improved
+                            )
+                          }
+                          className="inline-link-tactile text-[11px] font-medium cursor-pointer"
+                        >
+                          Use Rewrite
+                        </button>
+                      )}
+                    </div>
+                    <div className="space-y-1.5 leading-relaxed">
+                      <p className="text-[11px] text-ink-muted line-through">
+                        {evaluation.rewrittenSample.original}
+                      </p>
+                      <p className="text-xs text-ink-primary font-medium">
+                        {evaluation.rewrittenSample.improved}
+                      </p>
+                      <p className="text-[11px] text-ink-secondary">
+                        {evaluation.rewrittenSample.why}
+                      </p>
+                    </div>
+                  </div>
+                )}
 
                 {evaluation.grammarFixes.length > 0 && (
                   <div className="space-y-1.5 pt-2 border-t border-border-subtle">

@@ -14,8 +14,6 @@ import type {
 import {
   MODE_LABELS,
   TONE_LABELS,
-  buildMonthTriWeeklySlots,
-  buildPersonalizedMonthSchedule,
   computePercentage,
   computeTotalScore,
   createEmptyVaultPayload,
@@ -26,13 +24,27 @@ import {
   mergeVaultPayloads,
   stripPredefinedSeedData,
   summarizeCoachContext,
-  swapSingleTriWeeklySlot,
 } from './utils/analytics';
 import {
   buildAdaptivePromptContext,
-  getMonthPreferredDaySpecs,
   getNextPreferredCycleSpecs,
 } from './utils/adaptivePromptProfile';
+import {
+  buildNonRepeatingMonthFromCurriculum,
+  collectUsedTopicInventory,
+  curriculumTopicToCalendarSlot,
+  evaluatePeriodicAiAdaptation,
+  getRemainingMonthPreferredSpecs,
+  pickNextUnusedCurriculumTopic,
+  shouldAutoRollMonthSchedule,
+  shouldShowNewUserWelcomeFlashcard,
+  swapSlotWithCurriculum,
+} from './utils/curriculumEngine';
+import {
+  applyAiCategoriesToVocabulary,
+  classifyVocabEntryLocally,
+} from './utils/vocabCatalog';
+import { formatWritingDaysSummary } from './utils/fastEvaluate';
 import { decryptVault, encryptVault, isEncryptedEnvelope } from './utils/crypto';
 import { getApiUrl, safeParseJsonResponse } from './utils/apiBase';
 import {
@@ -89,6 +101,7 @@ import {
   type WorkspaceSyncTarget,
 } from './components/WorkspaceSyncConfirmModal';
 import { OfflineMigrationModal } from './components/OfflineMigrationModal';
+import { WelcomeTopicFlashcard } from './components/WelcomeTopicFlashcard';
 import {
   loadOfflineMigrationRecord,
   mergeOfflineIntoCloudVault,
@@ -189,6 +202,10 @@ export default function App() {
   // Student Profile Onboarding modal state
   const [showEditProfileModal, setShowEditProfileModal] = useState(false);
 
+  // New-User Aesthetic Writing-Animation Welcome Flashcard state
+  const [showWelcomeFlashcard, setShowWelcomeFlashcard] = useState(false);
+  const [welcomeFlashcardBusy, setWelcomeFlashcardBusy] = useState(false);
+
   // Notifications state
   const [browserPermission, setBrowserPermission] = useState<
     NotificationPermission | 'unsupported'
@@ -263,6 +280,15 @@ export default function App() {
   const notificationSummary = useMemo(
     () => evaluateDayNotifications(vault?.calendarSlots ?? [], todayISO),
     [vault?.calendarSlots, todayISO]
+  );
+
+  const periodicAiStatus = useMemo(
+    () =>
+      evaluatePeriodicAiAdaptation({
+        sessions: vault?.sessions ?? [],
+        lastPeriodicAiSessionCount: vault?.settings.lastPeriodicAiSessionCount,
+      }),
+    [vault?.sessions, vault?.settings.lastPeriodicAiSessionCount]
   );
 
   const canUseFirestore = Boolean(
@@ -901,7 +927,7 @@ export default function App() {
         };
 
         // When rebuilding schedule with updated weekday preferences, preserve completed/past slots
-        // and replace uncompleted future auto-generated plan slots cleanly
+        // and replace uncompleted future auto-generated plan slots using the 52-week zero-repeat roadmap
         const preservedSlots = rebuildMonthSchedule
           ? prev.calendarSlots.filter(
               (s) =>
@@ -911,22 +937,39 @@ export default function App() {
             )
           : prev.calendarSlots;
 
-        const addedSlots = rebuildMonthSchedule
-          ? buildPersonalizedMonthSchedule(
+        const [ty, tm] = todayISO.split('-').map(Number);
+        const curriculumBuild = rebuildMonthSchedule
+          ? buildNonRepeatingMonthFromCurriculum({
+              year: ty || new Date().getFullYear(),
+              monthIndex0: (tm || 1) - 1,
               todayISO,
               profile,
-              preservedSlots,
+              existingSlots: preservedSlots,
+              sessions: prev.sessions,
+              usedCurriculumIds: prev.settings.usedCurriculumIds,
               coachContext,
-              30
-            )
-          : [];
+            })
+          : { addedSlots: [], newlyUsedCurriculumIds: [], catalogExhausted: false };
+
+        const addedSlots = curriculumBuild.addedSlots;
+        const mergedUsedIds = Array.from(
+          new Set([
+            ...(prev.settings.usedCurriculumIds ?? []),
+            ...curriculumBuild.newlyUsedCurriculumIds,
+          ])
+        );
+
+        const finalSettings = {
+          ...nextSettings,
+          usedCurriculumIds: mergedUsedIds,
+        };
 
         const nextCalendarSlots = rebuildMonthSchedule
           ? [...preservedSlots, ...addedSlots]
           : prev.calendarSlots;
 
         if (canUseFirestore && cloudUser) {
-          void ensureUserProfileDoc(cloudUser, nextSettings).catch(
+          void ensureUserProfileDoc(cloudUser, finalSettings).catch(
             handleCloudSoftFailure
           );
           for (const slot of addedSlots) {
@@ -936,7 +979,7 @@ export default function App() {
 
         return {
           ...prev,
-          settings: nextSettings,
+          settings: finalSettings,
           calendarSlots: nextCalendarSlots,
         };
       });
@@ -956,30 +999,39 @@ export default function App() {
 
   const handleRebuildRollingMonth = useCallback(() => {
     if (!vault || !activePassphrase) return;
-    const profile: StudentProfile = vault.settings.studentProfile ?? {
-      collegeDegree: 'B.E. Electronics & Instrumentation',
-      semester: '6th Semester',
-      collegeName: 'Engineering College',
-      age: 20,
-      onboardingCompleted: true,
-    };
+    const [ty, tm] = todayISO.split('-').map(Number);
+    const targetYear = ty || new Date().getFullYear();
+    const targetMonth0 = (tm || 1) - 1;
     void updateVaultState((prev) => {
-      const added = buildPersonalizedMonthSchedule(
-        todayISO,
-        profile,
-        prev.calendarSlots,
-        coachContext,
-        30
-      );
-      if (added.length === 0) return null;
+      const { addedSlots, newlyUsedCurriculumIds } =
+        buildNonRepeatingMonthFromCurriculum({
+          year: targetYear,
+          monthIndex0: targetMonth0,
+          todayISO,
+          profile: prev.settings.studentProfile,
+          existingSlots: prev.calendarSlots,
+          sessions: prev.sessions,
+          usedCurriculumIds: prev.settings.usedCurriculumIds,
+          coachContext,
+        });
+      if (addedSlots.length === 0) return null;
       if (canUseFirestore && cloudUser) {
-        for (const slot of added) {
+        for (const slot of addedSlots) {
           void syncSlotToCloud(cloudUser.uid, slot).catch(handleCloudSoftFailure);
         }
       }
       return {
         ...prev,
-        calendarSlots: [...prev.calendarSlots, ...added],
+        settings: {
+          ...prev.settings,
+          usedCurriculumIds: Array.from(
+            new Set([
+              ...(prev.settings.usedCurriculumIds ?? []),
+              ...newlyUsedCurriculumIds,
+            ])
+          ),
+        },
+        calendarSlots: [...prev.calendarSlots, ...addedSlots],
       };
     });
   }, [
@@ -1012,7 +1064,11 @@ export default function App() {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             customDates: upcomingSpecs,
-            existingTopics: vault.calendarSlots.map((s) => s.topic),
+            todayISO,
+            existingTopics: [
+              ...vault.calendarSlots.map((s) => s.topic),
+              ...vault.sessions.map((s) => s.topicDescription),
+            ],
             focusNote,
             studentProfile: vault.settings.studentProfile,
             adaptiveWritingProfile,
@@ -1039,11 +1095,14 @@ export default function App() {
           setActiveAiModelLabel(data.modelUsed);
         }
 
-        const freshSlots: CalendarSlot[] = Array.isArray(data.slots)
-          ? data.slots
-          : [];
+        const freshSlots: CalendarSlot[] = (
+          Array.isArray(data.slots) ? (data.slots as CalendarSlot[]) : []
+        ).filter((s) => s.scheduledDate >= todayISO);
         if (freshSlots.length > 0) {
           const cycleDateSet = new Set(upcomingSpecs.map((d) => d.scheduledDate));
+          const completedSessionCount = vault.sessions.filter(
+            (s) => s.status === 'Completed'
+          ).length;
           await updateVaultState((prev) => {
             const preserved = prev.calendarSlots.filter(
               (s) =>
@@ -1068,6 +1127,10 @@ export default function App() {
             }
             return {
               ...prev,
+              settings: {
+                ...prev.settings,
+                lastPeriodicAiSessionCount: completedSessionCount,
+              },
               calendarSlots: [...preserved, ...toInsert],
             };
           });
@@ -1094,54 +1157,6 @@ export default function App() {
     ]
   );
 
-  const handleLoadMonthTriWeekly = useCallback(
-    (year: number, monthIndex0: number) => {
-      if (!vault || !activePassphrase) return;
-      void updateVaultState((prev) => {
-        const added = prev.settings.studentProfile
-          ? buildPersonalizedMonthSchedule(
-              `${year}-${String(monthIndex0 + 1).padStart(2, '0')}-01`,
-              prev.settings.studentProfile,
-              prev.calendarSlots,
-              coachContext,
-              31
-            ).filter((slot) => {
-              const parts = slot.scheduledDate.split('-');
-              return (
-                Number(parts[0]) === year && Number(parts[1]) === monthIndex0 + 1
-              );
-            })
-          : buildMonthTriWeeklySlots(
-              year,
-              monthIndex0,
-              prev.calendarSlots,
-              coachContext
-            );
-        if (added.length === 0) return null;
-        if (canUseFirestore && cloudUser) {
-          for (const slot of added) {
-            void syncSlotToCloud(cloudUser.uid, slot).catch(
-              handleCloudSoftFailure
-            );
-          }
-        }
-        return {
-          ...prev,
-          calendarSlots: [...prev.calendarSlots, ...added],
-        };
-      });
-    },
-    [
-      vault,
-      activePassphrase,
-      coachContext,
-      updateVaultState,
-      canUseFirestore,
-      cloudUser,
-      handleCloudSoftFailure,
-    ]
-  );
-
   const handleRegenerateMonthWithAI = useCallback(
     async (year: number, monthIndex0: number, focusNote?: string) => {
       if (!vault || !activePassphrase) return;
@@ -1149,8 +1164,18 @@ export default function App() {
       setRefreshingSchedule(true);
       try {
         const preferredDays = vault.settings.studentProfile?.preferredDays;
-        const monthDates = getMonthPreferredDaySpecs(year, monthIndex0, preferredDays);
-        if (monthDates.length === 0) return;
+        const monthDates = getRemainingMonthPreferredSpecs(
+          year,
+          monthIndex0,
+          todayISO,
+          preferredDays
+        );
+        if (monthDates.length === 0) {
+          setScheduleError(
+            'No upcoming preferred writing days remain in this month. Switch to the next month to plan ahead.'
+          );
+          return;
+        }
         const adaptiveWritingProfile = buildAdaptivePromptContext(
           vault.settings.studentProfile,
           vault.sessions,
@@ -1163,7 +1188,11 @@ export default function App() {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             customDates: monthDates,
-            existingTopics: vault.calendarSlots.map((s) => s.topic),
+            todayISO,
+            existingTopics: [
+              ...vault.calendarSlots.map((s) => s.topic),
+              ...vault.sessions.map((s) => s.topicDescription),
+            ],
             studentProfile: vault.settings.studentProfile,
             adaptiveWritingProfile,
             focusNote:
@@ -1192,11 +1221,14 @@ export default function App() {
           setActiveAiModelLabel(data.modelUsed);
         }
 
-        const generated: CalendarSlot[] = Array.isArray(data.slots)
-          ? data.slots
-          : [];
+        const generated: CalendarSlot[] = (
+          Array.isArray(data.slots) ? (data.slots as CalendarSlot[]) : []
+        ).filter((s) => s.scheduledDate >= todayISO);
         if (generated.length > 0) {
           const monthDateSet = new Set(monthDates.map((d) => d.scheduledDate));
+          const completedSessionCount = vault.sessions.filter(
+            (s) => s.status === 'Completed'
+          ).length;
           await updateVaultState((prev) => {
             const preserved = prev.calendarSlots.filter(
               (s) =>
@@ -1221,6 +1253,10 @@ export default function App() {
             }
             return {
               ...prev,
+              settings: {
+                ...prev.settings,
+                lastPeriodicAiSessionCount: completedSessionCount,
+              },
               calendarSlots: [...preserved, ...toInsert],
             };
           });
@@ -1236,6 +1272,7 @@ export default function App() {
     [
       vault,
       activePassphrase,
+      todayISO,
       coachContext,
       updateVaultState,
       canUseFirestore,
@@ -1243,6 +1280,95 @@ export default function App() {
       handleCloudSoftFailure,
     ]
   );
+
+  const handleLoadMonthTriWeekly = useCallback(
+    (year: number, monthIndex0: number) => {
+      if (!vault || !activePassphrase) return;
+      setScheduleError(null);
+      let exhausted = false;
+      void updateVaultState((prev) => {
+        const { addedSlots, newlyUsedCurriculumIds, catalogExhausted } =
+          buildNonRepeatingMonthFromCurriculum({
+            year,
+            monthIndex0,
+            todayISO,
+            profile: prev.settings.studentProfile,
+            existingSlots: prev.calendarSlots,
+            sessions: prev.sessions,
+            usedCurriculumIds: prev.settings.usedCurriculumIds,
+            coachContext,
+          });
+        exhausted = catalogExhausted && addedSlots.length === 0;
+        if (addedSlots.length === 0) return null;
+        if (canUseFirestore && cloudUser) {
+          for (const slot of addedSlots) {
+            void syncSlotToCloud(cloudUser.uid, slot).catch(
+              handleCloudSoftFailure
+            );
+          }
+        }
+        return {
+          ...prev,
+          settings: {
+            ...prev.settings,
+            usedCurriculumIds: Array.from(
+              new Set([
+                ...(prev.settings.usedCurriculumIds ?? []),
+                ...newlyUsedCurriculumIds,
+              ])
+            ),
+          },
+          calendarSlots: [...prev.calendarSlots, ...addedSlots],
+        };
+      });
+      if (exhausted) {
+        void handleRegenerateMonthWithAI(
+          year,
+          monthIndex0,
+          'Fresh next-month AI topics after completing the 52-week roadmap'
+        );
+      }
+    },
+    [
+      vault,
+      activePassphrase,
+      todayISO,
+      coachContext,
+      updateVaultState,
+      canUseFirestore,
+      cloudUser,
+      handleCloudSoftFailure,
+      handleRegenerateMonthWithAI,
+    ]
+  );
+
+  // Automatic month roll-on: when Auto-Reload is active and an established user has
+  // zero upcoming uncompleted slots left, quietly roll in remaining current-month
+  // dates (or next month) from the 52-week database without repeating topics or
+  // touching past dates (and fall back to AI automatically once all 156 topics finish).
+  const autoRolledMonthKeyRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!vault || !activePassphrase || showWelcomeFlashcard) return;
+    if (!vault.settings.studentProfile?.onboardingCompleted) return;
+    const decision = shouldAutoRollMonthSchedule({
+      autoReloadSchedule: vault.settings.autoReloadSchedule !== false,
+      welcomeFlashcardShown: vault.settings.welcomeFlashcardShown,
+      sessions: vault.sessions,
+      calendarSlots: vault.calendarSlots,
+      todayISO,
+      preferredDays: vault.settings.studentProfile?.preferredDays,
+    });
+    if (!decision.shouldRoll) return;
+    if (autoRolledMonthKeyRef.current === decision.targetKey) return;
+    autoRolledMonthKeyRef.current = decision.targetKey;
+    handleLoadMonthTriWeekly(decision.year, decision.monthIndex0);
+  }, [
+    vault,
+    activePassphrase,
+    showWelcomeFlashcard,
+    todayISO,
+    handleLoadMonthTriWeekly,
+  ]);
 
   // Background auto-evaluator for any writing session accepted while API quota limits were exhausted
   useEffect(() => {
@@ -1711,6 +1837,78 @@ export default function App() {
     }));
   }
 
+  async function handleCategorizeVocabularyWithAI(): Promise<{
+    updatedCount: number;
+    usedAI: boolean;
+  }> {
+    if (!vault || vault.vocabulary.length === 0) {
+      return { updatedCount: 0, usedAI: false };
+    }
+
+    let aiCategoryMap: Record<string, string> = {};
+    let usedAI = false;
+
+    try {
+      const res = await fetch(getApiUrl('/api/categorize-vocab'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          entries: vault.vocabulary.map((v) => ({
+            id: v.id,
+            used: v.used,
+            betterAlternative: v.betterAlternative,
+            explanation: v.explanation,
+            mode: v.mode,
+          })),
+        }),
+      });
+      const data = await safeParseJsonResponse<{
+        categories?: Record<string, string>;
+      }>(res);
+      if (res.ok && data?.categories && Object.keys(data.categories).length > 0) {
+        aiCategoryMap = data.categories;
+        usedAI = true;
+      }
+    } catch {
+      // Fall back cleanly to instant semantic classification offline / on static pages
+    }
+
+    if (!usedAI) {
+      for (const entry of vault.vocabulary) {
+        aiCategoryMap[entry.id] = classifyVocabEntryLocally(entry);
+      }
+    }
+
+    const updatedEntries = applyAiCategoriesToVocabulary(
+      vault.vocabulary,
+      aiCategoryMap
+    );
+    await updateVaultState((prev) => ({
+      ...prev,
+      vocabulary: applyAiCategoriesToVocabulary(prev.vocabulary, aiCategoryMap),
+    }));
+
+    return {
+      updatedCount: updatedEntries.length,
+      usedAI,
+    };
+  }
+
+  function handleRecordUsedCurriculumId(curriculumId: string) {
+    if (!curriculumId) return;
+    void updateVaultState((prev) => {
+      const current = prev.settings.usedCurriculumIds ?? [];
+      if (current.includes(curriculumId)) return null;
+      return {
+        ...prev,
+        settings: {
+          ...prev.settings,
+          usedCurriculumIds: [...current, curriculumId],
+        },
+      };
+    });
+  }
+
   function handleAddCalendarSlot(slot: CalendarSlot) {
     if (canUseFirestore && cloudUser) {
       void syncSlotToCloud(cloudUser.uid, slot).catch(handleCloudSoftFailure);
@@ -1805,10 +2003,19 @@ export default function App() {
 
   function handleSwapSingleSlot(slotId: string) {
     void updateVaultState((prev) => {
-      const existingTopics = prev.calendarSlots.map((s) => s.topic);
-      const nextSlots = prev.calendarSlots.map((s) =>
-        s.id === slotId ? swapSingleTriWeeklySlot(s, existingTopics) : s
-      );
+      let pickedId: string | null = null;
+      const nextSlots = prev.calendarSlots.map((s) => {
+        if (s.id !== slotId) return s;
+        const swapped = swapSlotWithCurriculum({
+          slot: s,
+          existingSlots: prev.calendarSlots,
+          sessions: prev.sessions,
+          usedCurriculumIds: prev.settings.usedCurriculumIds,
+          coachContext,
+        });
+        pickedId = swapped.pickedCurriculumId;
+        return swapped.updatedSlot;
+      });
       if (canUseFirestore && cloudUser) {
         const updated = nextSlots.find((s) => s.id === slotId);
         if (updated) {
@@ -1817,8 +2024,17 @@ export default function App() {
           );
         }
       }
+      const nextUsedIds = pickedId
+        ? Array.from(
+            new Set([...(prev.settings.usedCurriculumIds ?? []), pickedId])
+          )
+        : prev.settings.usedCurriculumIds;
       return {
         ...prev,
+        settings: {
+          ...prev.settings,
+          usedCurriculumIds: nextUsedIds,
+        },
         calendarSlots: nextSlots,
       };
     });
@@ -1951,6 +2167,230 @@ export default function App() {
     justMergedOfflineRef.current = false;
     setShowOfflineMigrationModal(false);
   }
+
+  // Trigger brief New-User Welcome Flashcard popup (~2.4s after studio opens) for Local & Cloud accounts
+  useEffect(() => {
+    if (!vault || !activePassphrase || showOfflineMigrationModal || activeView !== 'write') {
+      setShowWelcomeFlashcard(false);
+      return;
+    }
+
+    let forceWelcomeFromQuery = false;
+    try {
+      const params = new URLSearchParams(window.location.search);
+      forceWelcomeFromQuery = params.get('welcome') === '1';
+    } catch {
+      // ignore
+    }
+
+    const onboardingDone =
+      Boolean(vault.settings.studentProfile?.onboardingCompleted) ||
+      isAutostartWithoutOnboarding();
+
+    if (!onboardingDone && !forceWelcomeFromQuery) {
+      setShowWelcomeFlashcard(false);
+      return;
+    }
+
+    const eligible = shouldShowNewUserWelcomeFlashcard({
+      welcomeFlashcardShown: vault.settings.welcomeFlashcardShown,
+      sessionsCount: vault.sessions.length,
+      calendarSlotsCount: vault.calendarSlots.length,
+      onboardingCompleted: true,
+    });
+
+    if (!eligible) {
+      return;
+    }
+
+    const delayMs = forceWelcomeFromQuery ? 600 : 2400;
+    const timer = window.setTimeout(() => {
+      setShowWelcomeFlashcard(true);
+    }, delayMs);
+
+    return () => window.clearTimeout(timer);
+  }, [
+    vault,
+    activePassphrase,
+    showOfflineMigrationModal,
+    activeView,
+  ]);
+
+  const handleDismissWelcomeFlashcard = useCallback(() => {
+    setShowWelcomeFlashcard(false);
+    void updateVaultState((prev) => ({
+      ...prev,
+      settings: {
+        ...prev.settings,
+        welcomeFlashcardShown: true,
+      },
+    }));
+  }, [updateVaultState]);
+
+  const handleAcceptWelcomeFlashcard = useCallback(async () => {
+    if (!vault || !activePassphrase || welcomeFlashcardBusy) return;
+    setWelcomeFlashcardBusy(true);
+    try {
+      const [ty, tm] = todayISO.split('-').map(Number);
+      const targetYear = ty || new Date().getFullYear();
+      const targetMonth0 = (tm || 1) - 1;
+      const preferredDays = vault.settings.studentProfile?.preferredDays;
+
+      let remainingSpecs = getRemainingMonthPreferredSpecs(
+        targetYear,
+        targetMonth0,
+        todayISO,
+        preferredDays
+      );
+
+      // If today is near month-end and no preferred weekdays remain in this month,
+      // guarantee at least todayISO gets a starter topic so Write Studio opens ready to write.
+      if (remainingSpecs.length === 0) {
+        const dt = new Date(
+          targetYear,
+          targetMonth0,
+          Number(todayISO.split('-')[2] || 1)
+        );
+        const dayNames = [
+          'Sunday',
+          'Monday',
+          'Tuesday',
+          'Wednesday',
+          'Thursday',
+          'Friday',
+          'Saturday',
+        ];
+        remainingSpecs = [
+          {
+            scheduledDate: todayISO,
+            dayOfWeek: dayNames[dt.getDay()] ?? 'Today',
+            pillar: 'technical-concept',
+          },
+        ];
+      }
+
+      let createdSlots: CalendarSlot[] = [];
+      let newlyUsedIds: string[] = [];
+
+      // Attempt AI first-month suggestion first; fall back cleanly to 52-week curriculum offline/static
+      try {
+        const adaptiveWritingProfile = buildAdaptivePromptContext(
+          vault.settings.studentProfile,
+          vault.sessions,
+          vault.vocabulary,
+          todayISO
+        );
+        const res = await fetch(getApiUrl('/api/suggest-first-month'), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            todayISO,
+            targetSpecs: remainingSpecs,
+            studentProfile: vault.settings.studentProfile,
+            adaptiveWritingProfile,
+            existingTopics: [
+              ...vault.calendarSlots.map((s) => s.topic),
+              ...vault.sessions.map((s) => s.topicDescription),
+            ],
+          }),
+        });
+        const data = await safeParseJsonResponse<{ slots?: CalendarSlot[] }>(res);
+        if (res.ok && Array.isArray(data?.slots) && data.slots.length > 0) {
+          createdSlots = data.slots.filter((s) => s.scheduledDate >= todayISO);
+        }
+      } catch {
+        // Fallback below handles offline / GitHub Pages cleanly
+      }
+
+      if (createdSlots.length === 0) {
+        const fallbackBuild = buildNonRepeatingMonthFromCurriculum({
+          year: targetYear,
+          monthIndex0: targetMonth0,
+          todayISO,
+          profile: vault.settings.studentProfile,
+          existingSlots: vault.calendarSlots,
+          sessions: vault.sessions,
+          usedCurriculumIds: vault.settings.usedCurriculumIds,
+          coachContext,
+        });
+        createdSlots = fallbackBuild.addedSlots;
+        newlyUsedIds = fallbackBuild.newlyUsedCurriculumIds;
+
+        // If month-end left 0 preferred days, pick 1 fresh curriculum topic for todayISO
+        if (createdSlots.length === 0) {
+          const { usedIds, usedTopicKeys } = collectUsedTopicInventory({
+            slots: vault.calendarSlots,
+            sessions: vault.sessions,
+            usedCurriculumIds: vault.settings.usedCurriculumIds,
+          });
+          const picked = pickNextUnusedCurriculumTopic({
+            usedIds,
+            usedTopicKeys,
+            pillar: remainingSpecs[0].pillar,
+          });
+          if (picked) {
+            newlyUsedIds = [picked.id];
+            createdSlots = [
+              curriculumTopicToCalendarSlot({
+                topic: picked,
+                scheduledDate: remainingSpecs[0].scheduledDate,
+                dayOfWeek: remainingSpecs[0].dayOfWeek,
+                targetWordGoal: vault.settings.studentProfile?.targetWordGoal,
+                coachContext,
+                source: 'curriculum-52w',
+              }),
+            ];
+          }
+        }
+      }
+
+      const occupiedDates = new Set(vault.calendarSlots.map((s) => s.scheduledDate));
+      const slotsToPersist = createdSlots.filter(
+        (s) => s.scheduledDate >= todayISO && !occupiedDates.has(s.scheduledDate)
+      );
+
+      await updateVaultState((prev) => {
+        if (canUseFirestore && cloudUser) {
+          for (const s of slotsToPersist) {
+            void syncSlotToCloud(cloudUser.uid, s).catch(handleCloudSoftFailure);
+          }
+        }
+        return {
+          ...prev,
+          settings: {
+            ...prev.settings,
+            welcomeFlashcardShown: true,
+            usedCurriculumIds: Array.from(
+              new Set([
+                ...(prev.settings.usedCurriculumIds ?? []),
+                ...newlyUsedIds,
+              ])
+            ),
+          },
+          calendarSlots: [...prev.calendarSlots, ...slotsToPersist],
+        };
+      });
+
+      setShowWelcomeFlashcard(false);
+
+      const firstTopicSlot = slotsToPersist[0] ?? createdSlots[0];
+      if (firstTopicSlot) {
+        handleLaunchSlotInStudio(firstTopicSlot);
+      }
+    } finally {
+      setWelcomeFlashcardBusy(false);
+    }
+  }, [
+    vault,
+    activePassphrase,
+    welcomeFlashcardBusy,
+    todayISO,
+    coachContext,
+    updateVaultState,
+    canUseFirestore,
+    cloudUser,
+    handleCloudSoftFailure,
+  ]);
 
   if (!vault) {
     const existingLocalEnvelope = loadStoredEnvelope(LOCAL_STORAGE_KEY);
@@ -2107,6 +2547,8 @@ export default function App() {
             onSaveSession={handleSaveSession}
             onSaveDraft={handleSaveDraft}
             onDeleteDraft={handleDeleteDraft}
+            usedCurriculumIds={vault.settings.usedCurriculumIds}
+            onRecordUsedCurriculumId={handleRecordUsedCurriculumId}
             onAddVocabEntry={handleAddVocabEntry}
             onOpenScheduledPopup={(slot) => setActivePopupSlot(slot)}
           />
@@ -2132,6 +2574,7 @@ export default function App() {
             autoReloadSchedule={vault.settings.autoReloadSchedule !== false}
             refreshingSchedule={refreshingSchedule}
             scheduleError={scheduleError}
+            periodicAiStatus={periodicAiStatus}
             onToggleAutoReloadSchedule={handleToggleAutoReloadSchedule}
             onRefreshTriWeeklySchedule={() => handleRefreshTriWeeklySchedule()}
             onLoadMonthTriWeekly={handleLoadMonthTriWeekly}
@@ -2154,6 +2597,7 @@ export default function App() {
             onAddVocab={handleAddVocabEntry}
             onToggleMastered={handleToggleVocabMastered}
             onDeleteVocab={handleDeleteVocab}
+            onCategorizeWithAI={handleCategorizeVocabularyWithAI}
           />
         )}
 
@@ -2265,6 +2709,22 @@ export default function App() {
         accountEmail={cloudUser?.email ?? null}
         onMergeOfflineSpace={handleMergeOfflineIntoCloud}
         onKeepSeparate={handleDismissOfflineMigration}
+      />
+
+      <WelcomeTopicFlashcard
+        open={showWelcomeFlashcard}
+        monthLabel={new Date(
+          Number(todayISO.split('-')[0] || 2026),
+          Number(todayISO.split('-')[1] || 1) - 1,
+          1
+        ).toLocaleDateString('en-US', { month: 'long', year: 'numeric' })}
+        rhythmShortList={
+          formatWritingDaysSummary(vault.settings.studentProfile?.preferredDays)
+            .shortList
+        }
+        busy={welcomeFlashcardBusy}
+        onAccept={handleAcceptWelcomeFlashcard}
+        onDismiss={handleDismissWelcomeFlashcard}
       />
     </div>
   );

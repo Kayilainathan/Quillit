@@ -5,6 +5,13 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { GoogleGenAI, ThinkingLevel, Type } from '@google/genai';
+import {
+  calibrateEvaluationScores,
+  filterGroundedGrammarFixes,
+  filterGroundedVocabUpgrades,
+  sanitizeCoachProse,
+  sanitizeRewrittenSample,
+} from './src/utils/evaluationCalibration';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -150,8 +157,8 @@ function selectDynamicThinkingProfile(
 ): { level: ThinkingLevel; label: 'HIGH' | 'MEDIUM' | 'LOW' | 'MINIMAL' } {
   if (model === 'gemini-4-hydrogen') {
     if (task === 'evaluate') {
-      // Keep evaluation snappy even on fallback tier
-      return { level: ThinkingLevel.LOW, label: 'LOW' };
+      // Genuine editorial reasoning depth so scores, fixes, and rewrites feel sharp and perceptive
+      return { level: ThinkingLevel.MEDIUM, label: 'MEDIUM' };
     }
     if (task === 'schedule') {
       return complexityMetric > 4
@@ -161,9 +168,9 @@ function selectDynamicThinkingProfile(
     return { level: ThinkingLevel.LOW, label: 'LOW' };
   }
 
-  // gemini-3.1-flash-lite: MINIMAL delivers zero thinking latency for instant-feeling evaluation
+  // gemini-3.1-flash-lite fallback: use LOW thinking (never MINIMAL) for evaluation so grading stays thoughtful
   if (task === 'evaluate') {
-    return { level: ThinkingLevel.MINIMAL, label: 'MINIMAL' };
+    return { level: ThinkingLevel.LOW, label: 'LOW' };
   }
   if (task === 'schedule' && complexityMetric > 6) {
     return { level: ThinkingLevel.LOW, label: 'LOW' };
@@ -344,60 +351,77 @@ function buildServerQueuedEvaluation(
   const passivePenalty = Math.min(2, Math.floor(passiveMatches.length / 2));
   const lengthBonus = wordCount >= 100 ? 1 : 0;
 
-  const scores = {
-    naturalVoiceFlow: clampScore(7 + lengthBonus - fillerPenalty),
-    claritySimplicity: clampScore(8 - passivePenalty),
-    grammarMechanics: clampScore(8 - Math.min(1, fillerPenalty)),
-    toneEngagement: clampScore(7 + lengthBonus),
+  const rawScores = {
+    naturalVoiceFlow: clampScore(6 + lengthBonus - fillerPenalty),
+    claritySimplicity: clampScore(7 - passivePenalty),
+    grammarMechanics: clampScore(7 - Math.min(1, fillerPenalty)),
+    toneEngagement: clampScore(6 + lengthBonus),
     sentenceVarietyCadence: clampScore(
-      avgWords >= 10 && avgWords <= 24 ? 8 : 7
+      avgWords >= 10 && avgWords <= 24 ? 7 : 6
     ),
-    concisenessDirectness: clampScore(8 - fillerPenalty - passivePenalty),
+    concisenessDirectness: clampScore(7 - fillerPenalty - passivePenalty),
   };
 
-  const total =
-    scores.naturalVoiceFlow +
-    scores.claritySimplicity +
-    scores.grammarMechanics +
-    scores.toneEngagement +
-    scores.sentenceVarietyCadence +
-    scores.concisenessDirectness;
-  const pct = (total / 60) * 100;
+  const grammarFixes = filterGroundedGrammarFixes(
+    content,
+    fillerHits.slice(0, 3).map((word) => ({
+      original: word,
+      corrected: 'remove or use a precise verb',
+      rule: `Eliminate filler "${word}" to tighten ${tone} clarity.`,
+      category: 'Conciseness & Register',
+    }))
+  );
 
-  const grammarFixes = fillerHits.slice(0, 3).map((word) => ({
-    original: word,
-    corrected: 'remove or use a precise verb',
-    rule: `Eliminate filler "${word}" to tighten ${tone} clarity.`,
-    category: 'Conciseness & Register',
-  }));
+  const calibrated = calibrateEvaluationScores({
+    content,
+    scores: rawScores,
+    grammarFixesCount: grammarFixes.length,
+  });
 
   return {
-    scores,
-    cefrLevel: pct >= 82 ? 'C1' : pct >= 72 ? 'B2+' : 'B2',
+    scores: calibrated.scores,
+    cefrLevel: calibrated.cefrLevel,
     internationalMetrics: {
-      ieltsBand: clampIelts(4.0 + (pct / 100) * 5.0),
-      toeflEquivalent: clampToefl((pct / 100) * 30),
+      ieltsBand: calibrated.ieltsBand,
+      toeflEquivalent: calibrated.toeflEquivalent,
       lexicalResource: clampScore(
-        Math.round((scores.claritySimplicity + scores.concisenessDirectness) / 2)
+        Math.round(
+          (calibrated.scores.claritySimplicity +
+            calibrated.scores.concisenessDirectness) /
+            2
+        )
       ),
       coherenceCohesion: clampScore(
-        Math.round((scores.naturalVoiceFlow + scores.sentenceVarietyCadence) / 2)
+        Math.round(
+          (calibrated.scores.naturalVoiceFlow +
+            calibrated.scores.sentenceVarietyCadence) /
+            2
+        )
       ),
       taskAchievement: clampScore(
-        Math.round((scores.claritySimplicity + scores.toneEngagement) / 2)
+        Math.round(
+          (calibrated.scores.claritySimplicity +
+            calibrated.scores.toneEngagement) /
+            2
+        )
       ),
-      registerControl: scores.toneEngagement,
-      grammarAccuracy: scores.grammarMechanics,
+      registerControl: calibrated.scores.toneEngagement,
+      grammarAccuracy: calibrated.scores.grammarMechanics,
       fleschReadingEase: 0,
       fkGradeLevel: 0,
     },
-    toneVerdict: `Draft accepted for ${mode} (${tone}). Provisional linguistic metrics captured while AI quota resets.`,
+    toneVerdict: calibrated.integrity.isGibberishOrLowEffort
+      ? calibrated.integrity.reason ||
+        'Draft could not be evaluated as coherent writing.'
+      : `Provisional ${mode} (${tone}) check captured while AI Coach quota resets.`,
     flowVerdict: `${wordCount} words across ${sentenceCount} sentences (${avgWords} words/sentence).`,
     feedbackImplemented: 'Partial',
-    whatImproved:
-      'Your writing session has been accepted and your task progress is preserved without interruption.',
-    strictImprovements:
-      'Deep AI evaluation is queued and will automatically finalize as soon as the API rate limit resets.',
+    whatImproved: calibrated.integrity.isGibberishOrLowEffort
+      ? 'Session saved. Write at least a few real sentences for meaningful coaching.'
+      : 'Your writing session is saved and will receive full AI Coach feedback automatically once quota resets.',
+    strictImprovements: calibrated.integrity.isGibberishOrLowEffort
+      ? 'Replace placeholder or scrambled text with a genuine paragraph on your topic.'
+      : 'Deep AI Coach review is queued and will finalize automatically when the rate limit clears.',
     grammarFixes,
     vocabUpgrades: [],
     masteredWordsUsed: [],
@@ -695,24 +719,45 @@ async function createApp() {
         ? `${studentProfile.semester || 'college'} ${studentProfile.collegeDegree} student${studentProfile.collegeName ? ` at ${studentProfile.collegeName}` : ''}`
         : 'focused writer';
 
-    const cacheKey = makeCacheKey('evaluate-fast-v2', {
+    const cacheKey = makeCacheKey('evaluate-coach-v4', {
       content: trimmedContent,
       mode,
       tone,
+      topic: trimmedTopic,
       shouldInferTitle,
       vocabList,
       studentDescriptor,
     });
 
-    const systemInstruction = `Fast, sharp writing coach for a ${studentDescriptor}.
-Score strictly (1-10 integers, no inflation) on: naturalVoiceFlow, claritySimplicity, grammarMechanics, toneEngagement (${mode}/${tone}), sentenceVarietyCadence, concisenessDirectness.
-Keep every text field crisp and concise (1-2 sentences max, no em-dashes).
-${shouldInferTitle ? 'The writer left the title blank: craft a natural, specific 3-7 word editorial title in suggestedTitle based directly on the content.' : 'Echo or lightly refine the existing topic in suggestedTitle.'}
-Return up to 4 real grammarFixes and 2-3 high-value vocabUpgrades (used -> betterAlternative). List any target practicing vocabulary words naturally used inside masteredWordsUsed.
-Also rate cefrLevel (A2..C2), ieltsBand (4.0-9.0), toeflEquivalent (8-30), lexicalResource, coherenceCohesion, taskAchievement, registerControl (1-10).`;
+    const systemInstruction = `You are a sharp, perceptive senior writing editor and spoken-English fluency coach mentoring a ${studentDescriptor}.
+Never act like a robotic grader or generic cheerleader. Read the draft like an exacting human editor who respects the writer's intelligence.
 
-    const prompt = `Mode:${mode}|Tone:${tone}|Topic:${trimmedTopic || '(blank - infer title)'}
-${topicPrimer ? `Brief:${topicPrimer}\n` : ''}${previousSessionSummary ? `Prev:${previousSessionSummary}\n` : ''}${vocabList.length > 0 ? `Vocab:${vocabList.join(', ')}\n` : ''}Draft:
+SCORING RUBRIC (1-10 integers, use the FULL scale honestly with ZERO score inflation):
+- 1-2: Gibberish, random keystrokes, copy-paste spam, or unintelligible fragments.
+- 3-4: Severely off-topic, incomplete stub, or broken grammar that obscures meaning.
+- 5: Understandable core thought, but flat, repetitive, overly stiff, or noticeably error-prone.
+- 6: Solid everyday clarity, yet held back by filler words, passive drag, monotone rhythm, or register mismatch.
+- 7: Clear, confident, well-organized communication with natural voice and only minor polish needed.
+- 8: Crisp, persuasive, rhythmic prose that fits ${mode} (${tone}) cleanly and sounds effortless out loud.
+- 9-10: Rare, memorable, publication-ready command of voice, cadence, and precision.
+
+EVALUATION RULES:
+1. Check Topic & Register Fit: If a Topic or Brief is provided, check whether the draft actually engages with it and matches the target Mode (${mode}) and Tone (${tone}). Penalize taskAchievement & toneEngagement honestly if it misses the brief or uses the wrong register (e.g., stiff textbook jargon in a friendly note, or casual slang in a formal executive email).
+2. Quote Real Evidence: Every prose verdict (toneVerdict, flowVerdict, whatImproved, strictImprovements) MUST point to specific sentences, phrases, or structural choices from THIS exact draft. Never write empty generic lines like "Good effort, add more detail" or "Improve flow."
+3. Framing of Coaching Fields:
+   - whatImproved: Name what the WRITER genuinely did well in THIS draft (and how it improved vs. Previous Coaching Note if one is provided). Never describe edits you made.
+   - strictImprovements: Give 1-2 direct, imperative next-step instructions to the writer (e.g., "Cut conversational hedges like 'Basically' and anchor the cause-and-effect directly..."), never past-tense summaries like "Fixed X".
+4. Surgical Grammar & Mechanics (grammarFixes, up to 5): ONLY flag real grammar, syntax, agreement, tense, preposition, or awkward phrasing defects. "original" MUST be an exact verbatim substring copied from the draft so one-click Apply Fix works cleanly. If the grammar is genuinely clean, return an empty array rather than inventing nitpicks.
+5. High-Taste Vocabulary Upgrades (vocabUpgrades, up to 3): Pick weak, vague, or wordy phrases that actually appear verbatim in the draft ("used") and suggest natural, crisp, real-world English upgrades ("betterAlternative", single word or clean short phrase with no slashes). STRICTLY BANNED thesaurus-slop words: utilize, delve, tapestry, myriad, plethora, endeavor, commence, facilitate, synergy, leverage, paramount. Prefer vivid, spoken-natural precision.
+6. Concrete Rewrite (rewrittenSample): Pick the ONE single clunky, wordy, or flat sentence from the draft ("original", copied verbatim), rewrite it so it sounds crisp and natural out loud ("improved"), and explain in one concrete sentence why the rewrite lands harder ("why").
+7. Title: ${shouldInferTitle ? 'The writer left the title blank: craft a sharp, natural 3-7 word editorial title in suggestedTitle based directly on the draft.' : 'Echo or lightly refine the existing topic in suggestedTitle.'}
+8. Clean Editorial Style: Keep each prose field tight (1-2 crisp sentences max). Never use em-dashes or en-dashes.
+9. Vocab Mastery: List any target practicing vocabulary words naturally used inside masteredWordsUsed.
+10. Benchmarks: Calibrate cefrLevel (A1..C2), ieltsBand (4.0-9.0 in 0.5 steps), toeflEquivalent (8-30), lexicalResource, coherenceCohesion, taskAchievement, and registerControl (1-10) so they are mathematically consistent with your 6 pillar scores.`;
+
+    const prompt = `Mode: ${mode} | Tone: ${tone} | Word Count: ${wordCount}
+Topic: ${trimmedTopic || '(blank - infer sharp editorial title)'}
+${topicPrimer ? `Topic Brief: ${topicPrimer}\n` : ''}${previousSessionSummary ? `Previous Coaching Note: ${previousSessionSummary}\n` : ''}${vocabList.length > 0 ? `Practicing Vocabulary Targets: ${vocabList.join(', ')}\n` : ''}Draft:
 """
 ${trimmedContent}
 """`;
@@ -725,7 +770,7 @@ ${trimmedContent}
           systemInstruction,
           task: 'evaluate',
           complexityMetric: wordCount,
-          preferFastTier: true,
+          preferFastTier: false,
           responseSchema: {
             type: Type.OBJECT,
             properties: {
@@ -761,6 +806,15 @@ ${trimmedContent}
               feedbackImplemented: { type: Type.STRING },
               whatImproved: { type: Type.STRING },
               strictImprovements: { type: Type.STRING },
+              rewrittenSample: {
+                type: Type.OBJECT,
+                properties: {
+                  original: { type: Type.STRING },
+                  improved: { type: Type.STRING },
+                  why: { type: Type.STRING },
+                },
+                required: ['original', 'improved', 'why'],
+              },
               masteredWordsUsed: {
                 type: Type.ARRAY,
                 items: { type: Type.STRING },
@@ -812,6 +866,7 @@ ${trimmedContent}
               'feedbackImplemented',
               'whatImproved',
               'strictImprovements',
+              'rewrittenSample',
               'grammarFixes',
               'vocabUpgrades',
             ],
@@ -819,7 +874,7 @@ ${trimmedContent}
         });
 
       const rawScores = (parsed.scores ?? {}) as Record<string, unknown>;
-      const safeScores = {
+      const uncalibratedScores = {
         naturalVoiceFlow: clampScore(rawScores.naturalVoiceFlow),
         claritySimplicity: clampScore(rawScores.claritySimplicity),
         grammarMechanics: clampScore(rawScores.grammarMechanics),
@@ -827,6 +882,45 @@ ${trimmedContent}
         sentenceVarietyCadence: clampScore(rawScores.sentenceVarietyCadence),
         concisenessDirectness: clampScore(rawScores.concisenessDirectness),
       };
+
+      const groundedFixes = filterGroundedGrammarFixes(
+        trimmedContent,
+        Array.isArray(parsed.grammarFixes)
+          ? (parsed.grammarFixes as Array<{
+              original: string;
+              corrected: string;
+              rule: string;
+              category: string;
+            }>)
+          : []
+      );
+
+      const groundedVocab = filterGroundedVocabUpgrades(
+        trimmedContent,
+        Array.isArray(parsed.vocabUpgrades)
+          ? (parsed.vocabUpgrades as Array<{
+              used: string;
+              betterAlternative: string;
+              explanation: string;
+              contextSnippet?: string;
+            }>)
+          : []
+      );
+
+      const groundedRewrite = sanitizeRewrittenSample(
+        trimmedContent,
+        parsed.rewrittenSample as
+          | { original: string; improved: string; why: string }
+          | undefined
+      );
+
+      const calibrated = calibrateEvaluationScores({
+        content: trimmedContent,
+        scores: uncalibratedScores,
+        grammarFixesCount: groundedFixes.length,
+        rawIeltsBand: Number(parsed.ieltsBand),
+        rawToefl: Number(parsed.toeflEquivalent),
+      });
 
       const validImpl = ['Baseline', 'Yes', 'Partial', 'No'].includes(
         String(parsed.feedbackImplemented)
@@ -836,10 +930,13 @@ ${trimmedContent}
           ? 'Partial'
           : 'Baseline';
 
-      const suggestedTitle = String(parsed.suggestedTitle || '')
-        .replace(/^["']+|["']+$/g, '')
-        .trim()
-        .slice(0, 72);
+      const suggestedTitle = sanitizeCoachProse(
+        String(parsed.suggestedTitle || '')
+          .replace(/^["']+|["']+$/g, '')
+          .trim()
+      ).slice(0, 72);
+
+      const isGibberish = calibrated.integrity.isGibberishOrLowEffort;
 
       res.json({
         evaluationStatus: 'completed',
@@ -848,31 +945,40 @@ ${trimmedContent}
         downgraded,
         cached,
         suggestedTitle,
-        scores: safeScores,
-        cefrLevel: String(parsed.cefrLevel || 'B2'),
+        scores: calibrated.scores,
+        cefrLevel: calibrated.cefrLevel,
         internationalMetrics: {
-          ieltsBand: clampIelts(parsed.ieltsBand),
-          toeflEquivalent: clampToefl(parsed.toeflEquivalent),
-          lexicalResource: clampScore(parsed.lexicalResource),
-          coherenceCohesion: clampScore(parsed.coherenceCohesion),
-          taskAchievement: clampScore(parsed.taskAchievement),
-          registerControl: clampScore(parsed.registerControl),
-          grammarAccuracy: safeScores.grammarMechanics,
+          ieltsBand: calibrated.ieltsBand,
+          toeflEquivalent: calibrated.toeflEquivalent,
+          lexicalResource: isGibberish
+            ? Math.min(2, clampScore(parsed.lexicalResource))
+            : clampScore(parsed.lexicalResource),
+          coherenceCohesion: isGibberish
+            ? Math.min(2, clampScore(parsed.coherenceCohesion))
+            : clampScore(parsed.coherenceCohesion),
+          taskAchievement: isGibberish
+            ? Math.min(2, clampScore(parsed.taskAchievement))
+            : clampScore(parsed.taskAchievement),
+          registerControl: isGibberish
+            ? Math.min(2, clampScore(parsed.registerControl))
+            : clampScore(parsed.registerControl),
+          grammarAccuracy: calibrated.scores.grammarMechanics,
           fleschReadingEase: 0,
           fkGradeLevel: 0,
         },
-        toneVerdict: String(parsed.toneVerdict || ''),
-        flowVerdict: String(parsed.flowVerdict || ''),
+        toneVerdict: sanitizeCoachProse(String(parsed.toneVerdict || '')),
+        flowVerdict: sanitizeCoachProse(String(parsed.flowVerdict || '')),
         feedbackImplemented: validImpl,
-        whatImproved: String(parsed.whatImproved || ''),
-        strictImprovements: String(parsed.strictImprovements || ''),
+        whatImproved: sanitizeCoachProse(String(parsed.whatImproved || '')),
+        strictImprovements: sanitizeCoachProse(
+          String(parsed.strictImprovements || '')
+        ),
+        rewrittenSample: groundedRewrite,
         masteredWordsUsed: Array.isArray(parsed.masteredWordsUsed)
           ? parsed.masteredWordsUsed.map(String)
           : [],
-        grammarFixes: Array.isArray(parsed.grammarFixes) ? parsed.grammarFixes : [],
-        vocabUpgrades: Array.isArray(parsed.vocabUpgrades)
-          ? parsed.vocabUpgrades
-          : [],
+        grammarFixes: groundedFixes,
+        vocabUpgrades: groundedVocab,
       });
     } catch (err) {
       if (isQuotaOrOverloadError(err)) {
@@ -1013,9 +1119,29 @@ ${trimmedContent}
   });
 
   app.post('/api/topics', async (req, res) => {
-    const { mode = 'Technical & Interview', tone = 'Professional-Warm', focusArea } =
-      req.body ?? {};
-    const cacheKey = makeCacheKey('topics', { mode, tone, focusArea });
+    const {
+      mode = 'Technical & Interview',
+      tone = 'Professional-Warm',
+      focusArea,
+      existingTopics = [],
+      studentProfile,
+      adaptiveWritingProfile,
+    } = req.body ?? {};
+    const avoidSample = Array.isArray(existingTopics)
+      ? existingTopics.slice(-40).map(String).join('; ')
+      : '';
+    const persona =
+      adaptiveWritingProfile?.personaSummary ||
+      (studentProfile?.collegeDegree
+        ? `${studentProfile.semester || 'Undergraduate'} ${studentProfile.collegeDegree}`
+        : 'focused writer building natural spoken flow and expressive English');
+    const cacheKey = makeCacheKey('topics-v2', {
+      mode,
+      tone,
+      focusArea,
+      persona,
+      avoidLen: avoidSample.length,
+    });
 
     try {
       const { parsed, modelUsed, thinkingLevelUsed, downgraded, cached } =
@@ -1024,9 +1150,11 @@ ${trimmedContent}
           allowCache: false,
           task: 'topics',
           complexityMetric: 60,
-          contents: `3 fresh prompts for a 3rd-yr 6th-sem EIE student. Mode:${mode}|Tone:${tone}|Focus:${focusArea || 'EIE labs, career communication, or creative story craft'}`,
+          contents: `3 fresh, spoken-first, non-repeating writing prompts for: ${persona}.
+Mode: ${mode} | Tone: ${tone} | Focus: ${focusArea || 'fresh real-world communication, engineering clarity, or vivid storytelling'}
+Strictly avoid repeating any of these past/scheduled topics: ${avoidSample || 'none'}`,
           systemInstruction:
-            'Return 3 crisp, original writing prompts. If mode is Creative Writing, focus on story character development or fantasy scenes; otherwise focus on 6th-sem EIE engineering & communication.',
+            'Return 3 crisp, highly specific, original writing prompts (no em-dashes, no word-count rules inside the title). Frame each guidance note around how it sounds spoken aloud plus a 1-sentence pivot permission. Never repeat any topic listed in the avoid list.',
           responseSchema: {
             type: Type.OBJECT,
             properties: {
@@ -1059,7 +1187,7 @@ ${trimmedContent}
             title:
               'Calibrating a PT100 RTD Bridge Against Ambient Thermal Drift in Lab',
             guidance:
-              'Walk through 3-wire lead compensation and cold-start verification cleanly.',
+              'Explain 3-wire lead compensation aloud to a lab partner. Swap to any sensor bench test you know well.',
             category: String(mode),
             targetWords: 200,
           },
@@ -1073,9 +1201,9 @@ ${trimmedContent}
           },
           {
             title:
-              'The Brass Chronometer: When the City’s Master Clock Skip-Beat at Midnight',
+              'The Brass Chronometer: When the City Master Clock Skipped a Beat at Midnight',
             guidance:
-              'Show character urgency through sensory mechanical details and brisk dialogue.',
+              'Narrate character urgency through sensory mechanical details and brisk spoken dialogue.',
             category: String(mode),
             targetWords: 230,
           },
@@ -1088,6 +1216,7 @@ ${trimmedContent}
     const {
       cycleDates,
       customDates,
+      todayISO,
       existingTopics,
       focusNote,
       performanceContext,
@@ -1111,12 +1240,16 @@ ${trimmedContent}
       'linkedin-email',
       'creative-story',
     ];
+    const minDateISO =
+      typeof todayISO === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(todayISO)
+        ? todayISO
+        : '';
 
     let targetSpecs: DateSpec[] = [];
 
     if (Array.isArray(customDates) && customDates.length > 0) {
       targetSpecs = customDates
-        .slice(0, 24)
+        .slice(0, 31)
         .map((item: Record<string, unknown>, idx: number) => {
           const day = String(item.dayOfWeek || 'Wednesday');
           const rawPillar = String(item.pillar || '');
@@ -1134,7 +1267,8 @@ ${trimmedContent}
             dayOfWeek: day,
             pillar: safePillar,
           };
-        });
+        })
+        .filter((spec) => !minDateISO || spec.scheduledDate >= minDateISO);
     } else {
       const wed = String(cycleDates?.wednesday || '');
       const fri = String(cycleDates?.friday || '');
@@ -1146,15 +1280,41 @@ ${trimmedContent}
         });
         return;
       }
-      targetSpecs = [
+      const defaultCycle: DateSpec[] = [
         { scheduledDate: wed, dayOfWeek: 'Wednesday', pillar: 'technical-concept' },
         { scheduledDate: fri, dayOfWeek: 'Friday', pillar: 'linkedin-email' },
         { scheduledDate: sun, dayOfWeek: 'Sunday', pillar: 'creative-story' },
       ];
+      targetSpecs = defaultCycle.filter(
+        (spec) => !minDateISO || spec.scheduledDate >= minDateISO
+      );
     }
 
+    if (targetSpecs.length === 0) {
+      res.json({
+        slots: [],
+        modelUsed: 'none-remaining',
+        thinkingLevelUsed: 'LOCAL',
+        downgraded: false,
+      });
+      return;
+    }
+
+    const normalizeTopicKey = (val: string) =>
+      val
+        .toLowerCase()
+        .replace(/[^a-z0-9\s]/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+
+    const existingTopicKeys = new Set(
+      Array.isArray(existingTopics)
+        ? existingTopics.map((t: unknown) => normalizeTopicKey(String(t || '')))
+        : []
+    );
+
     const avoidList = Array.isArray(existingTopics)
-      ? existingTopics.slice(-12).join('; ')
+      ? existingTopics.slice(-48).join('; ')
       : '';
 
     const practicingList = Array.isArray(performanceContext?.practicingWords)
@@ -1295,6 +1455,7 @@ For EVERY slot return:
         });
 
       const rawSlots = Array.isArray(parsed.slots) ? parsed.slots : [];
+      const seenBatchKeys = new Set<string>(existingTopicKeys);
 
       const normalized = targetSpecs.map((spec, idx) => {
         const s = (rawSlots[idx] || {}) as Record<string, unknown>;
@@ -1316,6 +1477,13 @@ For EVERY slot return:
                 : 'professional-warm'
               : 'narrative-vivid';
 
+        let candidateTopic = String(s.topic || fb.topic).trim();
+        const candidateKey = normalizeTopicKey(candidateTopic);
+        if (!candidateTopic || seenBatchKeys.has(candidateKey)) {
+          candidateTopic = `${fb.topic} (${spec.dayOfWeek} ${spec.scheduledDate.slice(5)})`;
+        }
+        seenBatchKeys.add(normalizeTopicKey(candidateTopic));
+
         return {
           id: `plan-${spec.scheduledDate}-${spec.dayOfWeek.slice(0, 3).toLowerCase()}`,
           dayOfWeek: spec.dayOfWeek,
@@ -1330,7 +1498,7 @@ For EVERY slot return:
               : safeMode === 'email' || safeMode === 'linkedin'
                 ? 'LinkedIn, Email & Soft Skills'
                 : 'Creative Fantasy & Expressive Storytelling',
-          topic: String(s.topic || fb.topic),
+          topic: candidateTopic,
           topicPrimer: String(s.topicPrimer || fb.topicPrimer),
           pivotRule: String(s.pivotRule || fb.pivotRule),
           feedbackReminder: String(s.feedbackReminder || fb.feedbackReminder),
@@ -1338,6 +1506,7 @@ For EVERY slot return:
           completed: false,
           isTriWeekly: true,
           pillar: spec.pillar,
+          source: 'ai-adapted',
           suggestions:
             Array.isArray(s.suggestions) && s.suggestions.length > 0
               ? s.suggestions.slice(0, 3).map(String)
@@ -1447,6 +1616,267 @@ Target Mode: ${slot.mode} | Target Tone: ${slot.tone} | Day: ${slot.dayOfWeek ||
         modelUsed: 'local-pivot',
         thinkingLevelUsed: 'LOCAL',
         downgraded: true,
+      });
+    }
+  });
+
+  app.post('/api/suggest-first-month', async (req, res) => {
+    const {
+      todayISO,
+      targetSpecs = [],
+      studentProfile,
+      adaptiveWritingProfile,
+      existingTopics = [],
+    } = req.body ?? {};
+
+    const minDate =
+      typeof todayISO === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(todayISO)
+        ? todayISO
+        : new Date().toISOString().slice(0, 10);
+
+    type FirstSpec = {
+      scheduledDate: string;
+      dayOfWeek: string;
+      pillar: 'technical-concept' | 'linkedin-email' | 'creative-story';
+    };
+
+    const validSpecs: FirstSpec[] = Array.isArray(targetSpecs)
+      ? targetSpecs
+          .slice(0, 31)
+          .map((item: Record<string, unknown>, idx: number) => {
+            const p = String(item.pillar || '');
+            const safePillar: FirstSpec['pillar'] =
+              p === 'technical-concept' ||
+              p === 'linkedin-email' ||
+              p === 'creative-story'
+                ? p
+                : (['technical-concept', 'linkedin-email', 'creative-story'] as const)[
+                    idx % 3
+                  ];
+            return {
+              scheduledDate: String(item.scheduledDate || minDate),
+              dayOfWeek: String(item.dayOfWeek || 'Today'),
+              pillar: safePillar,
+            };
+          })
+          .filter((s) => s.scheduledDate >= minDate)
+      : [];
+
+    if (validSpecs.length === 0) {
+      res.json({ slots: [], modelUsed: 'none-remaining', downgraded: false });
+      return;
+    }
+
+    const persona =
+      adaptiveWritingProfile?.personaSummary ||
+      (studentProfile?.collegeDegree
+        ? `${studentProfile.semester || 'Undergraduate'} ${studentProfile.collegeDegree}`
+        : 'focused writer building natural spoken flow and expressive English');
+    const avoidSample = Array.isArray(existingTopics)
+      ? existingTopics.slice(-30).map(String).join('; ')
+      : '';
+
+    const cacheKey = makeCacheKey('first-month-v1', {
+      minDate,
+      count: validSpecs.length,
+      persona,
+    });
+
+    try {
+      const { parsed, modelUsed, thinkingLevelUsed, downgraded } =
+        await executeCascadingJsonCall({
+          cacheKey,
+          allowCache: false,
+          task: 'schedule',
+          complexityMetric: validSpecs.length,
+          preferFastTier: true,
+          contents: `Create a welcoming, inspiring first-month writing plan (${validSpecs.length} dates starting on/after ${minDate}) for: ${persona}.
+Dates: ${validSpecs.map((s) => `${s.dayOfWeek}=${s.scheduledDate} (${s.pillar})`).join(', ')}
+Make the VERY FIRST slot extra inviting, concrete, and immediately enjoyable to write right now.
+Never repeat any topic within this list or from: ${avoidSample || 'none'}.`,
+          systemInstruction: `Design a crisp, non-repeating spoken-first starter schedule tailored to ${persona}.
+Rules (zero em-dashes, zero word-count rules in titles):
+- Every slot must be distinct, vivid, and beginner-friendly with a 2-sentence topicPrimer and 1-sentence pivotRule.
+- Pillar technical-concept -> mode "technical", tone "academic-technical".
+- Pillar linkedin-email -> mode "linkedin" or "email", tone "professional-warm" or "formal-executive".
+- Pillar creative-story -> mode "creative", tone "narrative-vivid".`,
+          responseSchema: {
+            type: Type.OBJECT,
+            properties: {
+              slots: {
+                type: Type.ARRAY,
+                items: {
+                  type: Type.OBJECT,
+                  properties: {
+                    mode: { type: Type.STRING },
+                    tone: { type: Type.STRING },
+                    topic: { type: Type.STRING },
+                    topicPrimer: { type: Type.STRING },
+                    pivotRule: { type: Type.STRING },
+                    feedbackReminder: { type: Type.STRING },
+                    targetWords: { type: Type.INTEGER },
+                    suggestions: {
+                      type: Type.ARRAY,
+                      items: { type: Type.STRING },
+                    },
+                  },
+                  required: [
+                    'mode',
+                    'tone',
+                    'topic',
+                    'topicPrimer',
+                    'pivotRule',
+                    'feedbackReminder',
+                    'targetWords',
+                    'suggestions',
+                  ],
+                },
+              },
+            },
+            required: ['slots'],
+          },
+        });
+
+      const rawSlots = Array.isArray(parsed.slots) ? parsed.slots : [];
+      const seenTitles = new Set<string>();
+      const slots = validSpecs.map((spec, idx) => {
+        const s = (rawSlots[idx] || {}) as Record<string, unknown>;
+        const fb = pickFallbackTemplate(spec.pillar, idx);
+        const safeMode =
+          spec.pillar === 'technical-concept'
+            ? 'technical'
+            : spec.pillar === 'linkedin-email'
+              ? s.mode === 'email'
+                ? 'email'
+                : 'linkedin'
+              : 'creative';
+        const safeTone =
+          spec.pillar === 'technical-concept'
+            ? 'academic-technical'
+            : spec.pillar === 'linkedin-email'
+              ? safeMode === 'email'
+                ? 'formal-executive'
+                : 'professional-warm'
+              : 'narrative-vivid';
+
+        let cleanTopic = String(s.topic || fb.topic).trim();
+        const key = cleanTopic.toLowerCase();
+        if (!cleanTopic || seenTitles.has(key)) {
+          cleanTopic = fb.topic;
+        }
+        seenTitles.add(cleanTopic.toLowerCase());
+
+        return {
+          id: `plan-${spec.scheduledDate}-${spec.dayOfWeek.slice(0, 3).toLowerCase()}`,
+          dayOfWeek: spec.dayOfWeek,
+          slotLabel: idx === 0 ? 'First Topic · AI Starter' : fb.slotLabel,
+          slotTime: '18:19',
+          scheduledDate: spec.scheduledDate,
+          mode: safeMode,
+          tone: safeTone,
+          promptCategory: fb.promptCategory,
+          topic: cleanTopic,
+          topicPrimer: String(s.topicPrimer || fb.topicPrimer),
+          pivotRule: String(s.pivotRule || fb.pivotRule),
+          feedbackReminder: String(s.feedbackReminder || fb.feedbackReminder),
+          targetWords: Math.max(
+            150,
+            Math.min(280, Number(s.targetWords) || fb.targetWords)
+          ),
+          completed: false,
+          isTriWeekly: true,
+          pillar: spec.pillar,
+          source: 'ai-adapted',
+          suggestions:
+            Array.isArray(s.suggestions) && s.suggestions.length > 0
+              ? s.suggestions.slice(0, 3).map(String)
+              : fb.suggestions,
+        };
+      });
+
+      res.json({ slots, modelUsed, thinkingLevelUsed, downgraded });
+    } catch {
+      res.status(503).json({
+        error: 'AI starter schedule temporarily unavailable; falling back to 52-week roadmap.',
+      });
+    }
+  });
+
+  app.post('/api/categorize-vocab', async (req, res) => {
+    const { entries = [] } = req.body ?? {};
+    if (!Array.isArray(entries) || entries.length === 0) {
+      res.json({ categories: {}, modelUsed: 'none', downgraded: false });
+      return;
+    }
+
+    const ALLOWED_CATEGORIES = [
+      'Technical & Engineering',
+      'Professional & Outreach',
+      'Storytelling & Vivid',
+      'Precision & Clarity',
+      'Everyday Expression',
+    ] as const;
+
+    const compactEntries = entries.slice(0, 80).map((e: Record<string, unknown>) => ({
+      id: String(e.id || ''),
+      word: String(e.betterAlternative || ''),
+      replaces: String(e.used || ''),
+      meaning: String(e.explanation || '').slice(0, 120),
+      mode: String(e.mode || 'journal'),
+    }));
+
+    const cacheKey = makeCacheKey('categorize-vocab-v1', compactEntries);
+
+    try {
+      const { parsed, modelUsed, thinkingLevelUsed, downgraded, cached } =
+        await executeCascadingJsonCall({
+          cacheKey,
+          allowCache: true,
+          task: 'topics',
+          complexityMetric: compactEntries.length,
+          preferFastTier: true,
+          contents: `Categorize each vocabulary item into EXACTLY ONE of these 5 categories:
+${ALLOWED_CATEGORIES.join(' | ')}
+
+Entries:
+${compactEntries.map((e) => `${e.id}: "${e.word}" (replaces "${e.replaces}", mode=${e.mode}) - ${e.meaning}`).join('\n')}`,
+          systemInstruction:
+            'Assign each vocabulary entry ID to the single most useful semantic category from the 5 provided categories so a writer can browse their personal lexicon cleanly.',
+          responseSchema: {
+            type: Type.OBJECT,
+            properties: {
+              items: {
+                type: Type.ARRAY,
+                items: {
+                  type: Type.OBJECT,
+                  properties: {
+                    id: { type: Type.STRING },
+                    category: { type: Type.STRING },
+                  },
+                  required: ['id', 'category'],
+                },
+              },
+            },
+            required: ['items'],
+          },
+        });
+
+      const allowedSet = new Set<string>(ALLOWED_CATEGORIES);
+      const categories: Record<string, string> = {};
+      if (Array.isArray(parsed.items)) {
+        for (const row of parsed.items as Array<Record<string, unknown>>) {
+          const id = String(row.id || '');
+          const cat = String(row.category || '');
+          if (id && allowedSet.has(cat)) {
+            categories[id] = cat;
+          }
+        }
+      }
+
+      res.json({ categories, modelUsed, thinkingLevelUsed, downgraded, cached });
+    } catch {
+      res.status(503).json({
+        error: 'AI categorization temporarily unavailable.',
       });
     }
   });

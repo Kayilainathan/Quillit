@@ -68,6 +68,13 @@ export interface VocabEntry {
   dateAdded: string; // YYYY-MM-DD
   mastered: boolean;
   sessionId?: string;
+  aiCategory?: string;
+}
+
+export interface RewrittenSample {
+  original: string;
+  improved: string;
+  why: string;
 }
 
 export interface WritingSession {
@@ -90,6 +97,7 @@ export interface WritingSession {
   feedbackImplemented: FeedbackImplementedStatus;
   whatImproved: string;
   strictImprovements: string;
+  rewrittenSample?: RewrittenSample;
   grammarFixes: GrammarFix[];
   vocabUpgrades: VocabSuggestion[];
   status: 'Completed' | 'Draft';
@@ -118,6 +126,8 @@ export interface CalendarSlot {
   suggestions?: string[];
   isTriWeekly?: boolean;
   pillar?: TriWeeklyPillar;
+  curriculumTopicId?: string;
+  source?: 'curriculum-52w' | 'ai-adapted' | 'manual';
 }
 
 export interface TopicPrompt {
@@ -160,6 +170,12 @@ export interface UserSettings {
   googleDocId?: string;
   googleDocUrl?: string;
   lastWorkspaceSyncAt?: string;
+  /** New-user welcome AI flashcard shown flag (local & cloud) */
+  welcomeFlashcardShown?: boolean;
+  /** Tracks 52-week curriculum IDs already scheduled, completed, or drawn so topics never repeat */
+  usedCurriculumIds?: string[];
+  /** Session count when periodic AI feedback adaptation last ran */
+  lastPeriodicAiSessionCount?: number;
 }
 
 export interface VaultPayload {

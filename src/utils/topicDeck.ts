@@ -1,4 +1,5 @@
-import type { ToneSetting, WritingMode } from '../types';
+import type { ToneSetting, TriWeeklyPillar, WritingMode } from '../types';
+import { CURRICULUM_52_WEEKS } from '../data/curriculum52Weeks';
 
 export interface CuratedRandomTopic {
   id: string;
@@ -298,3 +299,103 @@ export function savePersistedDeckState(state: TopicDeckState): void {
     // Ignore storage quota errors
   }
 }
+
+function normalizeTitleForDeck(text: string): string {
+  return text
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+export interface CurriculumRandomDraw {
+  id: string;
+  curriculumId: string | null;
+  title: string;
+  hint: string;
+  category: string;
+  mode: WritingMode;
+  tone: ToneSetting;
+  targetWords: number;
+  week?: number;
+  exhausted52Weeks: boolean;
+}
+
+/**
+ * Draws a non-repeating random topic from the full 52-week (156-topic) curriculum
+ * database, strictly excluding already-scheduled slots, completed sessions, and
+ * previously drawn curriculum IDs. Falls back cleanly to CURATED_RANDOM_TOPICS only
+ * if all 156 curriculum topics have been exhausted.
+ */
+export function drawNextCurriculumRandomTopic(params: {
+  usedCurriculumIds?: string[];
+  usedTopicTitles?: string[];
+  lastShownId?: string | null;
+  pillarHint?: TriWeeklyPillar;
+  rng?: () => number;
+}): CurriculumRandomDraw {
+  const {
+    usedCurriculumIds = [],
+    usedTopicTitles = [],
+    lastShownId = null,
+    pillarHint,
+    rng = Math.random,
+  } = params;
+
+  const usedIdSet = new Set(usedCurriculumIds);
+  if (lastShownId) usedIdSet.add(lastShownId);
+  const usedTitleSet = new Set(
+    usedTopicTitles.map(normalizeTitleForDeck).filter(Boolean)
+  );
+
+  const isUnused = (item: (typeof CURRICULUM_52_WEEKS)[number]) =>
+    !usedIdSet.has(item.id) &&
+    !usedTitleSet.has(normalizeTitleForDeck(item.topic));
+
+  let pool = pillarHint
+    ? CURRICULUM_52_WEEKS.filter((item) => item.pillar === pillarHint && isUnused(item))
+    : CURRICULUM_52_WEEKS.filter(isUnused);
+
+  if (pool.length === 0 && pillarHint) {
+    pool = CURRICULUM_52_WEEKS.filter(isUnused);
+  }
+
+  if (pool.length > 0) {
+    const picked = pool[Math.floor(rng() * pool.length)] ?? pool[0];
+    return {
+      id: picked.id,
+      curriculumId: picked.id,
+      title: picked.topic,
+      hint: `${picked.topicPrimer} ${picked.pivotRule}`,
+      category: `Week ${picked.week} · ${picked.category}`,
+      mode: picked.mode,
+      tone: picked.tone,
+      targetWords: picked.targetWords,
+      week: picked.week,
+      exhausted52Weeks: false,
+    };
+  }
+
+  // Only reached after all 156 topics in the 52-week curriculum have been used
+  const fallbackPool = CURATED_RANDOM_TOPICS.filter(
+    (t) => t.id !== lastShownId && !usedTitleSet.has(normalizeTitleForDeck(t.title))
+  );
+  const pickedFallback =
+    (fallbackPool.length > 0
+      ? fallbackPool[Math.floor(rng() * fallbackPool.length)]
+      : CURATED_RANDOM_TOPICS[Math.floor(rng() * CURATED_RANDOM_TOPICS.length)]) ??
+    CURATED_RANDOM_TOPICS[0];
+
+  return {
+    id: pickedFallback.id,
+    curriculumId: null,
+    title: pickedFallback.title,
+    hint: pickedFallback.hint,
+    category: pickedFallback.category,
+    mode: pickedFallback.mode,
+    tone: pickedFallback.tone,
+    targetWords: pickedFallback.targetWords,
+    exhausted52Weeks: true,
+  };
+}
+

@@ -215,7 +215,8 @@ const PILLAR_ROTATION: PromptPillar[] = [
 export function getMonthPreferredDaySpecs(
   year: number,
   monthIndex0: number,
-  preferredDays?: number[]
+  preferredDays?: number[],
+  minDateISO?: string
 ): PreferredDateSpec[] {
   const validDays = Array.from(
     new Set(
@@ -238,6 +239,8 @@ export function getMonthPreferredDaySpecs(
     const scheduledDate = `${year}-${String(monthIndex0 + 1).padStart(2, '0')}-${String(
       day
     ).padStart(2, '0')}`;
+
+    if (minDateISO && scheduledDate < minDateISO) continue;
 
     // Preserve classic Wed->Tech, Fri->LinkedIn/Email, Sun->Creative when using default Wed/Fri/Sun,
     // and cycle evenly across the 3 pillars for any custom weekday schedule.

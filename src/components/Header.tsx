@@ -15,6 +15,7 @@ import {
   Sun,
 } from 'lucide-react';
 import { SwipeToLockDialog } from './SwipeToLockDialog';
+import { QuillitLogo } from './QuillitLogo';
 
 export type CloudSyncState =
   | 'local'
@@ -89,9 +90,10 @@ export function Header({
         <button
           type="button"
           onClick={() => onNavigate('write')}
-          className="font-display text-xl font-semibold tracking-tight text-ink-primary whitespace-nowrap shrink-0 rounded-md px-1 -ml-1 transition-colors hover:text-ink-secondary"
+          className="inline-flex items-center gap-2 font-display text-xl font-semibold tracking-tight text-ink-primary whitespace-nowrap shrink-0 rounded-md px-1 -ml-1 transition-colors hover:text-ink-secondary cursor-pointer"
         >
-          Quillit
+          <QuillitLogo size="md" />
+          <span>Quillit</span>
         </button>
 
         <nav

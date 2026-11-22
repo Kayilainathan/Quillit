@@ -27,6 +27,7 @@ import {
   type SecurityQuestionSetup,
 } from '../utils/offlineRecovery';
 import { ManuscriptPasswordInput } from './ManuscriptPasswordInput';
+import { QuillitLogo } from './QuillitLogo';
 
 export type OfflinePageMode =
   | 'unlock'
@@ -454,8 +455,9 @@ export function OfflineSpacePage({
       {/* Top Bar: Quillit Wordmark + Back to Cloud Sign In + Theme Toggle */}
       <header className="w-full max-w-5xl mx-auto px-5 sm:px-8 h-16 flex items-center justify-between gap-3">
         <div className="flex items-center gap-3 sm:gap-4 min-w-0">
-          <span className="font-display text-xl font-semibold tracking-tight text-ink-primary">
-            Quillit
+          <span className="inline-flex items-center gap-2 font-display text-xl font-semibold tracking-tight text-ink-primary">
+            <QuillitLogo size="md" />
+            <span>Quillit</span>
           </span>
           <span
             aria-hidden="true"
