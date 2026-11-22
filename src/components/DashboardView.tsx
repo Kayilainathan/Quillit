@@ -31,6 +31,7 @@ import {
   WordVolumeChart,
 } from './Charts';
 import { FluencyHeatmap } from './FluencyHeatmap';
+import { EvaluationReportView } from './EvaluationReportView';
 
 interface DashboardViewProps {
   sessions: WritingSession[];
@@ -722,15 +723,12 @@ export function DashboardView({
           aria-labelledby="session-modal-title"
           className="modal-scrim fixed inset-0 z-50 flex items-center justify-center p-4"
         >
-          <div className="modal-panel max-w-2xl w-full max-h-[88vh] overflow-y-auto p-6 space-y-5">
-            <div className="flex items-start justify-between gap-4">
+          <div className="modal-panel max-w-3xl w-full max-h-[88vh] overflow-y-auto p-6 space-y-5">
+            <div className="flex items-start justify-between gap-4 pb-3 border-b border-border-subtle">
               <div>
                 <div className="text-xs text-ink-muted font-mono-tabular">
                   {selectedSession.id} · {selectedSession.date} ·{' '}
-                  {MODE_LABELS[selectedSession.mode]} · CEFR{' '}
-                  {selectedSession.cefrLevel} · IELTS{' '}
-                  {selectedSessionIntl.ieltsBand.toFixed(1)} · TOEFL{' '}
-                  {selectedSessionIntl.toeflEquivalent}/30
+                  {MODE_LABELS[selectedSession.mode]} · {selectedSession.wordCount} words
                 </div>
                 <h2
                   id="session-modal-title"
@@ -749,82 +747,37 @@ export function DashboardView({
               </button>
             </div>
 
-            <div className="grid grid-cols-3 sm:grid-cols-6 gap-2.5 pt-3 border-t border-border-subtle">
-              {RUBRIC_DIMENSIONS.map((dim) => (
-                <div
-                  key={dim.key}
-                  className="p-2.5 rounded-lg bg-subtle border border-border-subtle"
-                >
-                  <div className="text-[11px] text-ink-muted truncate">
-                    {dim.shortLabel}
-                  </div>
-                  <div className="text-base font-semibold font-mono-tabular text-ink-primary mt-0.5">
-                    {selectedSession.scores[dim.key]}/10
-                  </div>
-                </div>
-              ))}
-            </div>
+            <EvaluationReportView
+              defaultView="detailed"
+              report={{
+                topic: selectedSession.topicDescription,
+                modeLabel: MODE_LABELS[selectedSession.mode],
+                scores: selectedSession.scores,
+                metricNotes: selectedSession.metricNotes,
+                cefrLevel: selectedSession.cefrLevel,
+                internationalMetrics: selectedSessionIntl,
+                toneVerdict: selectedSession.toneVerdict,
+                flowVerdict: selectedSession.flowVerdict,
+                feedbackImplemented: selectedSession.feedbackImplemented,
+                feedbackCheck: selectedSession.feedbackCheck,
+                whatImproved: selectedSession.whatImproved,
+                whatImprovedPoints: selectedSession.whatImprovedPoints,
+                strictImprovements: selectedSession.strictImprovements,
+                pinpointedRewrites: selectedSession.pinpointedRewrites,
+                rewrittenSample: selectedSession.rewrittenSample,
+                grammarFixes: selectedSession.grammarFixes,
+                vocabUpgrades: selectedSession.vocabUpgrades,
+                routingMeta: selectedSession.routingMeta,
+                modelUsed: selectedSession.modelUsed,
+              }}
+            />
 
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs font-mono-tabular p-3 rounded-lg bg-subtle border border-border-subtle text-ink-secondary">
-              <span>Lexical: {selectedSessionIntl.lexicalResource}/10</span>
-              <span>Cohesion: {selectedSessionIntl.coherenceCohesion}/10</span>
-              <span>Register: {selectedSessionIntl.registerControl}/10</span>
-              <span>FK Grade: {selectedSessionIntl.fkGradeLevel}</span>
-            </div>
-
-            <div className="space-y-3 text-sm">
-              <div>
-                <h3 className="text-xs font-semibold text-ink-muted mb-1">
-                  What Improved
-                </h3>
-                <p className="text-ink-primary leading-relaxed">
-                  {selectedSession.whatImproved}
-                </p>
-              </div>
-              <div>
-                <h3 className="text-xs font-semibold text-ink-muted mb-1">
-                  Strict Improvements & Pinpointed Fixes
-                </h3>
-                <p className="text-ink-primary leading-relaxed">
-                  {selectedSession.strictImprovements}
-                </p>
-              </div>
-              {selectedSession.vocabUpgrades.length > 0 && (
-                <div>
-                  <h3 className="text-xs font-semibold text-ink-muted mb-1.5">
-                    Vocabulary Upgrades
-                  </h3>
-                  <ul className="space-y-1.5">
-                    {selectedSession.vocabUpgrades.map((v, idx) => (
-                      <li
-                        key={idx}
-                        className="text-xs p-2.5 rounded-lg bg-subtle border border-border-subtle"
-                      >
-                        <span className="line-through text-ink-muted">
-                          {v.used}
-                        </span>{' '}
-                        →{' '}
-                        <span className="font-semibold text-ink-primary">
-                          {v.betterAlternative}
-                        </span>
-                        {v.explanation ? (
-                          <span className="text-ink-secondary">
-                            {' '}
-                            — {v.explanation}
-                          </span>
-                        ) : null}
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-              )}
-              <div>
-                <h3 className="text-xs font-semibold text-ink-muted mb-1.5">
-                  Saved Draft
-                </h3>
-                <div className="p-4 rounded-lg bg-subtle border border-border-subtle text-sm leading-relaxed whitespace-pre-wrap text-ink-primary">
-                  {selectedSession.content}
-                </div>
+            <div className="pt-3 border-t border-border-subtle">
+              <h3 className="text-xs font-semibold text-ink-muted mb-1.5">
+                Saved Draft
+              </h3>
+              <div className="p-4 rounded-lg bg-subtle border border-border-subtle text-sm leading-relaxed whitespace-pre-wrap text-ink-primary">
+                {selectedSession.content}
               </div>
             </div>
           </div>

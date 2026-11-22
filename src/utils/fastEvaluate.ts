@@ -1,8 +1,13 @@
 import type {
+  CoachHighlightPoint,
+  EvaluationRoutingMeta,
+  FeedbackImplementationDetail,
   FeedbackImplementedStatus,
   GrammarFix,
   InternationalMetrics,
+  PinpointedRewrite,
   RewrittenSample,
+  RubricMetricNotes,
   RubricScores,
   ToneSetting,
   VocabSuggestion,
@@ -29,16 +34,21 @@ export interface InstantEvaluationResult {
   isProvisionalInstant: boolean;
   suggestedTitle: string;
   scores: RubricScores;
+  metricNotes?: RubricMetricNotes;
   cefrLevel: string;
   internationalMetrics: InternationalMetrics;
   toneVerdict: string;
   flowVerdict: string;
   feedbackImplemented: FeedbackImplementedStatus;
+  feedbackCheck?: FeedbackImplementationDetail;
   whatImproved: string;
+  whatImprovedPoints?: CoachHighlightPoint[];
   strictImprovements: string;
+  pinpointedRewrites?: PinpointedRewrite[];
   rewrittenSample?: RewrittenSample;
   grammarFixes: GrammarFix[];
   vocabUpgrades: VocabSuggestion[];
+  routingMeta?: EvaluationRoutingMeta;
 }
 
 export interface RandomTopicDismissInput {
@@ -635,13 +645,82 @@ export function buildInstantLocalEvaluation(
 
   const rewrittenSample = buildLocalRewriteSample(content, vocabUpgrades);
 
+  const metricNotes: RubricMetricNotes = {
+    naturalVoiceFlow:
+      fillerCount > 0
+        ? `Clear spoken intent, but ${fillerCount} hedge word${fillerCount === 1 ? '' : 's'} soften your conviction.`
+        : `Direct spoken flow across ${words} words with minimal conversational drag.`,
+    claritySimplicity:
+      passiveCount >= 2
+        ? `Core message comes through; converting ${passiveCount} passive verbs will sharpen clarity.`
+        : `Clean, readable explanation at ${avgLen} words per sentence.`,
+    grammarMechanics:
+      grammarFixes.length > 0
+        ? `${grammarFixes.length} local mechanics slip${grammarFixes.length === 1 ? '' : 's'} flagged for one-click repair.`
+        : 'Clean local spelling and punctuation; connect API for deeper syntax analysis.',
+    toneEngagement:
+      topicPenalty < 0
+        ? `Matches ${TONE_LABELS[tone]} tone, though prompt alignment looks light.`
+        : `Steady ${TONE_LABELS[tone].toLowerCase()} register suited to ${MODE_LABELS[mode]}.`,
+    sentenceVarietyCadence:
+      integrity.longestSentenceWords > 32
+        ? `Longest sentence runs ${integrity.longestSentenceWords} words; split it into two spoken breaths.`
+        : `Sentence length spread (${integrity.sentenceLengthStdDev}w) keeps pacing readable.`,
+    concisenessDirectness:
+      fillerCount > 0 || avgLen > 24
+        ? 'Tighten long clauses and cut filler hedges so key ideas land faster.'
+        : 'Tight phrasing with low filler density.',
+  };
+
+  const pinpointedRewrites: PinpointedRewrite[] = [];
+  if (rewrittenSample) {
+    pinpointedRewrites.push({
+      original: rewrittenSample.original,
+      rewrite: rewrittenSample.improved,
+      rule: rewrittenSample.why,
+      category: 'Sentence Flow & Conciseness',
+    });
+  }
+  for (const fix of grammarFixes.slice(0, 3)) {
+    pinpointedRewrites.push({
+      original: fix.original,
+      rewrite: fix.corrected,
+      rule: fix.rule,
+      category: fix.category,
+    });
+  }
+
+  const whatImprovedPoints: CoachHighlightPoint[] = [
+    {
+      title: 'Draft Structure',
+      detail: strengthParts.join(' '),
+    },
+  ];
+
+  const feedbackCheck: FeedbackImplementationDetail = {
+    status: 'Baseline',
+    implemented:
+      grammarFixes.length === 0
+        ? 'Zero offline spelling or punctuation slips detected in this draft.'
+        : `Completed a ${words}-word draft in ${MODE_LABELS[mode]} mode.`,
+    missed:
+      strictParts[0] ||
+      'Connect the AI Coach server for cross-session feedback implementation tracking.',
+  };
+
+  const taggedVocab: VocabSuggestion[] = vocabUpgrades.map((v) => ({
+    ...v,
+    contextTag: MODE_LABELS[mode],
+  }));
+
   return {
     evaluationStatus: 'completed',
-    modelUsed: 'instant-local',
+    modelUsed: 'offline-rubric',
     thinkingLevelUsed: 'LOCAL',
-    isProvisionalInstant: true,
+    isProvisionalInstant: false,
     suggestedTitle,
     scores: calibrated.scores,
+    metricNotes,
     cefrLevel: calibrated.cefrLevel,
     internationalMetrics,
     toneVerdict:
@@ -655,11 +734,20 @@ export function buildInstantLocalEvaluation(
           ? `Short choppy pacing at ${avgLen} words/sentence; connect closely linked thoughts.`
           : `Dense pacing at ${avgLen} words/sentence (longest: ${integrity.longestSentenceWords}w); break up long clauses.`,
     feedbackImplemented: 'Baseline',
+    feedbackCheck,
     whatImproved: strengthParts.join(' '),
+    whatImprovedPoints,
     strictImprovements: strictParts.slice(0, 2).join(' '),
+    pinpointedRewrites,
     rewrittenSample,
     grammarFixes,
-    vocabUpgrades,
+    vocabUpgrades: taggedVocab,
+    routingMeta: {
+      model: 'offline-rubric',
+      thinkingLevel: 'LOCAL',
+      tierLabel: 'Offline Rubric',
+      reason: 'Evaluated locally because the AI Coach backend was unreachable.',
+    },
   };
 }
 

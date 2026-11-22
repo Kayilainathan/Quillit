@@ -44,8 +44,14 @@ test('buildInstantLocalEvaluation runs fast and returns valid 6-pillar scores + 
   const elapsed = performance.now() - start;
 
   assert.ok(elapsed < 50, `Expected instant eval under 50ms, got ${elapsed.toFixed(2)}ms`);
-  assert.equal(result.isProvisionalInstant, true);
+  assert.equal(result.isProvisionalInstant, false);
+  assert.equal(result.modelUsed, 'offline-rubric');
   assert.ok(result.suggestedTitle.length >= 6);
+  assert.ok(result.metricNotes && Object.keys(result.metricNotes).length === 6);
+  assert.ok(result.feedbackCheck && result.feedbackCheck.implemented.length > 0);
+  assert.ok(Array.isArray(result.whatImprovedPoints) && result.whatImprovedPoints.length > 0);
+  assert.ok(Array.isArray(result.pinpointedRewrites));
+  assert.equal(result.routingMeta?.tierLabel, 'Offline Rubric');
   for (const val of Object.values(result.scores)) {
     assert.ok(val >= 4 && val <= 10, `Score out of range: ${val}`);
   }

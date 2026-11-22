@@ -29,10 +29,15 @@ import {
 } from 'lucide-react';
 import type {
   CalendarSlot,
+  CoachHighlightPoint,
+  EvaluationRoutingMeta,
+  FeedbackImplementationDetail,
   FeedbackImplementedStatus,
   GrammarFix,
   InternationalMetrics,
+  PinpointedRewrite,
   RewrittenSample,
+  RubricMetricNotes,
   RubricScores,
   StudentProfile,
   ToneSetting,
@@ -43,7 +48,6 @@ import type {
 } from '../types';
 import {
   MODE_LABELS,
-  RUBRIC_DIMENSIONS,
   TONE_LABELS,
   analyzeDraftLocally,
   applyMultipleReplacements,
@@ -69,13 +73,19 @@ import {
   inferSuitableTitle,
   resolveRandomTopicDismiss,
 } from '../utils/fastEvaluate';
+import { selectDynamicEvaluationRoute } from '../utils/evaluationRouter';
 import { computeDailyInkProgress } from '../utils/inkGoal';
 import { InkDropGoalWell } from './InkDropGoalWell';
+import {
+  EvaluationLoadingCard,
+  EvaluationReportView,
+} from './EvaluationReportView';
 
 interface EvaluationPayload {
   evaluationStatus?: 'completed' | 'queued_for_reset';
   modelUsed?: string;
   thinkingLevelUsed?: string;
+  routingMeta?: EvaluationRoutingMeta;
   downgraded?: boolean;
   cached?: boolean;
   isProvisionalInstant?: boolean;
@@ -83,13 +93,17 @@ interface EvaluationPayload {
   quotaResetSeconds?: number;
   quotaResetAt?: string;
   scores: RubricScores;
+  metricNotes?: RubricMetricNotes;
   cefrLevel: string;
   internationalMetrics?: InternationalMetrics;
   toneVerdict: string;
   flowVerdict: string;
   feedbackImplemented: FeedbackImplementedStatus;
+  feedbackCheck?: FeedbackImplementationDetail;
   whatImproved: string;
+  whatImprovedPoints?: CoachHighlightPoint[];
   strictImprovements: string;
+  pinpointedRewrites?: PinpointedRewrite[];
   rewrittenSample?: RewrittenSample;
   masteredWordsUsed?: string[];
   grammarFixes: GrammarFix[];
@@ -241,7 +255,8 @@ export function WriteStudio({
   );
 
   const [evaluating, setEvaluating] = useState(false);
-  const [refiningWithAI, setRefiningWithAI] = useState(false);
+  const [evaluatingTierLabel, setEvaluatingTierLabel] =
+    useState<string>('Hydrogen · Medium');
   const [evaluation, setEvaluation] = useState<EvaluationPayload | null>(null);
   const [savedSuccess, setSavedSuccess] = useState(false);
   const [autoTitledBanner, setAutoTitledBanner] = useState<string | null>(null);
@@ -706,15 +721,17 @@ export function WriteStudio({
   }
 
   function applyTextReplacement(original: string, replacement: string) {
-    const cleanRep = replacement.split('/')[0].trim();
-    if (!original || !content.includes(original)) {
-      setErrorMessage(
-        `Could not locate exact phrase "${original}" in the current draft.`
-      );
+    const cleanRep = replacement.trim();
+    if (!original) return;
+    if (content.includes(original)) {
+      setContent((prev) => prev.replace(original, cleanRep));
+      setErrorMessage(null);
+      setLiveAppliedNotice('Applied suggested revision to your draft.');
       return;
     }
-    setContent((prev) => prev.replace(original, cleanRep));
-    setErrorMessage(null);
+    setErrorMessage(
+      `Could not locate exact phrase "${original.slice(0, 60)}" in the current draft.`
+    );
   }
 
   function handleApplyAllEvaluationFixes() {
@@ -781,6 +798,7 @@ export function WriteStudio({
       content: draftText.trim(),
       wordCount: draftDiagnostics.wordCount,
       scores: evalPayload.scores,
+      metricNotes: evalPayload.metricNotes,
       totalScore,
       percentage,
       cefrLevel: evalPayload.cefrLevel,
@@ -788,36 +806,38 @@ export function WriteStudio({
       toneVerdict: evalPayload.toneVerdict,
       flowVerdict: evalPayload.flowVerdict,
       feedbackImplemented: evalPayload.feedbackImplemented,
+      feedbackCheck: evalPayload.feedbackCheck,
       whatImproved: evalPayload.whatImproved,
+      whatImprovedPoints: evalPayload.whatImprovedPoints,
       strictImprovements: evalPayload.strictImprovements,
+      pinpointedRewrites: evalPayload.pinpointedRewrites,
       rewrittenSample: evalPayload.rewrittenSample,
       grammarFixes: evalPayload.grammarFixes,
       vocabUpgrades: evalPayload.vocabUpgrades,
+      routingMeta: evalPayload.routingMeta,
       status: 'Completed',
       evaluationPending: isQueued,
-      modelUsed: evalPayload.modelUsed || 'gemini-3.1-flash-lite',
+      modelUsed: evalPayload.modelUsed || 'gemini-4-hydrogen',
       queuedAt: isQueued ? new Date().toISOString() : undefined,
       createdAt: new Date().toISOString(),
     };
 
-    const newVocab: VocabEntry[] = evalPayload.isProvisionalInstant
-      ? []
-      : (evalPayload.vocabUpgrades || [])
-          .filter((v) => {
-            const key = `${v.used.toLowerCase()}->${v.betterAlternative.toLowerCase()}`;
-            return !existingVocabSet.has(key) && !savedVocabKeys.has(key);
-          })
-          .map((v, idx) => ({
-            id: `vocab-${Date.now()}-${idx}`,
-            used: v.used,
-            betterAlternative: v.betterAlternative,
-            explanation: v.explanation,
-            contextSnippet: v.contextSnippet || resolvedTopic,
-            mode,
-            dateAdded: todayISO,
-            mastered: false,
-            sessionId: stableSessionId,
-          }));
+    const newVocab: VocabEntry[] = (evalPayload.vocabUpgrades || [])
+      .filter((v) => {
+        const key = `${v.used.toLowerCase()}->${v.betterAlternative.toLowerCase()}`;
+        return !existingVocabSet.has(key) && !savedVocabKeys.has(key);
+      })
+      .map((v, idx) => ({
+        id: `vocab-${Date.now()}-${idx}`,
+        used: v.used,
+        betterAlternative: v.betterAlternative,
+        explanation: v.explanation,
+        contextSnippet: v.contextSnippet || resolvedTopic,
+        mode,
+        dateAdded: todayISO,
+        mastered: false,
+        sessionId: stableSessionId,
+      }));
 
     const promoted = onSaveSession(
       sessionRecord,
@@ -838,6 +858,7 @@ export function WriteStudio({
 
   async function handleEvaluateDraft(isAutoRetry = false) {
     setErrorMessage(null);
+    setLiveAppliedNotice(null);
     const trimmedDraft = content.trim();
 
     if (trimmedDraft.length < 20) {
@@ -848,21 +869,14 @@ export function WriteStudio({
     }
 
     const wasTopicBlank = !topic.trim() && !activeLinkedSlot?.topic;
-    const instantTopic =
+    const fallbackTopic =
       topic.trim() ||
       activeLinkedSlot?.topic ||
       inferSuitableTitle(trimmedDraft, mode);
 
-    if (wasTopicBlank) {
-      setTopic(instantTopic);
-      autoTitledSessionRef.current = true;
-      setAutoTitledBanner(instantTopic);
-    } else if (!isAutoRetry) {
-      autoTitledSessionRef.current = false;
-      setAutoTitledBanner(null);
-    }
-
     if (!isAutoRetry) {
+      autoTitledSessionRef.current = wasTopicBlank;
+      setAutoTitledBanner(null);
       setPromotedVocabBanner(null);
     }
 
@@ -874,29 +888,22 @@ export function WriteStudio({
         .toUpperCase()}`;
     activeLoggedSessionIdRef.current = stableSessionId;
 
-    // Layer 1: Instant (<15ms) local evaluation + automatic journal log
-    const currentOfflineIssues = runOfflineProofread(trimmedDraft);
-    const instantEval = buildInstantLocalEvaluation(
-      trimmedDraft,
-      mode,
-      tone,
-      currentOfflineIssues,
-      instantTopic
-    );
+    // Preview the dynamic tier that the backend router will select for this draft
+    const draftDiag = analyzeDraftLocally(trimmedDraft);
+    const predictedRoute = selectDynamicEvaluationRoute({
+      wordCount: draftDiag.wordCount,
+      mode: MODE_LABELS[mode],
+      tone: TONE_LABELS[tone],
+      topic: wasTopicBlank ? '' : fallbackTopic,
+      topicPrimer: activeLinkedSlot?.topicPrimer || '',
+      hasPreviousSessionSummary: Boolean(coachContext.previousSessionSummary),
+      practicingVocabCount: coachContext.practicingWords.length,
+    });
+    setEvaluatingTierLabel(predictedRoute.primary.tierLabel);
 
-    if (!isAutoRetry) {
-      setEvaluation(instantEval);
-      persistEvaluatedSession(
-        instantEval,
-        instantTopic,
-        trimmedDraft,
-        stableSessionId
-      );
-    }
-
-    // Layer 2: Ultra-fast Gemini pass upgrades scores & auto-title in-place (gracefully skips on static GitHub Pages)
+    // Single-pass atomic evaluation: show aesthetic progress card instead of flashing
+    // a provisional score that mutates seconds later.
     setEvaluating(true);
-    setRefiningWithAI(true);
     try {
       const apiBase = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/$/, '');
       const res = await fetch(`${apiBase}/api/evaluate`, {
@@ -906,7 +913,7 @@ export function WriteStudio({
           content: trimmedDraft,
           mode: MODE_LABELS[mode],
           tone: TONE_LABELS[tone],
-          topic: wasTopicBlank ? '' : instantTopic,
+          topic: wasTopicBlank ? '' : fallbackTopic,
           needsAutoTitle: wasTopicBlank,
           topicPrimer: activeLinkedSlot?.topicPrimer || '',
           previousSessionSummary: coachContext.previousSessionSummary,
@@ -921,28 +928,33 @@ export function WriteStudio({
         throw new Error('Static host or API unavailable');
       }
       const data = (await res.json()) as EvaluationPayload & { error?: string };
+      if (data.error) {
+        throw new Error(data.error);
+      }
 
-      let finalTopic = latestTopicRef.current.trim() || instantTopic;
+      let finalTopic = latestTopicRef.current.trim() || fallbackTopic;
       if (
-        autoTitledSessionRef.current &&
+        wasTopicBlank &&
         data.suggestedTitle &&
-        data.suggestedTitle.trim().length >= 4 &&
-        latestTopicRef.current.trim() === instantTopic
+        data.suggestedTitle.trim().length >= 4
       ) {
         finalTopic = data.suggestedTitle.trim();
         setTopic(finalTopic);
         setAutoTitledBanner(finalTopic);
+      } else if (wasTopicBlank) {
+        finalTopic = fallbackTopic;
+        setTopic(finalTopic);
+        setAutoTitledBanner(finalTopic);
       }
 
-      const upgradedEval: EvaluationPayload = {
+      const finalEval: EvaluationPayload = {
         ...data,
         isProvisionalInstant: false,
       };
-      setEvaluation(upgradedEval);
+      setEvaluation(finalEval);
 
-      // Upsert exact same sessionId so there are never duplicate entries
       persistEvaluatedSession(
-        upgradedEval,
+        finalEval,
         finalTopic,
         trimmedDraft,
         stableSessionId
@@ -956,16 +968,32 @@ export function WriteStudio({
         setResetCountdown(0);
       }
     } catch {
-      // On static hosting (e.g. GitHub Pages) or offline, the instant local score & auto-log stay cleanly active
+      // Transparent single-pass offline/static-host fallback (never mutates later)
+      const currentOfflineIssues = runOfflineProofread(trimmedDraft);
+      const offlineEval = buildInstantLocalEvaluation(
+        trimmedDraft,
+        mode,
+        tone,
+        currentOfflineIssues,
+        fallbackTopic
+      );
+      if (wasTopicBlank) {
+        setTopic(fallbackTopic);
+        setAutoTitledBanner(fallbackTopic);
+      }
+      setEvaluation(offlineEval);
+      persistEvaluatedSession(
+        offlineEval,
+        fallbackTopic,
+        trimmedDraft,
+        stableSessionId
+      );
       setResetCountdown(0);
     } finally {
       setEvaluating(false);
-      setRefiningWithAI(false);
     }
   }
 
-  const evalTotal = evaluation ? computeTotalScore(evaluation.scores) : 0;
-  const evalPct = evaluation ? computePercentage(evalTotal) : 0;
   const evalIntl = evaluation
     ? deriveInternationalMetrics({
         scores: evaluation.scores,
@@ -974,7 +1002,7 @@ export function WriteStudio({
       })
     : null;
 
-  const hasRightCoachingDrawer = !focusMode && Boolean(evaluation);
+  const hasRightCoachingDrawer = !focusMode && (evaluating || Boolean(evaluation));
   const studioGreeting = useMemo(
     () => getStudioGreeting(studentProfile?.displayName),
     [studentProfile?.displayName]
@@ -1865,11 +1893,12 @@ export function WriteStudio({
                     disabled={evaluating}
                     className="btn-primary inline-flex items-center gap-1.5 px-4 py-2 text-xs font-medium whitespace-nowrap"
                   >
-                    <Sparkles className="w-3.5 h-3.5" aria-hidden="true" />
+                    <Sparkles
+                      className={`w-3.5 h-3.5 ${evaluating ? 'animate-pulse' : ''}`}
+                      aria-hidden="true"
+                    />
                     <span>
-                      {refiningWithAI
-                        ? 'Refining...'
-                        : 'Evaluate & Score'}
+                      {evaluating ? 'Evaluating...' : 'Evaluate & Score'}
                     </span>
                   </button>
                 </div>
@@ -1887,10 +1916,16 @@ export function WriteStudio({
           )}
         </div>
 
-        {/* Right Column Coaching Drawer (Evaluation only, auto-logged) */}
+        {/* Right Column Coaching Drawer (Single-Pass Evaluation, Auto-Logged) */}
         {hasRightCoachingDrawer && (
           <aside className="lg:col-span-5 space-y-5">
-            {evaluation && evalIntl && (
+            {evaluating ? (
+              <EvaluationLoadingCard
+                wordCount={diagnostics.wordCount}
+                modeLabel={MODE_LABELS[mode]}
+                estimatedTierLabel={evaluatingTierLabel}
+              />
+            ) : evaluation && evalIntl ? (
               <div
                 data-testid="evaluation-result-card"
                 className="card-surface p-5 space-y-4"
@@ -1978,266 +2013,38 @@ export function WriteStudio({
                   </div>
                 )}
 
-                <div className="flex items-start justify-between gap-3">
-                  <div>
-                    <div className="flex flex-wrap items-center gap-1.5 text-xs text-ink-muted">
-                      <span>
-                        CEFR {evaluation.cefrLevel} · IELTS{' '}
-                        {evalIntl.ieltsBand.toFixed(1)} · TOEFL{' '}
-                        {evalIntl.toeflEquivalent}/30
-                      </span>
-                    </div>
-                    <div className="text-2xl font-semibold font-mono-tabular text-ink-primary mt-0.5">
-                      {evalTotal}/60{' '}
-                      <span className="text-sm font-medium text-ink-secondary">
-                        ({evalPct.toFixed(1)}%)
-                      </span>
-                    </div>
-                  </div>
-
-                  {/* Quiet Automatic Logged Status */}
-                  <div className="flex flex-col items-end gap-1 shrink-0">
-                    {savedSuccess && (
-                      <span
-                        data-testid="auto-logged-indicator"
-                        className="inline-flex items-center gap-1 text-[11px] font-medium text-status-success"
-                      >
-                        <Check className="w-3.5 h-3.5" aria-hidden="true" />
-                        <span>Logged to journal</span>
-                      </span>
-                    )}
-                    {refiningWithAI ? (
-                      <span className="text-[11px] text-ink-muted animate-pulse">
-                        Refining with AI Coach...
-                      </span>
-                    ) : evaluation.isProvisionalInstant ? (
-                      <span className="text-[11px] text-ink-muted">
-                        Offline rubric
-                      </span>
-                    ) : (
-                      <span
-                        data-testid="ai-coach-verified-label"
-                        className="text-[11px] text-ink-muted"
-                      >
-                        AI Coach
-                      </span>
-                    )}
-                  </div>
-                </div>
-
-                <div className="grid grid-cols-2 gap-2">
-                  {RUBRIC_DIMENSIONS.map((dim) => (
-                    <div
-                      key={dim.key}
-                      className="p-2.5 rounded-md bg-subtle border border-border-subtle"
-                    >
-                      <div className="text-[11px] text-ink-muted truncate">
-                        {dim.label}
-                      </div>
-                      <div className="text-sm font-semibold font-mono-tabular text-ink-primary mt-0.5">
-                        {evaluation.scores[dim.key]}/10
-                      </div>
-                    </div>
-                  ))}
-                </div>
-
-                <div className="p-3 rounded-md bg-subtle border border-border-subtle space-y-2">
-                  <div className="flex items-center justify-between text-xs font-semibold text-ink-primary">
-                    <span>Writing Benchmarks</span>
-                    <span className="font-mono-tabular text-ink-secondary">
-                      Feedback Applied: {evaluation.feedbackImplemented}
-                    </span>
-                  </div>
-                  <div className="grid grid-cols-2 gap-2 text-[11px] font-mono-tabular">
-                    <div>
-                      <span className="text-ink-muted">Lexical Resource:</span>{' '}
-                      <span className="font-semibold text-ink-primary">
-                        {evalIntl.lexicalResource}/10
-                      </span>
-                    </div>
-                    <div>
-                      <span className="text-ink-muted">Cohesion:</span>{' '}
-                      <span className="font-semibold text-ink-primary">
-                        {evalIntl.coherenceCohesion}/10
-                      </span>
-                    </div>
-                    <div>
-                      <span className="text-ink-muted">Task Achievement:</span>{' '}
-                      <span className="font-semibold text-ink-primary">
-                        {evalIntl.taskAchievement}/10
-                      </span>
-                    </div>
-                    <div>
-                      <span className="text-ink-muted">Register Control:</span>{' '}
-                      <span className="font-semibold text-ink-primary">
-                        {evalIntl.registerControl}/10
-                      </span>
-                    </div>
-                  </div>
-                </div>
-
-                <div className="space-y-2.5 text-xs leading-relaxed">
-                  <div>
-                    <span className="font-semibold text-ink-primary">
-                      Tone &amp; Flow:{' '}
-                    </span>
-                    <span className="text-ink-secondary">
-                      {evaluation.toneVerdict} {evaluation.flowVerdict}
-                    </span>
-                  </div>
-
-                  <div>
-                    <span className="font-semibold text-ink-primary">
-                      What Changed for the Better:{' '}
-                    </span>
-                    <span className="text-ink-secondary">
-                      {evaluation.whatImproved}
-                    </span>
-                  </div>
-
-                  <div>
-                    <span className="font-semibold text-ink-primary">
-                      Strict Improvements:{' '}
-                    </span>
-                    <span className="text-ink-secondary">
-                      {evaluation.strictImprovements}
-                    </span>
-                  </div>
-                </div>
-
-                {evaluation.rewrittenSample && (
-                  <div
-                    data-testid="coach-rewrite-sample"
-                    className="p-3 rounded-md bg-subtle border border-border-subtle space-y-2 text-xs"
-                  >
-                    <div className="flex items-center justify-between gap-2">
-                      <span className="font-semibold text-ink-primary">
-                        Coach Rewrite
-                      </span>
-                      {content
-                        .toLowerCase()
-                        .includes(
-                          evaluation.rewrittenSample.original.toLowerCase()
-                        ) && (
-                        <button
-                          type="button"
-                          onClick={() =>
-                            applyTextReplacement(
-                              evaluation.rewrittenSample!.original,
-                              evaluation.rewrittenSample!.improved
-                            )
-                          }
-                          className="inline-link-tactile text-[11px] font-medium cursor-pointer"
-                        >
-                          Use Rewrite
-                        </button>
-                      )}
-                    </div>
-                    <div className="space-y-1.5 leading-relaxed">
-                      <p className="text-[11px] text-ink-muted line-through">
-                        {evaluation.rewrittenSample.original}
-                      </p>
-                      <p className="text-xs text-ink-primary font-medium">
-                        {evaluation.rewrittenSample.improved}
-                      </p>
-                      <p className="text-[11px] text-ink-secondary">
-                        {evaluation.rewrittenSample.why}
-                      </p>
-                    </div>
-                  </div>
-                )}
-
-                {evaluation.grammarFixes.length > 0 && (
-                  <div className="space-y-1.5 pt-2 border-t border-border-subtle">
-                    <div className="flex items-center justify-between gap-2">
-                      <div className="text-xs font-semibold text-ink-primary">
-                        Pinpointed Grammar &amp; Mechanics
-                      </div>
-                      <button
-                        type="button"
-                        onClick={handleApplyAllEvaluationFixes}
-                        className="inline-link-tactile text-xs font-medium whitespace-nowrap cursor-pointer"
-                      >
-                        Apply All Fixes
-                      </button>
-                    </div>
-                    {evaluation.grammarFixes.map((fix, idx) => (
-                      <div
-                        key={idx}
-                        className="p-2 rounded-md bg-subtle border border-border-subtle text-xs"
-                      >
-                        <div className="flex items-center justify-between gap-2">
-                          <span>
-                            <span className="line-through text-ink-muted">
-                              {fix.original}
-                            </span>{' '}
-                            →{' '}
-                            <span className="font-semibold text-status-success">
-                              {fix.corrected}
-                            </span>
-                          </span>
-                          <button
-                            type="button"
-                            onClick={() =>
-                              applyTextReplacement(fix.original, fix.corrected)
-                            }
-                            className="inline-link-tactile text-[11px] font-medium cursor-pointer"
-                          >
-                            Apply Fix
-                          </button>
-                        </div>
-                        <div className="text-[11px] text-ink-muted mt-0.5">
-                          {fix.rule}
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                )}
-
-                {evaluation.vocabUpgrades.length > 0 && (
-                  <div className="space-y-1.5 pt-2 border-t border-border-subtle">
-                    <div className="text-xs font-semibold text-ink-primary flex items-center gap-1.5">
-                      <BookOpen className="w-3.5 h-3.5 text-ink-secondary" aria-hidden="true" />
-                      <span>Vocabulary Upgrades</span>
-                    </div>
-                    {evaluation.vocabUpgrades.map((v, idx) => {
-                      const key = `${v.used.toLowerCase()}->${v.betterAlternative.toLowerCase()}`;
-                      const alreadySaved =
-                        existingVocabSet.has(key) || savedVocabKeys.has(key);
-                      return (
-                        <div
-                          key={idx}
-                          className="p-2 rounded-md bg-subtle border border-border-subtle text-xs"
-                        >
-                          <div className="flex items-center justify-between gap-2">
-                            <span>
-                              <span className="line-through text-ink-muted">
-                                {v.used}
-                              </span>{' '}
-                              →{' '}
-                              <span className="font-semibold text-ink-primary">
-                                {v.betterAlternative}
-                              </span>
-                            </span>
-                            <button
-                              type="button"
-                              disabled={alreadySaved}
-                              onClick={() => handleSaveVocabItem(v)}
-                              className="inline-link-tactile text-[11px] font-medium disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
-                            >
-                              {alreadySaved ? 'In Library' : 'Save Word'}
-                            </button>
-                          </div>
-                          <div className="text-[11px] text-ink-muted mt-0.5">
-                            {v.explanation}
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                )}
+                <EvaluationReportView
+                  report={{
+                    topic: topic || evaluation.suggestedTitle || 'Writing Session',
+                    modeLabel: MODE_LABELS[mode],
+                    scores: evaluation.scores,
+                    metricNotes: evaluation.metricNotes,
+                    cefrLevel: evaluation.cefrLevel,
+                    internationalMetrics: evalIntl,
+                    toneVerdict: evaluation.toneVerdict,
+                    flowVerdict: evaluation.flowVerdict,
+                    feedbackImplemented: evaluation.feedbackImplemented,
+                    feedbackCheck: evaluation.feedbackCheck,
+                    whatImproved: evaluation.whatImproved,
+                    whatImprovedPoints: evaluation.whatImprovedPoints,
+                    strictImprovements: evaluation.strictImprovements,
+                    pinpointedRewrites: evaluation.pinpointedRewrites,
+                    rewrittenSample: evaluation.rewrittenSample,
+                    grammarFixes: evaluation.grammarFixes,
+                    vocabUpgrades: evaluation.vocabUpgrades,
+                    routingMeta: evaluation.routingMeta,
+                    modelUsed: evaluation.modelUsed,
+                  }}
+                  draftContent={content}
+                  savedSuccess={savedSuccess}
+                  existingVocabSet={existingVocabSet}
+                  savedVocabKeys={savedVocabKeys}
+                  onApplyTextReplacement={applyTextReplacement}
+                  onApplyAllGrammarFixes={handleApplyAllEvaluationFixes}
+                  onSaveVocabItem={(v) => handleSaveVocabItem(v)}
+                />
               </div>
-            )}
+            ) : null}
           </aside>
         )}
       </div>

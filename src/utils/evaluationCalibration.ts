@@ -1,6 +1,11 @@
 import type {
+  CoachHighlightPoint,
+  FeedbackImplementationDetail,
+  FeedbackImplementedStatus,
   GrammarFix,
+  PinpointedRewrite,
   RewrittenSample,
+  RubricMetricNotes,
   RubricScores,
   VocabSuggestion,
 } from '../types';
@@ -277,11 +282,219 @@ export function filterGroundedVocabUpgrades(
       contextSnippet: item.contextSnippet
         ? sanitizeCoachProse(String(item.contextSnippet))
         : undefined,
+      contextTag: item.contextTag
+        ? sanitizeCoachProse(String(item.contextTag))
+        : undefined,
     });
     if (out.length >= 4) break;
   }
 
   return out;
+}
+
+function normalizeForProbe(text: string): string {
+  return text.toLowerCase().replace(/\s+/g, ' ').trim();
+}
+
+/**
+ * Keeps only sentence-level pinpointed rewrites whose `original` quote genuinely
+ * appears in the writer's draft (using normalized whitespace matching so long
+ * 40-50 word sentences never fail over double spaces or line breaks).
+ */
+export function filterGroundedPinpointedRewrites(
+  content: string,
+  items: PinpointedRewrite[]
+): PinpointedRewrite[] {
+  const normalizedDraft = normalizeForProbe(content);
+  const seen = new Set<string>();
+  const out: PinpointedRewrite[] = [];
+
+  for (const item of items) {
+    const original = String(item?.original ?? '')
+      .replace(/^["“]+|["”]+$/g, '')
+      .trim();
+    const rewrite = sanitizeCoachProse(
+      String(item?.rewrite ?? '').replace(/^["“]+|["”]+$/g, '')
+    );
+    const rule = sanitizeCoachProse(String(item?.rule ?? ''));
+    if (!original || !rewrite) continue;
+    if (normalizeForProbe(original) === normalizeForProbe(rewrite)) continue;
+
+    const normOriginal = normalizeForProbe(original);
+    // Verify either full substring match or first 28 normalized chars match inside draft
+    const probe = normOriginal.slice(0, Math.min(normOriginal.length, 28));
+    if (!normalizedDraft.includes(normOriginal) && !normalizedDraft.includes(probe)) {
+      continue;
+    }
+
+    const key = `${normOriginal.slice(0, 40)}->${normalizeForProbe(rewrite).slice(0, 40)}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+
+    out.push({
+      original,
+      rewrite,
+      rule: rule || 'Tighten grammar, agreement, and spoken pacing.',
+      category: item.category
+        ? sanitizeCoachProse(String(item.category))
+        : 'Grammar & Cadence',
+    });
+    if (out.length >= 6) break;
+  }
+
+  return out;
+}
+
+export function sanitizeMetricNotes(
+  raw?: Partial<Record<keyof RubricScores, unknown>> | null
+): RubricMetricNotes {
+  if (!raw || typeof raw !== 'object') return {};
+  const keys: Array<keyof RubricScores> = [
+    'naturalVoiceFlow',
+    'claritySimplicity',
+    'grammarMechanics',
+    'toneEngagement',
+    'sentenceVarietyCadence',
+    'concisenessDirectness',
+  ];
+  const out: RubricMetricNotes = {};
+  for (const key of keys) {
+    const val = raw[key];
+    if (typeof val === 'string' && val.trim().length > 0) {
+      out[key] = sanitizeCoachProse(val).slice(0, 220);
+    }
+  }
+  return out;
+}
+
+export function sanitizeWhatImprovedPoints(
+  raw?: Array<{ title?: unknown; detail?: unknown }> | null
+): CoachHighlightPoint[] {
+  if (!Array.isArray(raw)) return [];
+  const out: CoachHighlightPoint[] = [];
+  for (const item of raw) {
+    const title = sanitizeCoachProse(String(item?.title ?? '')).slice(0, 64);
+    const detail = sanitizeCoachProse(String(item?.detail ?? '')).slice(0, 320);
+    if (!title || !detail) continue;
+    out.push({ title, detail });
+    if (out.length >= 4) break;
+  }
+  return out;
+}
+
+export function sanitizeFeedbackCheck(params: {
+  status: FeedbackImplementedStatus;
+  raw?: { implemented?: unknown; missed?: unknown } | null;
+  fallbackImplemented?: string;
+}): FeedbackImplementationDetail {
+  const implemented = sanitizeCoachProse(
+    String(params.raw?.implemented ?? params.fallbackImplemented ?? '')
+  ).slice(0, 360);
+  const missed = sanitizeCoachProse(String(params.raw?.missed ?? '')).slice(0, 360);
+  return {
+    status: params.status,
+    implemented:
+      implemented ||
+      'Baseline session recorded; future evaluations will track your follow-through against these notes.',
+    missed:
+      missed ||
+      'No recurring misses flagged yet. Carry the pinpoint fixes below into your next draft.',
+  };
+}
+
+export function formatDetailedCoachMarkdown(params: {
+  topic: string;
+  modeLabel: string;
+  scores: RubricScores;
+  metricNotes?: RubricMetricNotes;
+  totalScore: number;
+  percentage: number;
+  cefrLevel: string;
+  ieltsBand?: number;
+  toeflEquivalent?: number;
+  feedbackCheck?: FeedbackImplementationDetail;
+  feedbackImplemented: FeedbackImplementedStatus;
+  whatImproved: string;
+  whatImprovedPoints?: CoachHighlightPoint[];
+  pinpointedRewrites?: PinpointedRewrite[];
+  grammarFixes: GrammarFix[];
+  vocabUpgrades: VocabSuggestion[];
+}): string {
+  const metricRows: Array<{ key: keyof RubricScores; label: string }> = [
+    { key: 'naturalVoiceFlow', label: 'Natural Voice & Flow' },
+    { key: 'claritySimplicity', label: 'Clarity & Simplicity' },
+    { key: 'grammarMechanics', label: 'Grammar & Mechanics' },
+    { key: 'toneEngagement', label: 'Tone & Engagement' },
+    { key: 'sentenceVarietyCadence', label: 'Sentence Variety & Cadence' },
+    { key: 'concisenessDirectness', label: 'Conciseness & Directness' },
+  ];
+
+  const lines: string[] = [];
+  lines.push(
+    `### Strict Evaluation: ${params.topic || 'Writing Session'} (${params.modeLabel})`
+  );
+  lines.push(
+    `**Scorecard: ${params.totalScore} / 60 (${params.percentage.toFixed(1)}%)** · CEFR ${params.cefrLevel}${
+      params.ieltsBand ? ` · IELTS ${params.ieltsBand.toFixed(1)}` : ''
+    }${params.toeflEquivalent ? ` · TOEFL ${params.toeflEquivalent}/30` : ''}`
+  );
+  lines.push('');
+  lines.push('| Metric | Score | Notes |');
+  lines.push('| --- | --- | --- |');
+  for (const row of metricRows) {
+    const note = params.metricNotes?.[row.key] || 'Evaluated against target register.';
+    lines.push(`| ${row.label} | ${params.scores[row.key]} / 10 | ${note} |`);
+  }
+
+  lines.push('');
+  const status = params.feedbackCheck?.status ?? params.feedbackImplemented;
+  lines.push(`#### 1. Feedback Implementation Check: ${status}`);
+  if (params.feedbackCheck?.implemented) {
+    lines.push(`- **Implemented:** ${params.feedbackCheck.implemented}`);
+  }
+  if (params.feedbackCheck?.missed) {
+    lines.push(`- **Missed:** ${params.feedbackCheck.missed}`);
+  }
+
+  lines.push('');
+  lines.push('#### 2. What Changed for the Better');
+  if (params.whatImprovedPoints && params.whatImprovedPoints.length > 0) {
+    for (const pt of params.whatImprovedPoints) {
+      lines.push(`- **${pt.title}:** ${pt.detail}`);
+    }
+  } else if (params.whatImproved) {
+    lines.push(`- ${params.whatImproved}`);
+  }
+
+  lines.push('');
+  lines.push('#### 3. Strict Improvements & Pinpointed Fixes');
+  const rewrites = params.pinpointedRewrites ?? [];
+  if (rewrites.length > 0) {
+    for (const item of rewrites) {
+      lines.push(`> "${item.original}"`);
+      lines.push(`- **Rewrite:** "${item.rewrite}"`);
+      lines.push(`- **Rule:** ${item.rule}`);
+      lines.push('');
+    }
+  } else if (params.grammarFixes.length > 0) {
+    for (const fix of params.grammarFixes) {
+      lines.push(`- "${fix.original}" -> "${fix.corrected}" — **Rule:** ${fix.rule}`);
+    }
+    lines.push('');
+  } else {
+    lines.push('- Mechanics are clean in this draft.');
+    lines.push('');
+  }
+
+  if (params.vocabUpgrades.length > 0) {
+    lines.push('#### 4. Vocabulary & Phrasing Upgrades (Lowest Weightage)');
+    for (const v of params.vocabUpgrades) {
+      const tag = v.contextTag ? ` (${v.contextTag})` : '';
+      lines.push(`- "${v.used}" -> **${v.betterAlternative}**${tag}`);
+    }
+  }
+
+  return lines.join('\n').trim();
 }
 
 export function sanitizeRewrittenSample(

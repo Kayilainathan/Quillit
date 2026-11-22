@@ -17,6 +17,7 @@ import {
   doc,
   getDocFromServer,
   getFirestore,
+  initializeFirestore,
   type Firestore,
 } from 'firebase/firestore';
 import { formatFirebaseAuthError } from './utils/authErrors';
@@ -57,12 +58,34 @@ let app: FirebaseApp | null = null;
 let initializedAuth: Auth | null = null;
 let initializedDb: Firestore | null = null;
 
+function createResilientFirestore(
+  firebaseApp: FirebaseApp,
+  databaseId?: string
+): Firestore {
+  // Force HTTP long-polling and disable fetch streams so Firestore never stalls
+  // for 10 seconds on blocked WebChannel streams inside preview iframes or proxies.
+  const settings = {
+    experimentalForceLongPolling: true,
+    useFetchStreams: false,
+  };
+  try {
+    return databaseId
+      ? initializeFirestore(firebaseApp, settings, databaseId)
+      : initializeFirestore(firebaseApp, settings);
+  } catch {
+    return databaseId
+      ? getFirestore(firebaseApp, databaseId)
+      : getFirestore(firebaseApp);
+  }
+}
+
 if (resolvedConfig) {
   try {
     app = initializeApp(resolvedConfig);
-    initializedDb = resolvedConfig.firestoreDatabaseId
-      ? getFirestore(app, resolvedConfig.firestoreDatabaseId)
-      : getFirestore(app);
+    initializedDb = createResilientFirestore(
+      app,
+      resolvedConfig.firestoreDatabaseId
+    );
     initializedAuth = getAuth(app);
   } catch (err) {
     console.warn('Firebase initialization skipped; running in Offline Space mode.', err);

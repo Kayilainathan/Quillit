@@ -6,12 +6,23 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { GoogleGenAI, ThinkingLevel, Type } from '@google/genai';
 import {
+  assessDraftIntegrity,
   calibrateEvaluationScores,
   filterGroundedGrammarFixes,
+  filterGroundedPinpointedRewrites,
   filterGroundedVocabUpgrades,
   sanitizeCoachProse,
+  sanitizeFeedbackCheck,
+  sanitizeMetricNotes,
   sanitizeRewrittenSample,
+  sanitizeWhatImprovedPoints,
 } from './src/utils/evaluationCalibration';
+import {
+  selectDynamicEvaluationRoute,
+  type ActiveEvalModel,
+  type ActiveThinkingLabel,
+  type EvaluationRouteStep,
+} from './src/utils/evaluationRouter';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -145,10 +156,29 @@ function getRemainingCooldownSeconds(): number {
   return Math.max(10, Math.min(45, Math.min(...activeCooldowns)));
 }
 
+function toSdkThinkingLevel(label: ActiveThinkingLabel): ThinkingLevel {
+  if (label === 'HIGH') return ThinkingLevel.HIGH;
+  if (label === 'MEDIUM') return ThinkingLevel.MEDIUM;
+  return ThinkingLevel.LOW;
+}
+
+function isTransientNetworkError(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err);
+  return (
+    msg.includes('ECONNRESET') ||
+    msg.includes('ETIMEDOUT') ||
+    msg.includes('fetch failed') ||
+    msg.includes('socket hang up') ||
+    msg.includes('500') ||
+    msg.includes('502') ||
+    msg.includes('504') ||
+    msg.includes('INTERNAL')
+  );
+}
+
 /**
- * Dynamically adapts thinking depth to draft complexity, prompt size, and active model tier.
- * IMPORTANT: gemini-4-hydrogen supports LOW/MEDIUM/HIGH/XHIGH (never MINIMAL).
- * gemini-3.1-flash-lite supports MINIMAL/LOW/MEDIUM/HIGH.
+ * Dynamically adapts thinking depth to draft complexity, prompt size, and active model tier
+ * for non-evaluation utility endpoints (schedule, realtime, pivot, topics).
  */
 function selectDynamicThinkingProfile(
   task: CoachTaskKind,
@@ -157,7 +187,6 @@ function selectDynamicThinkingProfile(
 ): { level: ThinkingLevel; label: 'HIGH' | 'MEDIUM' | 'LOW' | 'MINIMAL' } {
   if (model === 'gemini-4-hydrogen') {
     if (task === 'evaluate') {
-      // Genuine editorial reasoning depth so scores, fixes, and rewrites feel sharp and perceptive
       return { level: ThinkingLevel.MEDIUM, label: 'MEDIUM' };
     }
     if (task === 'schedule') {
@@ -168,7 +197,6 @@ function selectDynamicThinkingProfile(
     return { level: ThinkingLevel.LOW, label: 'LOW' };
   }
 
-  // gemini-3.1-flash-lite fallback: use LOW thinking (never MINIMAL) for evaluation so grading stays thoughtful
   if (task === 'evaluate') {
     return { level: ThinkingLevel.LOW, label: 'LOW' };
   }
@@ -176,6 +204,137 @@ function selectDynamicThinkingProfile(
     return { level: ThinkingLevel.LOW, label: 'LOW' };
   }
   return { level: ThinkingLevel.MINIMAL, label: 'MINIMAL' };
+}
+
+/**
+ * Dedicated high-reliability evaluation executor with:
+ * - Dynamic per-request (model, thinkingLevel) cascade chosen from word count + topic rigor
+ * - SHA-256 response cache & single-flight in-flight deduplication
+ * - Single quick backoff retry on transient 5xx/network hiccups before escalating down cascade
+ * - Unlimited output token headroom (no artificial maxOutputTokens cap) so deep reasoning + detailed reports never truncate
+ */
+async function executeDynamicEvaluationCall(params: {
+  cacheKey: string;
+  contents: string;
+  systemInstruction: string;
+  responseSchema: Record<string, unknown>;
+  cascade: EvaluationRouteStep[];
+}): Promise<{
+  parsed: Record<string, unknown>;
+  stepUsed: EvaluationRouteStep;
+  downgraded: boolean;
+  cached: boolean;
+  latencyMs: number;
+}> {
+  const { cacheKey, contents, systemInstruction, responseSchema, cascade } =
+    params;
+
+  const startedAt = Date.now();
+  const cachedHit = getCachedResponse(cacheKey);
+  if (cachedHit) {
+    return {
+      parsed: cachedHit.parsed as Record<string, unknown>,
+      stepUsed: (cachedHit.stepUsed as EvaluationRouteStep) || cascade[0],
+      downgraded: Boolean(cachedHit.downgraded),
+      cached: true,
+      latencyMs: Math.max(1, Date.now() - startedAt),
+    };
+  }
+
+  const existingInFlight = inFlightRequests.get(cacheKey);
+  if (existingInFlight) {
+    const shared = await existingInFlight;
+    return {
+      parsed: shared.parsed as Record<string, unknown>,
+      stepUsed: (shared.stepUsed as EvaluationRouteStep) || cascade[0],
+      downgraded: Boolean(shared.downgraded),
+      cached: true,
+      latencyMs: Math.max(1, Date.now() - startedAt),
+    };
+  }
+
+  const primaryModel: ActiveEvalModel = cascade[0]?.model ?? 'gemini-4-hydrogen';
+
+  const taskPromise = (async () => {
+    const ai = getAiClient();
+    let lastErr: unknown;
+
+    for (let i = 0; i < cascade.length; i += 1) {
+      const step = cascade[i];
+      const downgraded = i > 0 || step.model !== primaryModel;
+      const maxAttempts = 2;
+
+      for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+        try {
+          const response = await ai.models.generateContent({
+            model: step.model,
+            contents,
+            config: {
+              systemInstruction,
+              seed: 42,
+              responseMimeType: 'application/json',
+              responseSchema,
+              thinkingConfig: {
+                thinkingLevel: toSdkThinkingLevel(step.thinkingLabel),
+              },
+            },
+          });
+
+          const rawText = (response.text ?? '').trim();
+          if (!rawText) {
+            throw new Error(`Empty response from ${step.model}`);
+          }
+
+          const parsed = JSON.parse(rawText) as Record<string, unknown>;
+          lastSuccessfulModel = step.model;
+          if (downgraded) {
+            totalAutoDowngrades += 1;
+          }
+
+          const resultEnvelope = {
+            parsed,
+            stepUsed: step,
+            modelUsed: step.model,
+            thinkingLevelUsed: step.thinkingLabel,
+            downgraded,
+          };
+          setCachedResponse(cacheKey, resultEnvelope);
+          return resultEnvelope;
+        } catch (err) {
+          lastErr = err;
+          if (isQuotaOrOverloadError(err)) {
+            const msg = err instanceof Error ? err.message : String(err);
+            const isRateLimit =
+              msg.includes('429') || msg.includes('RESOURCE_EXHAUSTED');
+            modelCooldownUntil[step.model] =
+              Date.now() + (isRateLimit ? 38_000 : 15_000);
+            break; // Immediately cascade to next available model/tier
+          }
+          if (attempt === 0 && isTransientNetworkError(err)) {
+            await new Promise((r) => setTimeout(r, 350));
+            continue;
+          }
+          break;
+        }
+      }
+    }
+
+    throw lastErr || new Error('All Gemini evaluation tiers are currently busy.');
+  })();
+
+  inFlightRequests.set(cacheKey, taskPromise);
+  try {
+    const out = await taskPromise;
+    return {
+      parsed: out.parsed as Record<string, unknown>,
+      stepUsed: (out.stepUsed as EvaluationRouteStep) || cascade[0],
+      downgraded: Boolean(out.downgraded),
+      cached: false,
+      latencyMs: Math.max(1, Date.now() - startedAt),
+    };
+  } finally {
+    inFlightRequests.delete(cacheKey);
+  }
 }
 
 /**
@@ -709,9 +868,10 @@ async function createApp() {
     const trimmedContent = content.trim();
     const trimmedTopic = typeof topic === 'string' ? topic.trim() : '';
     const shouldInferTitle = Boolean(needsAutoTitle) || trimmedTopic.length === 0;
-    const wordCount = trimmedContent.split(/\s+/).filter(Boolean).length;
+    const integrity = assessDraftIntegrity(trimmedContent);
+    const wordCount = integrity.wordCount;
     const vocabList = Array.isArray(practicingVocab)
-      ? practicingVocab.slice(0, 10).map(String)
+      ? practicingVocab.slice(0, 12).map(String)
       : [];
 
     const studentDescriptor =
@@ -719,58 +879,84 @@ async function createApp() {
         ? `${studentProfile.semester || 'college'} ${studentProfile.collegeDegree} student${studentProfile.collegeName ? ` at ${studentProfile.collegeName}` : ''}`
         : 'focused writer';
 
-    const cacheKey = makeCacheKey('evaluate-coach-v4', {
+    const routePlan = selectDynamicEvaluationRoute({
+      wordCount,
+      mode: String(mode),
+      tone: String(tone),
+      topic: trimmedTopic,
+      topicPrimer: typeof topicPrimer === 'string' ? topicPrimer : '',
+      longestSentenceWords: integrity.longestSentenceWords,
+      hasPreviousSessionSummary: Boolean(
+        typeof previousSessionSummary === 'string' &&
+          previousSessionSummary.trim().length > 0
+      ),
+      practicingVocabCount: vocabList.length,
+      isGibberishOrLowEffort: integrity.isGibberishOrLowEffort,
+      cooldownUntil: modelCooldownUntil,
+    });
+
+    const cacheKey = makeCacheKey('evaluate-coach-v5', {
       content: trimmedContent,
       mode,
       tone,
       topic: trimmedTopic,
       shouldInferTitle,
+      previousSessionSummary: String(previousSessionSummary || '').slice(0, 260),
       vocabList,
       studentDescriptor,
+      routePrimary: `${routePlan.primary.model}:${routePlan.primary.thinkingLabel}`,
     });
 
-    const systemInstruction = `You are a sharp, perceptive senior writing editor and spoken-English fluency coach mentoring a ${studentDescriptor}.
-Never act like a robotic grader or generic cheerleader. Read the draft like an exacting human editor who respects the writer's intelligence.
+    const systemInstruction = `You are a strict, perceptive senior writing coach and spoken-English fluency mentor evaluating a ${studentDescriptor}.
+Deliver an authoritative, deeply insightful editorial critique in the exact caliber of a top human writing mentor—never generic, never robotic, and never inflated.
 
-SCORING RUBRIC (1-10 integers, use the FULL scale honestly with ZERO score inflation):
-- 1-2: Gibberish, random keystrokes, copy-paste spam, or unintelligible fragments.
+EVALUATION PRIORITY & WEIGHTAGE ORDER:
+1. SCORECARD & RUBRIC ACCURACY (Highest Weightage): Natural Voice & Flow, Clarity & Simplicity, Grammar & Mechanics, Tone & Engagement, Sentence Variety & Cadence, and Conciseness & Directness. Plain, crisp, natural spoken English scores HIGH.
+2. PINPOINTED GRAMMAR FLAWS, ERROR CORRECTIONS & SENTENCE REWRITES (Primary Coaching Value): Catch real subject-verb agreement errors, wrong word usage (e.g., "improvise" instead of "improve/stabilize"), compound-word/spacing typos ("Mean while" -> "Meanwhile"), missing articles, tense breaks, 40-50 word breathless run-ons, and phrase repetition. Quote the writer's exact flawed sentences and provide natural spoken-ready rewrites + crystal-clear grammar/cadence rules.
+3. ALTERNATIVE VOCABULARY & PHRASING UPGRADES (LOWEST WEIGHTAGE): Vocabulary polish is a bonus layer ONLY. Never penalize clear plain English for not using fancy words. Suggest 2-4 crisp, natural real-world upgrades for vague/wordy phrases that actually appear in the draft (e.g., "doesn't have a sense of" -> "operates blind to", "does the corrective action" -> "applies a proportional correction"). STRICTLY BANNED thesaurus-slop words: utilize, delve, tapestry, myriad, plethora, endeavor, commence, facilitate, synergy, leverage, paramount.
+
+SCORING RUBRIC (1-10 integers, honest strict grading with ZERO score inflation):
+- 1-2: Gibberish, random keystrokes, spam, or unintelligible fragments.
 - 3-4: Severely off-topic, incomplete stub, or broken grammar that obscures meaning.
-- 5: Understandable core thought, but flat, repetitive, overly stiff, or noticeably error-prone.
-- 6: Solid everyday clarity, yet held back by filler words, passive drag, monotone rhythm, or register mismatch.
-- 7: Clear, confident, well-organized communication with natural voice and only minor polish needed.
-- 8: Crisp, persuasive, rhythmic prose that fits ${mode} (${tone}) cleanly and sounds effortless out loud.
-- 9-10: Rare, memorable, publication-ready command of voice, cadence, and precision.
+- 5: Understandable core idea, but flat, repetitive, or heavily error-prone.
+- 6: Clear underlying logic and good intent, yet held back by noticeable grammar/agreement slips, breathless 40+ word sentences, or repeated words.
+- 7: Solid, well-structured, natural spoken communication with only minor polish needed.
+- 8: Crisp, confident, rhythmic prose tailored cleanly to ${mode} (${tone}) that sounds effortless out loud.
+- 9-10: Rare, memorable, publication- or executive-interview-ready command of voice and precision.
 
-EVALUATION RULES:
-1. Check Topic & Register Fit: If a Topic or Brief is provided, check whether the draft actually engages with it and matches the target Mode (${mode}) and Tone (${tone}). Penalize taskAchievement & toneEngagement honestly if it misses the brief or uses the wrong register (e.g., stiff textbook jargon in a friendly note, or casual slang in a formal executive email).
-2. Quote Real Evidence: Every prose verdict (toneVerdict, flowVerdict, whatImproved, strictImprovements) MUST point to specific sentences, phrases, or structural choices from THIS exact draft. Never write empty generic lines like "Good effort, add more detail" or "Improve flow."
-3. Framing of Coaching Fields:
-   - whatImproved: Name what the WRITER genuinely did well in THIS draft (and how it improved vs. Previous Coaching Note if one is provided). Never describe edits you made.
-   - strictImprovements: Give 1-2 direct, imperative next-step instructions to the writer (e.g., "Cut conversational hedges like 'Basically' and anchor the cause-and-effect directly..."), never past-tense summaries like "Fixed X".
-4. Surgical Grammar & Mechanics (grammarFixes, up to 5): ONLY flag real grammar, syntax, agreement, tense, preposition, or awkward phrasing defects. "original" MUST be an exact verbatim substring copied from the draft so one-click Apply Fix works cleanly. If the grammar is genuinely clean, return an empty array rather than inventing nitpicks.
-5. High-Taste Vocabulary Upgrades (vocabUpgrades, up to 3): Pick weak, vague, or wordy phrases that actually appear verbatim in the draft ("used") and suggest natural, crisp, real-world English upgrades ("betterAlternative", single word or clean short phrase with no slashes). STRICTLY BANNED thesaurus-slop words: utilize, delve, tapestry, myriad, plethora, endeavor, commence, facilitate, synergy, leverage, paramount. Prefer vivid, spoken-natural precision.
-6. Concrete Rewrite (rewrittenSample): Pick the ONE single clunky, wordy, or flat sentence from the draft ("original", copied verbatim), rewrite it so it sounds crisp and natural out loud ("improved"), and explain in one concrete sentence why the rewrite lands harder ("why").
-7. Title: ${shouldInferTitle ? 'The writer left the title blank: craft a sharp, natural 3-7 word editorial title in suggestedTitle based directly on the draft.' : 'Echo or lightly refine the existing topic in suggestedTitle.'}
-8. Clean Editorial Style: Keep each prose field tight (1-2 crisp sentences max). Never use em-dashes or en-dashes.
-9. Vocab Mastery: List any target practicing vocabulary words naturally used inside masteredWordsUsed.
-10. Benchmarks: Calibrate cefrLevel (A1..C2), ieltsBand (4.0-9.0 in 0.5 steps), toeflEquivalent (8-30), lexicalResource, coherenceCohesion, taskAchievement, and registerControl (1-10) so they are mathematically consistent with your 6 pillar scores.`;
+STRICT OUTPUT REQUIREMENTS:
+1. metricNotes: Provide a sharp 1-sentence note for EACH of the 6 metrics referencing specific evidence from THIS draft (e.g., noting exact imagery, 50-word run-on sentences, apostrophe accuracy, agreement slips, or repeated phrases like "desired outcome").
+2. feedbackCheck:
+   - status: 'Baseline' (if no previous coaching note), or 'Yes' / 'Partial' / 'No'.
+   - implemented: Explicitly name specific mechanics/flow strengths achieved in this draft (e.g., clean apostrophes, zero spelling typos, strong contrast structure).
+   - missed: Explicitly name recurring grammar slips (quoting exact examples) and any Practicing Vocabulary targets that would have fit naturally here.
+3. whatImprovedPoints: Return 2-3 crisp highlight bullets, each with a concise bold-style title (e.g., "Interview Structure", "Intuitive Phrasing") and concrete detail quoting memorable phrasing from the draft. Also synthesize a 1-2 sentence summary in whatImproved.
+4. pinpointedRewrites: Return 2-5 sentence-level critique blocks (ordered from earliest to latest in the draft) for the highest-impact flawed, run-on, or clunky sentences:
+   - original: Exact verbatim sentence or clause copied from the draft (no ellipses or paraphrases).
+   - rewrite: Clean, natural spoken-English rewrite (split 40+ word run-ons into two crisp sentences where needed).
+   - rule: Explicit, memorable grammar & flow rule teaching WHY (e.g., "Always use a plural noun after 'one of the'...", "Never confuse 'improvise' with 'improve' or 'stabilize'...").
+   - category: Short label like "Agreement & Verb Form", "Run-On Split & Mechanics", "Word Choice & Conciseness".
+5. grammarFixes: Return up to 6 surgical verbatim substring fixes ("original" MUST exist verbatim in the draft) for one-click inline repair. If grammar is completely clean, return [].
+6. rewrittenSample: Mirror the #1 highest-impact item from pinpointedRewrites into { original, improved, why } for backwards compatibility.
+7. strictImprovements: 1-2 tight imperative coaching priorities summarizing the top habits to lock in next session.
+8. vocabUpgrades: Return 2-4 grounded pairs from the draft, each with used (exact draft phrase), betterAlternative (crisp natural phrasing), explanation (brief rationale), contextSnippet, and contextTag (e.g., "Interview / Technical", "Interview / Email", "LinkedIn / Soft Skills", "Creative / Dialogue").
+9. Title: ${shouldInferTitle ? 'The writer left the title blank: craft a sharp 3-7 word editorial title in suggestedTitle.' : 'Echo or lightly sharpen the existing topic in suggestedTitle.'}
+10. Benchmarks: Keep cefrLevel, ieltsBand (4.0-9.0 in 0.5 steps), toeflEquivalent (8-30), lexicalResource, coherenceCohesion, taskAchievement, and registerControl mathematically aligned with the 6 scores. Avoid em-dashes in short labels where clean punctuation reads better.`;
 
-    const prompt = `Mode: ${mode} | Tone: ${tone} | Word Count: ${wordCount}
+    const prompt = `Mode: ${mode} | Tone: ${tone} | Word Count: ${wordCount} | Longest Sentence: ${integrity.longestSentenceWords}w
 Topic: ${trimmedTopic || '(blank - infer sharp editorial title)'}
-${topicPrimer ? `Topic Brief: ${topicPrimer}\n` : ''}${previousSessionSummary ? `Previous Coaching Note: ${previousSessionSummary}\n` : ''}${vocabList.length > 0 ? `Practicing Vocabulary Targets: ${vocabList.join(', ')}\n` : ''}Draft:
+${topicPrimer ? `Topic Brief: ${topicPrimer}\n` : ''}${previousSessionSummary ? `Previous Coaching Note: ${previousSessionSummary}\n` : ''}${vocabList.length > 0 ? `To Practice Vocabulary Targets: ${vocabList.join(', ')}\n` : ''}Draft:
 """
 ${trimmedContent}
 """`;
 
     try {
-      const { parsed, modelUsed, thinkingLevelUsed, downgraded, cached } =
-        await executeCascadingJsonCall({
+      const { parsed, stepUsed, downgraded, cached, latencyMs } =
+        await executeDynamicEvaluationCall({
           cacheKey,
           contents: prompt,
           systemInstruction,
-          task: 'evaluate',
-          complexityMetric: wordCount,
-          preferFastTier: false,
+          cascade: routePlan.cascade,
           responseSchema: {
             type: Type.OBJECT,
             properties: {
@@ -794,6 +980,25 @@ ${trimmedContent}
                   'concisenessDirectness',
                 ],
               },
+              metricNotes: {
+                type: Type.OBJECT,
+                properties: {
+                  naturalVoiceFlow: { type: Type.STRING },
+                  claritySimplicity: { type: Type.STRING },
+                  grammarMechanics: { type: Type.STRING },
+                  toneEngagement: { type: Type.STRING },
+                  sentenceVarietyCadence: { type: Type.STRING },
+                  concisenessDirectness: { type: Type.STRING },
+                },
+                required: [
+                  'naturalVoiceFlow',
+                  'claritySimplicity',
+                  'grammarMechanics',
+                  'toneEngagement',
+                  'sentenceVarietyCadence',
+                  'concisenessDirectness',
+                ],
+              },
               cefrLevel: { type: Type.STRING },
               ieltsBand: { type: Type.NUMBER },
               toeflEquivalent: { type: Type.INTEGER },
@@ -804,8 +1009,40 @@ ${trimmedContent}
               toneVerdict: { type: Type.STRING },
               flowVerdict: { type: Type.STRING },
               feedbackImplemented: { type: Type.STRING },
+              feedbackCheck: {
+                type: Type.OBJECT,
+                properties: {
+                  implemented: { type: Type.STRING },
+                  missed: { type: Type.STRING },
+                },
+                required: ['implemented', 'missed'],
+              },
               whatImproved: { type: Type.STRING },
+              whatImprovedPoints: {
+                type: Type.ARRAY,
+                items: {
+                  type: Type.OBJECT,
+                  properties: {
+                    title: { type: Type.STRING },
+                    detail: { type: Type.STRING },
+                  },
+                  required: ['title', 'detail'],
+                },
+              },
               strictImprovements: { type: Type.STRING },
+              pinpointedRewrites: {
+                type: Type.ARRAY,
+                items: {
+                  type: Type.OBJECT,
+                  properties: {
+                    original: { type: Type.STRING },
+                    rewrite: { type: Type.STRING },
+                    rule: { type: Type.STRING },
+                    category: { type: Type.STRING },
+                  },
+                  required: ['original', 'rewrite', 'rule', 'category'],
+                },
+              },
               rewrittenSample: {
                 type: Type.OBJECT,
                 properties: {
@@ -841,12 +1078,14 @@ ${trimmedContent}
                     betterAlternative: { type: Type.STRING },
                     explanation: { type: Type.STRING },
                     contextSnippet: { type: Type.STRING },
+                    contextTag: { type: Type.STRING },
                   },
                   required: [
                     'used',
                     'betterAlternative',
                     'explanation',
                     'contextSnippet',
+                    'contextTag',
                   ],
                 },
               },
@@ -854,6 +1093,7 @@ ${trimmedContent}
             required: [
               'suggestedTitle',
               'scores',
+              'metricNotes',
               'cefrLevel',
               'ieltsBand',
               'toeflEquivalent',
@@ -864,8 +1104,11 @@ ${trimmedContent}
               'toneVerdict',
               'flowVerdict',
               'feedbackImplemented',
+              'feedbackCheck',
               'whatImproved',
+              'whatImprovedPoints',
               'strictImprovements',
+              'pinpointedRewrites',
               'rewrittenSample',
               'grammarFixes',
               'vocabUpgrades',
@@ -895,6 +1138,18 @@ ${trimmedContent}
           : []
       );
 
+      const groundedPinpoints = filterGroundedPinpointedRewrites(
+        trimmedContent,
+        Array.isArray(parsed.pinpointedRewrites)
+          ? (parsed.pinpointedRewrites as Array<{
+              original: string;
+              rewrite: string;
+              rule: string;
+              category?: string;
+            }>)
+          : []
+      );
+
       const groundedVocab = filterGroundedVocabUpgrades(
         trimmedContent,
         Array.isArray(parsed.vocabUpgrades)
@@ -903,32 +1158,59 @@ ${trimmedContent}
               betterAlternative: string;
               explanation: string;
               contextSnippet?: string;
+              contextTag?: string;
             }>)
           : []
       );
 
-      const groundedRewrite = sanitizeRewrittenSample(
-        trimmedContent,
-        parsed.rewrittenSample as
-          | { original: string; improved: string; why: string }
-          | undefined
-      );
+      const groundedRewrite =
+        sanitizeRewrittenSample(
+          trimmedContent,
+          parsed.rewrittenSample as
+            | { original: string; improved: string; why: string }
+            | undefined
+        ) ??
+        (groundedPinpoints[0]
+          ? {
+              original: groundedPinpoints[0].original,
+              improved: groundedPinpoints[0].rewrite,
+              why: groundedPinpoints[0].rule,
+            }
+          : undefined);
 
       const calibrated = calibrateEvaluationScores({
         content: trimmedContent,
         scores: uncalibratedScores,
-        grammarFixesCount: groundedFixes.length,
+        grammarFixesCount: Math.max(groundedFixes.length, groundedPinpoints.length),
         rawIeltsBand: Number(parsed.ieltsBand),
         rawToefl: Number(parsed.toeflEquivalent),
       });
 
-      const validImpl = ['Baseline', 'Yes', 'Partial', 'No'].includes(
-        String(parsed.feedbackImplemented)
-      )
-        ? String(parsed.feedbackImplemented)
-        : previousSessionSummary
-          ? 'Partial'
-          : 'Baseline';
+      const validImpl = (
+        ['Baseline', 'Yes', 'Partial', 'No'].includes(
+          String(parsed.feedbackImplemented)
+        )
+          ? String(parsed.feedbackImplemented)
+          : previousSessionSummary
+            ? 'Partial'
+            : 'Baseline'
+      ) as 'Baseline' | 'Yes' | 'Partial' | 'No';
+
+      const metricNotes = sanitizeMetricNotes(
+        parsed.metricNotes as Record<string, unknown> | undefined
+      );
+      const whatImprovedPoints = sanitizeWhatImprovedPoints(
+        parsed.whatImprovedPoints as
+          | Array<{ title?: unknown; detail?: unknown }>
+          | undefined
+      );
+      const feedbackCheck = sanitizeFeedbackCheck({
+        status: validImpl,
+        raw: parsed.feedbackCheck as
+          | { implemented?: unknown; missed?: unknown }
+          | undefined,
+        fallbackImplemented: String(parsed.whatImproved || ''),
+      });
 
       const suggestedTitle = sanitizeCoachProse(
         String(parsed.suggestedTitle || '')
@@ -940,12 +1222,20 @@ ${trimmedContent}
 
       res.json({
         evaluationStatus: 'completed',
-        modelUsed,
-        thinkingLevelUsed,
+        modelUsed: stepUsed.model,
+        thinkingLevelUsed: stepUsed.thinkingLabel,
+        routingMeta: {
+          model: stepUsed.model,
+          thinkingLevel: stepUsed.thinkingLabel,
+          tierLabel: stepUsed.tierLabel,
+          reason: stepUsed.reason,
+          latencyMs,
+        },
         downgraded,
         cached,
         suggestedTitle,
         scores: calibrated.scores,
+        metricNotes,
         cefrLevel: calibrated.cefrLevel,
         internationalMetrics: {
           ieltsBand: calibrated.ieltsBand,
@@ -969,10 +1259,13 @@ ${trimmedContent}
         toneVerdict: sanitizeCoachProse(String(parsed.toneVerdict || '')),
         flowVerdict: sanitizeCoachProse(String(parsed.flowVerdict || '')),
         feedbackImplemented: validImpl,
+        feedbackCheck,
         whatImproved: sanitizeCoachProse(String(parsed.whatImproved || '')),
+        whatImprovedPoints,
         strictImprovements: sanitizeCoachProse(
           String(parsed.strictImprovements || '')
         ),
+        pinpointedRewrites: groundedPinpoints,
         rewrittenSample: groundedRewrite,
         masteredWordsUsed: Array.isArray(parsed.masteredWordsUsed)
           ? parsed.masteredWordsUsed.map(String)
@@ -992,6 +1285,12 @@ ${trimmedContent}
           evaluationStatus: 'queued_for_reset',
           modelUsed: 'queued-pending-reset',
           thinkingLevelUsed: 'LOCAL',
+          routingMeta: {
+            model: 'queued-pending-reset',
+            thinkingLevel: 'LOCAL',
+            tierLabel: 'Queued (Rate Limit Reset)',
+            reason: 'API rate limit reached; queued for automatic retry.',
+          },
           downgraded: true,
           cached: false,
           quotaResetSeconds: resetSeconds,

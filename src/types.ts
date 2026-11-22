@@ -56,6 +56,7 @@ export interface VocabSuggestion {
   betterAlternative: string;
   explanation: string;
   contextSnippet?: string;
+  contextTag?: string;
 }
 
 export interface VocabEntry {
@@ -77,6 +78,34 @@ export interface RewrittenSample {
   why: string;
 }
 
+export type RubricMetricNotes = Partial<Record<keyof RubricScores, string>>;
+
+export interface FeedbackImplementationDetail {
+  status: FeedbackImplementedStatus;
+  implemented: string;
+  missed: string;
+}
+
+export interface CoachHighlightPoint {
+  title: string;
+  detail: string;
+}
+
+export interface PinpointedRewrite {
+  original: string;
+  rewrite: string;
+  rule: string;
+  category?: string;
+}
+
+export interface EvaluationRoutingMeta {
+  model: string;
+  thinkingLevel: 'HIGH' | 'MEDIUM' | 'LOW' | 'MINIMAL' | 'LOCAL';
+  tierLabel: string;
+  reason: string;
+  latencyMs?: number;
+}
+
 export interface WritingSession {
   id: string;
   date: string; // YYYY-MM-DD
@@ -88,6 +117,7 @@ export interface WritingSession {
   content: string;
   wordCount: number;
   scores: RubricScores;
+  metricNotes?: RubricMetricNotes;
   totalScore: number; // /60
   percentage: number; // 0-100
   cefrLevel: string; // e.g., B2+, C1
@@ -95,11 +125,15 @@ export interface WritingSession {
   toneVerdict: string;
   flowVerdict: string;
   feedbackImplemented: FeedbackImplementedStatus;
+  feedbackCheck?: FeedbackImplementationDetail;
   whatImproved: string;
+  whatImprovedPoints?: CoachHighlightPoint[];
   strictImprovements: string;
+  pinpointedRewrites?: PinpointedRewrite[];
   rewrittenSample?: RewrittenSample;
   grammarFixes: GrammarFix[];
   vocabUpgrades: VocabSuggestion[];
+  routingMeta?: EvaluationRoutingMeta;
   status: 'Completed' | 'Draft';
   evaluationPending?: boolean;
   modelUsed?: string;

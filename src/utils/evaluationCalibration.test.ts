@@ -4,8 +4,13 @@ import {
   assessDraftIntegrity,
   calibrateEvaluationScores,
   filterGroundedGrammarFixes,
+  filterGroundedPinpointedRewrites,
   filterGroundedVocabUpgrades,
+  formatDetailedCoachMarkdown,
+  sanitizeFeedbackCheck,
+  sanitizeMetricNotes,
   sanitizeRewrittenSample,
+  sanitizeWhatImprovedPoints,
 } from './evaluationCalibration';
 
 test('assessDraftIntegrity detects gibberish and keyboard mash reliably', () => {
@@ -142,3 +147,97 @@ test('sanitizeRewrittenSample keeps only draft-grounded rewrites', () => {
   });
   assert.equal(hallucinated, undefined);
 });
+
+test('filterGroundedPinpointedRewrites keeps verbatim draft sentences and drops invented ones', () => {
+  const draft =
+    'The feedback control is one of the most important part of a system that is constantly experiences disturbances. Mean while in the closed loop system the output is measured.';
+  const out = filterGroundedPinpointedRewrites(draft, [
+    {
+      original:
+        'The feedback control is one of the most important part of a system that is constantly experiences disturbances.',
+      rewrite:
+        'Feedback control is essential for any system facing constant external disturbances.',
+      rule: 'Use plural noun after "one of the" and drop "is" before "constantly experiences".',
+      category: 'Agreement & Verb Tense',
+    },
+    {
+      original: 'This sentence does not appear anywhere in the draft.',
+      rewrite: 'Fabricated rewrite.',
+      rule: 'Hallucinated.',
+    },
+  ]);
+
+  assert.equal(out.length, 1);
+  assert.match(out[0].rewrite, /constant external disturbances/);
+  assert.equal(out[0].category, 'Agreement & Verb Tense');
+});
+
+test('detailed report sanitizers and markdown formatter match the structured coach scorecard layout', () => {
+  const notes = sanitizeMetricNotes({
+    naturalVoiceFlow: 'Clear logic — great imagery.',
+    claritySimplicity: 'Accurate open-loop vs closed-loop contrast.',
+  });
+  assert.equal(notes.naturalVoiceFlow, 'Clear logic, great imagery.');
+
+  const points = sanitizeWhatImprovedPoints([
+    { title: 'Interview Structure', detail: 'Strong open-loop vs closed-loop framing.' },
+    { title: '', detail: 'Ignored empty title' },
+  ]);
+  assert.equal(points.length, 1);
+
+  const check = sanitizeFeedbackCheck({
+    status: 'Partial',
+    raw: {
+      implemented: 'Clean apostrophes and zero typos.',
+      missed: 'Still had subject-verb agreement slips.',
+    },
+  });
+  assert.equal(check.status, 'Partial');
+
+  const md = formatDetailedCoachMarkdown({
+    topic: 'Closed-Loop Feedback Control',
+    modeLabel: 'Technical & Interview',
+    scores: {
+      naturalVoiceFlow: 6,
+      claritySimplicity: 8,
+      grammarMechanics: 6,
+      toneEngagement: 7,
+      sentenceVarietyCadence: 6,
+      concisenessDirectness: 6,
+    },
+    metricNotes: notes,
+    totalScore: 39,
+    percentage: 65,
+    cefrLevel: 'B2',
+    ieltsBand: 6.5,
+    toeflEquivalent: 20,
+    feedbackImplemented: 'Partial',
+    feedbackCheck: check,
+    whatImproved: 'Strong contrast.',
+    whatImprovedPoints: points,
+    pinpointedRewrites: [
+      {
+        original: 'one of the most important part',
+        rewrite: 'one of the most important parts',
+        rule: 'Always use a plural noun after "one of the".',
+      },
+    ],
+    grammarFixes: [],
+    vocabUpgrades: [
+      {
+        used: "doesn't have a sense of",
+        betterAlternative: 'operates blind to',
+        explanation: 'Tighter interview phrasing.',
+        contextTag: 'Interview / Technical',
+      },
+    ],
+  });
+
+  assert.match(md, /Scorecard: 39 \/ 60 \(65\.0%\)/);
+  assert.match(md, /1\. Feedback Implementation Check: Partial/);
+  assert.match(md, /2\. What Changed for the Better/);
+  assert.match(md, /3\. Strict Improvements & Pinpointed Fixes/);
+  assert.match(md, /4\. Vocabulary & Phrasing Upgrades/);
+  assert.match(md, /\(Interview \/ Technical\)/);
+});
+
