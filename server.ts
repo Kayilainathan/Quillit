@@ -23,6 +23,12 @@ import {
   type ActiveThinkingLabel,
   type EvaluationRouteStep,
 } from './src/utils/evaluationRouter';
+import {
+  buildConversationSystemInstruction,
+  sanitizeConversationTurnResponse,
+  selectConversationTurnRoute,
+} from './src/utils/conversationEngine';
+import type { ConversationPace, ConversationScenario } from './src/types';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -264,21 +270,43 @@ async function executeDynamicEvaluationCall(params: {
       const downgraded = i > 0 || step.model !== primaryModel;
       const maxAttempts = 2;
 
+      const stepTimeoutMs =
+        step.model === 'gemini-4-hydrogen'
+          ? step.thinkingLabel === 'HIGH'
+            ? 32_000
+            : step.thinkingLabel === 'MEDIUM'
+              ? 28_000
+              : 18_000
+          : 16_000;
+
       for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+        let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
         try {
-          const response = await ai.models.generateContent({
-            model: step.model,
-            contents,
-            config: {
-              systemInstruction,
-              seed: 42,
-              responseMimeType: 'application/json',
-              responseSchema,
-              thinkingConfig: {
-                thinkingLevel: toSdkThinkingLevel(step.thinkingLabel),
+          const response = await Promise.race([
+            ai.models.generateContent({
+              model: step.model,
+              contents,
+              config: {
+                systemInstruction,
+                seed: 42,
+                responseMimeType: 'application/json',
+                responseSchema,
+                thinkingConfig: {
+                  thinkingLevel: toSdkThinkingLevel(step.thinkingLabel),
+                },
               },
-            },
-          });
+            }),
+            new Promise<never>((_, reject) => {
+              timeoutHandle = setTimeout(() => {
+                reject(
+                  new Error(
+                    `STEP_TIMEOUT: ${step.model} (${step.thinkingLabel}) exceeded ${stepTimeoutMs}ms`
+                  )
+                );
+              }, stepTimeoutMs);
+            }),
+          ]);
+          if (timeoutHandle) clearTimeout(timeoutHandle);
 
           const rawText = (response.text ?? '').trim();
           if (!rawText) {
@@ -301,11 +329,16 @@ async function executeDynamicEvaluationCall(params: {
           setCachedResponse(cacheKey, resultEnvelope);
           return resultEnvelope;
         } catch (err) {
+          if (timeoutHandle) clearTimeout(timeoutHandle);
           lastErr = err;
+          const errMsg = err instanceof Error ? err.message : String(err);
+          if (errMsg.includes('STEP_TIMEOUT')) {
+            // Never wait twice on a slow tier: cascade immediately to the next faster tier
+            break;
+          }
           if (isQuotaOrOverloadError(err)) {
-            const msg = err instanceof Error ? err.message : String(err);
             const isRateLimit =
-              msg.includes('429') || msg.includes('RESOURCE_EXHAUSTED');
+              errMsg.includes('429') || errMsg.includes('RESOURCE_EXHAUSTED');
             modelCooldownUntil[step.model] =
               Date.now() + (isRateLimit ? 38_000 : 15_000);
             break; // Immediately cascade to next available model/tier
@@ -856,6 +889,7 @@ async function createApp() {
       practicingVocab = [],
       topicPrimer = '',
       studentProfile,
+      conversationContext,
     } = req.body ?? {};
 
     if (typeof content !== 'string' || content.trim().length < 20) {
@@ -943,9 +977,22 @@ STRICT OUTPUT REQUIREMENTS:
 9. Title: ${shouldInferTitle ? 'The writer left the title blank: craft a sharp 3-7 word editorial title in suggestedTitle.' : 'Echo or lightly sharpen the existing topic in suggestedTitle.'}
 10. Benchmarks: Keep cefrLevel, ieltsBand (4.0-9.0 in 0.5 steps), toeflEquivalent (8-30), lexicalResource, coherenceCohesion, taskAchievement, and registerControl mathematically aligned with the 6 scores. Avoid em-dashes in short labels where clean punctuation reads better.`;
 
+    const convContextBlock =
+      conversationContext &&
+      typeof conversationContext === 'object' &&
+      typeof conversationContext.dialogueTranscript === 'string' &&
+      conversationContext.dialogueTranscript.trim().length > 0
+        ? `LIVE CONVERSATION CONTEXT: This session is a real-time ${Number(conversationContext.turnCount) || 2}-turn text conversation with ${String(conversationContext.partnerName || 'a conversation partner')} ("${String(conversationContext.scenarioTitle || trimmedTopic)}"). Grade how naturally, clearly, and accurately the learner communicated across turns in real time. IMPORTANT: The "Draft" block below contains ONLY the learner's own turns—quote verbatim ONLY from "Draft" for pinpointedRewrites, grammarFixes, and vocabUpgrades (never quote the partner).
+Full Dialogue Reference (for conversational flow context):
+"""
+${String(conversationContext.dialogueTranscript).slice(0, 3200)}
+"""
+`
+        : '';
+
     const prompt = `Mode: ${mode} | Tone: ${tone} | Word Count: ${wordCount} | Longest Sentence: ${integrity.longestSentenceWords}w
 Topic: ${trimmedTopic || '(blank - infer sharp editorial title)'}
-${topicPrimer ? `Topic Brief: ${topicPrimer}\n` : ''}${previousSessionSummary ? `Previous Coaching Note: ${previousSessionSummary}\n` : ''}${vocabList.length > 0 ? `To Practice Vocabulary Targets: ${vocabList.join(', ')}\n` : ''}Draft:
+${topicPrimer ? `Topic Brief: ${topicPrimer}\n` : ''}${previousSessionSummary ? `Previous Coaching Note: ${previousSessionSummary}\n` : ''}${vocabList.length > 0 ? `To Practice Vocabulary Targets: ${vocabList.join(', ')}\n` : ''}${convContextBlock}Draft:
 """
 ${trimmedContent}
 """`;
@@ -2176,6 +2223,192 @@ ${compactEntries.map((e) => `${e.id}: "${e.word}" (replaces "${e.replaces}", mod
     } catch {
       res.status(503).json({
         error: 'AI categorization temporarily unavailable.',
+      });
+    }
+  });
+
+  app.post('/api/converse', async (req, res) => {
+    const {
+      scenario,
+      pace = 'natural',
+      history = [],
+      latestUserMessage = '',
+      studentProfile,
+      practicingVocab = [],
+    } = req.body ?? {};
+
+    const cleanUserMsg =
+      typeof latestUserMessage === 'string' ? latestUserMessage.trim() : '';
+    if (cleanUserMsg.length < 1 || cleanUserMsg.length > 2000) {
+      res.status(400).json({
+        error: 'Please enter a message between 1 and 2000 characters.',
+      });
+      return;
+    }
+
+    if (
+      !scenario ||
+      typeof scenario !== 'object' ||
+      typeof scenario.personaName !== 'string'
+    ) {
+      res.status(400).json({
+        error: 'Valid conversation scenario is required.',
+      });
+      return;
+    }
+
+    const safePace: ConversationPace =
+      pace === 'relaxed' || pace === 'challenging' ? pace : 'natural';
+    const typedScenario = scenario as ConversationScenario;
+    const vocabList = Array.isArray(practicingVocab)
+      ? practicingVocab.slice(0, 10).map(String)
+      : [];
+
+    const rawHistory = Array.isArray(history) ? history.slice(-16) : [];
+    const sdkHistory: Array<{ role: 'user' | 'model'; parts: Array<{ text: string }> }> = [];
+    for (const item of rawHistory) {
+      if (!item || typeof item !== 'object') continue;
+      const text = String((item as Record<string, unknown>).text ?? '').trim();
+      if (!text) continue;
+      const role =
+        (item as Record<string, unknown>).role === 'user' ? 'user' : 'model';
+      // Gemini chat history should begin with a user turn or pair cleanly;
+      // if opening partner line is first, include it as context in systemInstruction or preserve alternating turns.
+      if (sdkHistory.length === 0 && role === 'model') {
+        sdkHistory.push({
+          role: 'user',
+          parts: [{ text: `(Joined live conversation: ${typedScenario.title})` }],
+        });
+      }
+      if (sdkHistory.length > 0 && sdkHistory[sdkHistory.length - 1].role === role) {
+        sdkHistory[sdkHistory.length - 1].parts[0].text += `\n${text}`;
+      } else {
+        sdkHistory.push({ role, parts: [{ text }] });
+      }
+    }
+    if (sdkHistory.length > 0 && sdkHistory[sdkHistory.length - 1].role === 'user') {
+      sdkHistory.pop();
+    }
+
+    const turnCount = rawHistory.filter(
+      (h: Record<string, unknown>) => h?.role === 'user'
+    ).length + 1;
+
+    const systemInstruction = buildConversationSystemInstruction({
+      scenario: typedScenario,
+      pace: safePace,
+      studentProfile,
+      practicingVocab: vocabList,
+    });
+
+    const routePlan = selectConversationTurnRoute({
+      pace: safePace,
+      turnCount,
+      cooldownUntil: modelCooldownUntil,
+    });
+
+    const responseSchema = {
+      type: Type.OBJECT,
+      properties: {
+        reply: { type: Type.STRING },
+        hasRecast: { type: Type.BOOLEAN },
+        gentleRecast: {
+          type: Type.OBJECT,
+          properties: {
+            original: { type: Type.STRING },
+            naturalVersion: { type: Type.STRING },
+            tip: { type: Type.STRING },
+          },
+          required: ['original', 'naturalVersion', 'tip'],
+        },
+        replySparks: {
+          type: Type.ARRAY,
+          items: { type: Type.STRING },
+        },
+      },
+      required: ['reply', 'hasRecast', 'replySparks'],
+    };
+
+    const startedAt = Date.now();
+    try {
+      const ai = getAiClient();
+      let lastErr: unknown;
+
+      for (const step of routePlan.cascade) {
+        const stepTimeoutMs =
+          step.model === 'gemini-3.1-flash-lite' ? 12_000 : 18_000;
+        let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+        try {
+          const thinkingLevel =
+            step.thinkingLabel === 'MINIMAL' && step.model === 'gemini-3.1-flash-lite'
+              ? ThinkingLevel.MINIMAL
+              : ThinkingLevel.LOW;
+
+          const chat = ai.chats.create({
+            model: step.model,
+            history: sdkHistory,
+            config: {
+              systemInstruction,
+              responseMimeType: 'application/json',
+              responseSchema,
+              thinkingConfig: { thinkingLevel },
+            },
+          });
+
+          const response = await Promise.race([
+            chat.sendMessage({ message: cleanUserMsg }),
+            new Promise<never>((_, reject) => {
+              timeoutHandle = setTimeout(() => {
+                reject(
+                  new Error(
+                    `STEP_TIMEOUT: ${step.model} (${step.thinkingLabel}) exceeded ${stepTimeoutMs}ms`
+                  )
+                );
+              }, stepTimeoutMs);
+            }),
+          ]);
+          if (timeoutHandle) clearTimeout(timeoutHandle);
+
+          const rawText = (response.text ?? '').trim();
+          if (!rawText) {
+            throw new Error(`Empty conversation reply from ${step.model}`);
+          }
+
+          const parsed = JSON.parse(rawText) as Record<string, unknown>;
+          const sanitized = sanitizeConversationTurnResponse(parsed, cleanUserMsg);
+          lastSuccessfulModel = step.model;
+
+          res.json({
+            reply: sanitized.reply,
+            recast: sanitized.recast,
+            replySparks: sanitized.replySparks,
+            modelUsed: step.model,
+            thinkingLevelUsed: step.thinkingLabel,
+            tierLabel: step.tierLabel,
+            latencyMs: Math.max(1, Date.now() - startedAt),
+          });
+          return;
+        } catch (err) {
+          if (timeoutHandle) clearTimeout(timeoutHandle);
+          lastErr = err;
+          if (isQuotaOrOverloadError(err)) {
+            const msg = err instanceof Error ? err.message : String(err);
+            const isRateLimit =
+              msg.includes('429') || msg.includes('RESOURCE_EXHAUSTED');
+            modelCooldownUntil[step.model] =
+              Date.now() + (isRateLimit ? 38_000 : 15_000);
+          }
+          // Cascade immediately to next fast tier
+        }
+      }
+
+      throw lastErr || new Error('Conversation partner temporarily busy.');
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      res.status(503).json({
+        error: msg.includes('GEMINI_API_KEY')
+          ? msg
+          : 'Conversation partner is briefly unavailable. Please try again.',
       });
     }
   });

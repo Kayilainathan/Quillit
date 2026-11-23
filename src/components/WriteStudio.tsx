@@ -152,6 +152,10 @@ interface WriteStudioProps {
   onRecordUsedCurriculumId?: (curriculumId: string) => void;
   onAddVocabEntry: (entry: VocabEntry) => void;
   onOpenScheduledPopup: (slot: CalendarSlot) => void;
+  onEvaluationStateChange?: (state: {
+    inProgress: boolean;
+    hasCompletedResult: boolean;
+  }) => void;
 }
 
 export function WriteStudio({
@@ -182,6 +186,7 @@ export function WriteStudio({
   onRecordUsedCurriculumId,
   onAddVocabEntry,
   onOpenScheduledPopup,
+  onEvaluationStateChange,
 }: WriteStudioProps) {
   const [mode, setMode] = useState<WritingMode>(initialMode);
   const [tone, setTone] = useState<ToneSetting>(initialTone);
@@ -272,6 +277,13 @@ export function WriteStudio({
   useEffect(() => {
     latestTopicRef.current = topic;
   }, [topic]);
+
+  useEffect(() => {
+    onEvaluationStateChange?.({
+      inProgress: evaluating,
+      hasCompletedResult: Boolean(evaluation),
+    });
+  }, [evaluating, evaluation, onEvaluationStateChange]);
 
   // Crisp 80ms debounce for lightning-fast offline live spelling & basic grammar check
   useEffect(() => {

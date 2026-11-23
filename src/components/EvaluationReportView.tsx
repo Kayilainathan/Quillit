@@ -231,9 +231,9 @@ export function EvaluationReportView({
     <div className="space-y-5">
       {/* Top Scorecard Header + Summary / Detailed Toggle */}
       <div className="space-y-3">
-        <div className="flex flex-wrap items-start justify-between gap-3">
-          <div>
-            <div className="text-xs text-ink-muted font-mono-tabular">
+        <div className="flex items-start justify-between gap-2">
+          <div className="min-w-0">
+            <div className="text-[11px] text-ink-muted font-mono-tabular leading-snug">
               CEFR {report.cefrLevel} · IELTS {intl.ieltsBand.toFixed(1)} · TOEFL{' '}
               {intl.toeflEquivalent}/30
             </div>
@@ -248,23 +248,25 @@ export function EvaluationReportView({
             </div>
           </div>
 
-          <div className="flex flex-col items-end gap-1 shrink-0">
+          <div className="flex flex-col items-end text-right gap-0.5 shrink-0">
             {savedSuccess && (
               <span
                 data-testid="auto-logged-indicator"
-                className="inline-flex items-center gap-1 text-[11px] font-medium text-status-success"
+                className="inline-flex items-center gap-1 text-[11px] font-medium text-status-success whitespace-nowrap"
               >
                 <Check className="w-3.5 h-3.5" aria-hidden="true" />
-                <span>Logged to journal</span>
+                <span>Logged</span>
               </span>
             )}
             <span
               data-testid="evaluation-tier-label"
-              className="text-[11px] font-mono-tabular text-ink-muted"
+              className="text-[11px] font-mono-tabular text-ink-muted whitespace-nowrap"
             >
               {tierCaption}
               {report.routingMeta?.latencyMs
-                ? ` · ${(report.routingMeta.latencyMs / 1000).toFixed(1)}s`
+                ? report.routingMeta.latencyMs < 50
+                  ? ' · cached'
+                  : ` · ${(report.routingMeta.latencyMs / 1000).toFixed(1)}s`
                 : ''}
             </span>
           </div>
@@ -407,7 +409,7 @@ export function EvaluationReportView({
                       className="p-3 rounded-md bg-subtle border border-border-subtle space-y-2 text-xs"
                     >
                       <div className="flex items-start justify-between gap-2">
-                        <p className="text-[11px] text-ink-muted leading-relaxed">
+                        <p className="text-[11px] text-ink-secondary leading-relaxed">
                           &ldquo;{item.original}&rdquo;
                         </p>
                         {applicable && onApplyTextReplacement && (

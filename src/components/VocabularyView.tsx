@@ -9,7 +9,7 @@ import {
   Trash2,
   X,
 } from 'lucide-react';
-import type { VocabEntry, WritingMode } from '../types';
+import type { VocabEntry, WritingMode, WritingSession } from '../types';
 import { MODE_LABELS, computeVocabularyStats } from '../utils/analytics';
 import {
   ALPHABET_LETTERS,
@@ -19,9 +19,14 @@ import {
   groupVocabularyAlphabetically,
   type VocabCategory,
 } from '../utils/vocabCatalog';
+import {
+  computeVocabularyMasteryMap,
+  type VocabMasterySummary,
+} from '../utils/vocabMastery';
 
 interface VocabularyViewProps {
   vocabulary: VocabEntry[];
+  sessions?: WritingSession[];
   todayISO: string;
   onAddVocab: (entry: VocabEntry) => void;
   onToggleMastered: (id: string) => void;
@@ -31,8 +36,67 @@ interface VocabularyViewProps {
 
 type VocabSubView = 'lexicon' | 'recall';
 
+function MasteryLevelBadge({
+  mastery,
+}: {
+  mastery: VocabMasterySummary;
+}) {
+  const containerClasses =
+    mastery.tier === 'mastered'
+      ? 'border-status-success-border bg-status-success-soft text-status-success'
+      : mastery.tier === 'familiar'
+        ? 'border-border-strong bg-subtle text-ink-primary'
+        : mastery.tier === 'emerging'
+          ? 'border-border-subtle bg-subtle/60 text-ink-secondary'
+          : 'border-border-subtle bg-transparent text-ink-muted';
+
+  const filledPipClass =
+    mastery.tier === 'mastered'
+      ? mastery.manualMastered
+        ? 'bg-status-success/60'
+        : 'bg-status-success'
+      : mastery.tier === 'familiar'
+        ? 'bg-accent'
+        : 'bg-ink-secondary';
+
+  return (
+    <span
+      data-testid="vocab-mastery-badge"
+      data-mastery-tier={mastery.tier}
+      data-mastery-uses={mastery.correctUses}
+      title={mastery.tooltip}
+      aria-label={mastery.tooltip}
+      className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded border text-[11px] leading-none whitespace-nowrap select-none ${containerClasses}`}
+    >
+      <span
+        aria-hidden="true"
+        className="inline-flex items-center gap-[2px]"
+      >
+        {[0, 1, 2].map((idx) => (
+          <span
+            key={idx}
+            className={`w-2 h-1.5 rounded-[1.5px] transition-colors ${
+              idx < mastery.filledSegments
+                ? filledPipClass
+                : 'bg-border-default/65'
+            }`}
+          />
+        ))}
+      </span>
+      <span className="font-medium">{mastery.label}</span>
+      <span aria-hidden="true" className="opacity-55">
+        ·
+      </span>
+      <span className="font-mono-tabular font-medium">
+        {mastery.correctUses}×
+      </span>
+    </span>
+  );
+}
+
 export function VocabularyView({
   vocabulary,
+  sessions = [],
   todayISO,
   onAddVocab,
   onToggleMastered,
@@ -66,6 +130,11 @@ export function VocabularyView({
   const stats = useMemo(
     () => computeVocabularyStats(vocabulary, todayISO),
     [vocabulary, todayISO]
+  );
+
+  const masteryMap = useMemo(
+    () => computeVocabularyMasteryMap(vocabulary, sessions),
+    [vocabulary, sessions]
   );
 
   // Resolve effective category for every entry (AI category if present, else deterministic local)
@@ -599,6 +668,15 @@ export function VocabularyView({
                     {group.entries.map((item) => {
                       const category = classifyVocabEntryLocally(item);
                       const headword = getVocabHeadword(item);
+                      const mastery = masteryMap.get(item.id) ?? {
+                        tier: item.mastered ? 'mastered' : 'new',
+                        label: item.mastered ? 'Mastered' : 'New',
+                        correctUses: 0,
+                        filledSegments: item.mastered ? 3 : 0,
+                        manualMastered: item.mastered,
+                        matchedSessionDates: [],
+                        tooltip: '',
+                      };
                       const showReplacement =
                         item.used.trim().toLowerCase() !==
                         item.betterAlternative.trim().toLowerCase();
@@ -606,13 +684,15 @@ export function VocabularyView({
                       return (
                         <div
                           key={item.id}
+                          data-testid={`vocab-entry-${item.id}`}
                           className="row-tactile px-5 py-4 flex flex-col sm:flex-row sm:items-start justify-between gap-4"
                         >
                           <div className="space-y-1.5 min-w-0">
-                            <div className="flex flex-wrap items-baseline gap-x-2.5 gap-y-0.5">
+                            <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1">
                               <span className="font-display text-base font-medium text-ink-primary">
                                 {item.betterAlternative || headword}
                               </span>
+                              <MasteryLevelBadge mastery={mastery} />
                               {showReplacement && (
                                 <span className="text-xs text-ink-muted">
                                   replaces{' '}
@@ -633,7 +713,7 @@ export function VocabularyView({
                               </p>
                             )}
 
-                            {/* Unboxed Editorial Metadata Row (Zero Pill Clutter) */}
+                            {/* Unboxed Editorial Metadata Row */}
                             <div className="pt-0.5 text-[11px] text-ink-muted flex flex-wrap items-center gap-x-2 gap-y-0.5">
                               <span className="font-medium text-ink-secondary">
                                 {category}
@@ -647,12 +727,16 @@ export function VocabularyView({
                               <span aria-hidden="true">·</span>
                               <span
                                 className={
-                                  item.mastered
-                                    ? 'font-medium text-status-success'
+                                  mastery.correctUses > 0
+                                    ? 'font-mono-tabular text-ink-secondary'
                                     : 'text-ink-muted'
                                 }
                               >
-                                {item.mastered ? 'Mastered' : 'Practicing'}
+                                {mastery.correctUses === 0
+                                  ? 'Not yet used in sessions'
+                                  : `Used correctly in ${mastery.correctUses} ${
+                                      mastery.correctUses === 1 ? 'session' : 'sessions'
+                                    }`}
                               </span>
                             </div>
                           </div>
@@ -696,14 +780,21 @@ export function VocabularyView({
           aria-label="Active recall flashcard"
           className="card-surface overflow-hidden max-w-2xl mx-auto"
         >
-          <div className="stationery-band px-6 py-4 border-b border-border-subtle bg-subtle/45 flex items-center justify-between text-xs font-mono-tabular text-ink-muted">
+          <div className="stationery-band px-6 py-4 border-b border-border-subtle bg-subtle/45 flex flex-wrap items-center justify-between gap-2 text-xs font-mono-tabular text-ink-muted">
             <span>
               Card {(drillIdx % drillPool.length) + 1} of {drillPool.length} ·{' '}
               {classifyVocabEntryLocally(activeDrillCard)}
             </span>
-            <span>
-              {activeDrillCard.mastered ? 'Mastered' : 'In Practice Queue'}
-            </span>
+            {(() => {
+              const activeMastery = masteryMap.get(activeDrillCard.id);
+              return activeMastery ? (
+                <MasteryLevelBadge mastery={activeMastery} />
+              ) : (
+                <span>
+                  {activeDrillCard.mastered ? 'Mastered' : 'In Practice Queue'}
+                </span>
+              );
+            })()}
           </div>
 
           <div className="p-6 sm:p-8 space-y-5">

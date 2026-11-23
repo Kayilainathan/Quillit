@@ -14,7 +14,13 @@ export type ToneSetting =
   | 'crisp-direct'
   | 'narrative-vivid';
 
-export type AppView = 'write' | 'dashboard' | 'calendar' | 'vocabulary' | 'vault';
+export type AppView =
+  | 'write'
+  | 'converse'
+  | 'dashboard'
+  | 'calendar'
+  | 'vocabulary'
+  | 'vault';
 
 export type FeedbackImplementedStatus = 'Baseline' | 'Yes' | 'Partial' | 'No';
 
@@ -250,4 +256,49 @@ export interface RealtimeAssistResult {
   thinkingLevelUsed?: string;
   downgraded?: boolean;
   quotaQueued?: boolean;
+}
+
+export type ConversationPace = 'relaxed' | 'natural' | 'challenging';
+
+export interface ConversationScenario {
+  id: string;
+  title: string;
+  subtitle: string;
+  personaName: string;
+  personaRole: string;
+  personaInitials: string;
+  mode: WritingMode;
+  tone: ToneSetting;
+  openingLine: string;
+  initialSparks: string[];
+  settingBrief: string;
+  isCustom?: boolean;
+}
+
+export interface ConversationRecast {
+  original: string;
+  naturalVersion: string;
+  tip: string;
+}
+
+export interface ConversationMessage {
+  id: string;
+  role: 'user' | 'partner';
+  text: string;
+  timestamp: string;
+  recast?: ConversationRecast | null;
+  usedTargetWords?: string[];
+  modelUsed?: string;
+  latencyMs?: number;
+}
+
+export interface SavedConversationThread {
+  id: string;
+  scenario: ConversationScenario;
+  pace: ConversationPace;
+  messages: ConversationMessage[];
+  updatedAt: string;
+  evaluatedSessionId?: string;
+  finalScore?: number;
+  cefrLevel?: string;
 }

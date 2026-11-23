@@ -86,6 +86,7 @@ import {
 import { Header, type CloudSyncState } from './components/Header';
 import { VaultGate } from './components/VaultGate';
 import { WriteStudio } from './components/WriteStudio';
+import { ConverseStudio } from './components/ConverseStudio';
 import { DashboardView } from './components/DashboardView';
 import { CalendarView } from './components/CalendarView';
 import { VocabularyView } from './components/VocabularyView';
@@ -255,6 +256,70 @@ export default function App() {
   const [studioInitialTopic, setStudioInitialTopic] = useState('');
   const [studioInitialSlot, setStudioInitialSlot] = useState('Slot 1');
   const [linkedSlotId, setLinkedSlotId] = useState<string | undefined>(undefined);
+  const [writeEvalInProgress, setWriteEvalInProgress] = useState(false);
+  const [writeEvalHasUnreadResult, setWriteEvalHasUnreadResult] = useState(false);
+  const [converseInProgress, setConverseInProgress] = useState(false);
+  const [converseHasUnreadResult, setConverseHasUnreadResult] = useState(false);
+  const [converseHasActiveChat, setConverseHasActiveChat] = useState(false);
+  const activeViewRef = useRef<AppView>(activeView);
+  activeViewRef.current = activeView;
+  const prevWriteEvalInProgressRef = useRef(false);
+  const prevConverseInProgressRef = useRef(false);
+
+  const handleWriteEvaluationStateChange = useCallback(
+    ({
+      inProgress,
+      hasCompletedResult,
+    }: {
+      inProgress: boolean;
+      hasCompletedResult: boolean;
+    }) => {
+      const wasRunning = prevWriteEvalInProgressRef.current;
+      prevWriteEvalInProgressRef.current = inProgress;
+      setWriteEvalInProgress(inProgress);
+      if (
+        wasRunning &&
+        !inProgress &&
+        hasCompletedResult &&
+        activeViewRef.current !== 'write'
+      ) {
+        setWriteEvalHasUnreadResult(true);
+      }
+      if (!hasCompletedResult && !inProgress) {
+        setWriteEvalHasUnreadResult(false);
+      }
+    },
+    []
+  );
+
+  const handleConverseStatusChange = useCallback(
+    ({
+      inProgress,
+      hasCompletedResult,
+      hasActiveChat,
+    }: {
+      inProgress: boolean;
+      hasCompletedResult: boolean;
+      hasActiveChat: boolean;
+    }) => {
+      const wasRunning = prevConverseInProgressRef.current;
+      prevConverseInProgressRef.current = inProgress;
+      setConverseInProgress(inProgress);
+      setConverseHasActiveChat(hasActiveChat);
+      if (
+        wasRunning &&
+        !inProgress &&
+        hasCompletedResult &&
+        activeViewRef.current !== 'converse'
+      ) {
+        setConverseHasUnreadResult(true);
+      }
+      if (!hasCompletedResult && !inProgress) {
+        setConverseHasUnreadResult(false);
+      }
+    },
+    []
+  );
 
   const coachContext = useMemo(
     () =>
@@ -2452,6 +2517,12 @@ export default function App() {
           onToggleTheme={toggleTheme}
           onNavigate={(view) => {
             setFocusMode(false);
+            if (view === 'write') {
+              setWriteEvalHasUnreadResult(false);
+            }
+            if (view === 'converse') {
+              setConverseHasUnreadResult(false);
+            }
             setActiveView(view);
             window.scrollTo({ top: 0, behavior: 'instant' as ScrollBehavior });
           }}
@@ -2471,6 +2542,15 @@ export default function App() {
           onToggleNotifications={() => void handleToggleNotifications()}
           onOpenTaskFromNotification={(slot) => {
             handleLaunchSlotInStudio(slot);
+          }}
+          writeEvaluationState={{
+            inProgress: writeEvalInProgress,
+            hasUnreadResult: writeEvalHasUnreadResult,
+          }}
+          converseStatus={{
+            inProgress: converseInProgress,
+            hasUnreadResult: converseHasUnreadResult,
+            hasActiveChat: converseHasActiveChat,
           }}
         />
       )}
@@ -2508,7 +2588,11 @@ export default function App() {
       )}
 
       <main className="flex-1">
-        {activeView === 'write' && (
+        {/* Keep WriteStudio persistently mounted so active drafts, cursor context, and in-progress AI evaluations survive tab switches */}
+        <div
+          className={activeView === 'write' ? 'block' : 'hidden'}
+          aria-hidden={activeView !== 'write'}
+        >
           <WriteStudio
             key={studioKey}
             todayISO={todayISO}
@@ -2551,8 +2635,25 @@ export default function App() {
             onRecordUsedCurriculumId={handleRecordUsedCurriculumId}
             onAddVocabEntry={handleAddVocabEntry}
             onOpenScheduledPopup={(slot) => setActivePopupSlot(slot)}
+            onEvaluationStateChange={handleWriteEvaluationStateChange}
           />
-        )}
+        </div>
+
+        {/* Keep ConverseStudio persistently mounted so live chats and evaluations stay intact across tab switches */}
+        <div
+          className={activeView === 'converse' ? 'block' : 'hidden'}
+          aria-hidden={activeView !== 'converse'}
+        >
+          <ConverseStudio
+            todayISO={todayISO}
+            studentProfile={vault.settings.studentProfile}
+            vocabulary={vault.vocabulary}
+            coachContext={coachContext}
+            onSaveSession={handleSaveSession}
+            onAddVocabEntry={handleAddVocabEntry}
+            onConverseStatusChange={handleConverseStatusChange}
+          />
+        </div>
 
         {activeView === 'dashboard' && (
           <DashboardView
@@ -2593,6 +2694,7 @@ export default function App() {
         {activeView === 'vocabulary' && (
           <VocabularyView
             vocabulary={vault.vocabulary}
+            sessions={vault.sessions}
             todayISO={todayISO}
             onAddVocab={handleAddVocabEntry}
             onToggleMastered={handleToggleVocabMastered}

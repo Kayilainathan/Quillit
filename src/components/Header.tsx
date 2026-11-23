@@ -38,10 +38,20 @@ interface HeaderProps {
   browserPermission: NotificationPermission | 'unsupported';
   onToggleNotifications: () => void;
   onOpenTaskFromNotification: (slot: CalendarSlot) => void;
+  writeEvaluationState?: {
+    inProgress: boolean;
+    hasUnreadResult: boolean;
+  };
+  converseStatus?: {
+    inProgress: boolean;
+    hasUnreadResult: boolean;
+    hasActiveChat: boolean;
+  };
 }
 
 const NAV_ITEMS: Array<{ id: AppView; label: string }> = [
   { id: 'write', label: 'Write' },
+  { id: 'converse', label: 'Converse' },
   { id: 'dashboard', label: 'Dashboard' },
   { id: 'calendar', label: 'Calendar' },
   { id: 'vocabulary', label: 'Vocabulary' },
@@ -62,6 +72,8 @@ export function Header({
   browserPermission,
   onToggleNotifications,
   onOpenTaskFromNotification,
+  writeEvaluationState,
+  converseStatus,
 }: HeaderProps) {
   const [notifOpen, setNotifOpen] = useState(false);
   const [lockDialogOpen, setLockDialogOpen] = useState(false);
@@ -102,6 +114,33 @@ export function Header({
         >
           {NAV_ITEMS.map((item) => {
             const isActive = activeView === item.id;
+            const showWriteRunning =
+              item.id === 'write' &&
+              !isActive &&
+              Boolean(writeEvaluationState?.inProgress);
+            const showWriteReady =
+              item.id === 'write' &&
+              !isActive &&
+              !showWriteRunning &&
+              Boolean(writeEvaluationState?.hasUnreadResult);
+            const showConverseRunning =
+              item.id === 'converse' &&
+              !isActive &&
+              Boolean(converseStatus?.inProgress);
+            const showConverseReady =
+              item.id === 'converse' &&
+              !isActive &&
+              !showConverseRunning &&
+              Boolean(converseStatus?.hasUnreadResult);
+            const showConverseActive =
+              item.id === 'converse' &&
+              !isActive &&
+              !showConverseRunning &&
+              !showConverseReady &&
+              Boolean(converseStatus?.hasActiveChat);
+            const showRunning = showWriteRunning || showConverseRunning;
+            const showReady = showWriteReady || showConverseReady;
+
             return (
               <button
                 key={item.id}
@@ -109,9 +148,40 @@ export function Header({
                 onClick={() => onNavigate(item.id)}
                 aria-current={isActive ? 'page' : undefined}
                 data-active={isActive ? 'true' : 'false'}
-                className="nav-link-tactile relative px-3 py-1.5 text-sm font-medium whitespace-nowrap shrink-0"
+                title={
+                  showWriteRunning
+                    ? 'Evaluation running in background — return to Write'
+                    : showWriteReady
+                      ? 'Evaluation report ready in Write'
+                      : showConverseRunning
+                        ? 'Live chat activity in progress — return to Converse'
+                        : showConverseReady
+                          ? 'Conversation scorecard ready in Converse'
+                          : showConverseActive
+                            ? 'Live conversation in progress — return to Converse'
+                            : undefined
+                }
+                className="nav-link-tactile relative inline-flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium whitespace-nowrap shrink-0"
               >
-                {item.label}
+                <span>{item.label}</span>
+                {showRunning && (
+                  <span
+                    aria-label="Evaluation in progress"
+                    className="w-1.5 h-1.5 rounded-full bg-accent animate-pulse"
+                  />
+                )}
+                {showReady && (
+                  <span
+                    aria-label="Evaluation ready"
+                    className="w-1.5 h-1.5 rounded-full bg-status-success"
+                  />
+                )}
+                {showConverseActive && (
+                  <span
+                    aria-label="Active conversation"
+                    className="w-1.5 h-1.5 rounded-full bg-ink-muted"
+                  />
+                )}
                 {isActive && (
                   <span
                     aria-hidden="true"
@@ -356,19 +426,40 @@ export function Header({
       >
         {NAV_ITEMS.map((item) => {
           const isActive = activeView === item.id;
+          const showRunning =
+            !isActive &&
+            ((item.id === 'write' && Boolean(writeEvaluationState?.inProgress)) ||
+              (item.id === 'converse' && Boolean(converseStatus?.inProgress)));
+          const showReady =
+            !isActive &&
+            !showRunning &&
+            ((item.id === 'write' && Boolean(writeEvaluationState?.hasUnreadResult)) ||
+              (item.id === 'converse' && Boolean(converseStatus?.hasUnreadResult)));
           return (
             <button
               key={item.id}
               type="button"
               onClick={() => onNavigate(item.id)}
               aria-current={isActive ? 'page' : undefined}
-              className={`px-3 py-1.5 min-h-[36px] text-xs font-medium whitespace-nowrap shrink-0 rounded-md transition-colors ${
+              className={`inline-flex items-center gap-1.5 px-3 py-1.5 min-h-[36px] text-xs font-medium whitespace-nowrap shrink-0 rounded-md transition-colors ${
                 isActive
                   ? 'bg-accent text-ink-inverse'
                   : 'text-ink-secondary hover:text-ink-primary hover:bg-subtle'
               }`}
             >
-              {item.label}
+              <span>{item.label}</span>
+              {showRunning && (
+                <span
+                  aria-label="Evaluation in progress"
+                  className="w-1.5 h-1.5 rounded-full bg-accent animate-pulse"
+                />
+              )}
+              {showReady && (
+                <span
+                  aria-label="Evaluation ready"
+                  className="w-1.5 h-1.5 rounded-full bg-status-success"
+                />
+              )}
             </button>
           );
         })}
