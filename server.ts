@@ -31,10 +31,20 @@ import {
 } from './src/utils/evaluationRouter';
 import {
   buildConversationSystemInstruction,
+  pickFreshOpeningLine,
   sanitizeConversationTurnResponse,
   selectConversationTurnRoute,
 } from './src/utils/conversationEngine';
-import type { ConversationPace, ConversationScenario } from './src/types';
+import {
+  aggregateConversationTelemetry,
+  calibrateConversationBenchmark,
+} from './src/utils/conversationBenchmark';
+import type {
+  ConversationBenchmarkScores,
+  ConversationMessage,
+  ConversationPace,
+  ConversationScenario,
+} from './src/types';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -2376,6 +2386,107 @@ ${compactEntries.map((e) => `${e.id}: "${e.word}" (replaces "${e.replaces}", mod
     }
   });
 
+  app.post('/api/converse-opening', async (req, res) => {
+    const {
+      scenario,
+      pace = 'natural',
+      studentProfile,
+      avoidOpenings = [],
+    } = req.body ?? {};
+
+    if (
+      !scenario ||
+      typeof scenario !== 'object' ||
+      typeof scenario.personaName !== 'string'
+    ) {
+      res.status(400).json({ error: 'Valid conversation scenario is required.' });
+      return;
+    }
+
+    const safePace: ConversationPace =
+      pace === 'relaxed' || pace === 'challenging' ? pace : 'natural';
+    const typedScenario = scenario as ConversationScenario;
+    const avoidList = Array.isArray(avoidOpenings)
+      ? avoidOpenings.map((s) => String(s || '').trim()).filter(Boolean).slice(0, 12)
+      : [];
+
+    const profileHint = studentProfile?.collegeDegree
+      ? `Learner is a ${studentProfile.semester || 'college'} ${studentProfile.collegeDegree} student.`
+      : 'Learner is practicing realistic conversational English.';
+
+    const nonce = `${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+    const cacheKey = makeCacheKey('converse-opening', {
+      id: typedScenario.id,
+      title: typedScenario.title,
+      pace: safePace,
+      nonce,
+    });
+
+    try {
+      const { parsed, modelUsed, thinkingLevelUsed } =
+        await executeCascadingJsonCall({
+          cacheKey,
+          allowCache: false,
+          task: 'topics',
+          preferFastTier: true,
+          complexityMetric: 40,
+          contents: `Persona: ${typedScenario.personaName} (${typedScenario.personaRole})
+Scenario: ${typedScenario.title} — ${typedScenario.settingBrief}
+Pace: ${safePace}
+${profileHint}
+Fresh Variation Seed: ${nonce}
+Previously used openings to STRICTLY AVOID repeating or paraphrasing closely:
+${avoidList.length > 0 ? avoidList.map((o, i) => `${i + 1}. "${o}"`).join('\n') : '(none yet)'}`,
+          systemInstruction:
+            'You are opening a brand-new live text conversation in character as the persona. Craft ONE fresh, completely original, natural human opening message (1–2 sentences, 16–42 words) with a fresh angle/hook and ONE engaging opening question so every practice session starts differently. Never say "As an AI", never repeat or closely paraphrase any avoided opening. Also return 3 crisp 4–9 word replySparks tailored specifically to this new opening line.',
+          responseSchema: {
+            type: Type.OBJECT,
+            properties: {
+              openingLine: { type: Type.STRING },
+              initialSparks: {
+                type: Type.ARRAY,
+                items: { type: Type.STRING },
+              },
+            },
+            required: ['openingLine', 'initialSparks'],
+          },
+        });
+
+      const openingLine = String(parsed.openingLine ?? '').trim();
+      const sparks = Array.isArray(parsed.initialSparks)
+        ? parsed.initialSparks
+            .map((s) => String(s ?? '').trim())
+            .filter((s) => s.length >= 4 && s.length <= 80)
+            .slice(0, 3)
+        : [];
+
+      if (openingLine.length < 12) {
+        throw new Error('Opening line too short');
+      }
+
+      res.json({
+        openingLine,
+        initialSparks:
+          sparks.length >= 2 ? sparks : typedScenario.initialSparks.slice(0, 3),
+        modelUsed,
+        thinkingLevelUsed,
+        source: 'ai',
+      });
+    } catch {
+      const localFresh = pickFreshOpeningLine({
+        scenario: typedScenario,
+        studentProfile,
+        avoidOpenings: avoidList,
+      });
+      res.json({
+        openingLine: localFresh.openingLine,
+        initialSparks: localFresh.initialSparks,
+        modelUsed: 'local-rotation',
+        source: 'local-rotation',
+      });
+    }
+  });
+
   app.post('/api/converse', async (req, res) => {
     const {
       scenario,
@@ -2421,8 +2532,6 @@ ${compactEntries.map((e) => `${e.id}: "${e.word}" (replaces "${e.replaces}", mod
       if (!text) continue;
       const role =
         (item as Record<string, unknown>).role === 'user' ? 'user' : 'model';
-      // Gemini chat history should begin with a user turn or pair cleanly;
-      // if opening partner line is first, include it as context in systemInstruction or preserve alternating turns.
       if (sdkHistory.length === 0 && role === 'model') {
         sdkHistory.push({
           role: 'user',
@@ -2471,12 +2580,31 @@ ${compactEntries.map((e) => `${e.id}: "${e.word}" (replaces "${e.replaces}", mod
           },
           required: ['original', 'naturalVersion', 'tip'],
         },
+        inTimeAnalysis: {
+          type: Type.OBJECT,
+          properties: {
+            contextAlignment: { type: Type.INTEGER },
+            toneMatch: { type: Type.INTEGER },
+            grammarAccuracy: { type: Type.INTEGER },
+            naturalness: { type: Type.INTEGER },
+            vocabQuality: { type: Type.INTEGER },
+            turnNote: { type: Type.STRING },
+          },
+          required: [
+            'contextAlignment',
+            'toneMatch',
+            'grammarAccuracy',
+            'naturalness',
+            'vocabQuality',
+            'turnNote',
+          ],
+        },
         replySparks: {
           type: Type.ARRAY,
           items: { type: Type.STRING },
         },
       },
-      required: ['reply', 'hasRecast', 'replySparks'],
+      required: ['reply', 'hasRecast', 'inTimeAnalysis', 'replySparks'],
     };
 
     const startedAt = Date.now();
@@ -2546,6 +2674,7 @@ ${compactEntries.map((e) => `${e.id}: "${e.word}" (replaces "${e.replaces}", mod
           res.json({
             reply: sanitized.reply,
             recast: sanitized.recast,
+            inTimeAnalysis: sanitized.inTimeAnalysis,
             replySparks: sanitized.replySparks,
             modelUsed: step.model,
             thinkingLevelUsed: step.thinkingLabel,
@@ -2558,7 +2687,6 @@ ${compactEntries.map((e) => `${e.id}: "${e.word}" (replaces "${e.replaces}", mod
           lastErr = err;
           recordModelFailure(step.model, err);
           failedModelsThisRequest.add(step.model);
-          // Cascade immediately (<1ms) to next fast generation
         }
       }
 
@@ -2569,6 +2697,435 @@ ${compactEntries.map((e) => `${e.id}: "${e.word}" (replaces "${e.replaces}", mod
         error: msg.includes('GEMINI_API_KEY')
           ? msg
           : 'Conversation partner is briefly unavailable. Please try again.',
+      });
+    }
+  });
+
+  app.post('/api/evaluate-conversation', async (req, res) => {
+    const {
+      scenario,
+      pace = 'natural',
+      messages = [],
+      elapsedSeconds = 0,
+      previousSessionSummary = '',
+      practicingVocab = [],
+      studentProfile,
+    } = req.body ?? {};
+
+    if (
+      !scenario ||
+      typeof scenario !== 'object' ||
+      typeof scenario.title !== 'string'
+    ) {
+      res.status(400).json({ error: 'Valid conversation scenario is required.' });
+      return;
+    }
+
+    const typedScenario = scenario as ConversationScenario;
+    const safePace: ConversationPace =
+      pace === 'relaxed' || pace === 'challenging' ? pace : 'natural';
+    const rawMessages: ConversationMessage[] = Array.isArray(messages)
+      ? messages.slice(0, 60)
+      : [];
+    const userMessages = rawMessages.filter(
+      (m) => m && m.role === 'user' && typeof m.text === 'string' && m.text.trim().length > 0
+    );
+
+    if (userMessages.length < 2) {
+      res.status(400).json({
+        error: 'Send at least 2 replies before running the conversation benchmark evaluation.',
+      });
+      return;
+    }
+
+    const userTurnsText = userMessages.map((m) => m.text.trim()).join('\n\n');
+    const integrity = assessDraftIntegrity(userTurnsText);
+    const vocabList = Array.isArray(practicingVocab)
+      ? practicingVocab.slice(0, 12).map(String)
+      : [];
+
+    const telemetry = aggregateConversationTelemetry({
+      messages: rawMessages,
+      pace: safePace,
+      elapsedSeconds: Number(elapsedSeconds) || 0,
+    });
+
+    // Build a richly time-annotated dialogue transcript so the model evaluates context, tone,
+    // real response latency, think-to-type speed, and in-time turn quality holistically.
+    let userTurnCounter = 0;
+    const annotatedDialogue = rawMessages
+      .map((m) => {
+        if (m.role === 'partner') {
+          return `[Partner · ${typedScenario.personaName}]: ${m.text.trim()}`;
+        }
+        userTurnCounter += 1;
+        const respSec = m.telemetry?.responseTimeMs
+          ? `${(m.telemetry.responseTimeMs / 1000).toFixed(1)}s reply`
+          : 'unmeasured reply';
+        const thinkSec =
+          typeof m.telemetry?.thinkTimeMs === 'number'
+            ? `, ${(m.telemetry.thinkTimeMs / 1000).toFixed(1)}s think`
+            : '';
+        const wpm = m.telemetry?.wordsPerMinute
+          ? `, ${Math.round(m.telemetry.wordsPerMinute)} WPM`
+          : '';
+        const liveSignal = m.inTimeAnalysis
+          ? ` | live-check(ctx:${m.inTimeAnalysis.contextAlignment}, tone:${m.inTimeAnalysis.toneMatch}, gram:${m.inTimeAnalysis.grammarAccuracy}, nat:${m.inTimeAnalysis.naturalness})`
+          : '';
+        return `[Learner Turn ${userTurnCounter} · ${m.telemetry?.wordCount ?? m.text.trim().split(/\s+/).length}w · ${respSec}${thinkSec}${wpm}${liveSignal}]: ${m.text.trim()}`;
+      })
+      .join('\n');
+
+    const studentDescriptor =
+      studentProfile && studentProfile.collegeDegree
+        ? `${studentProfile.semester || 'college'} ${studentProfile.collegeDegree} student`
+        : 'focused English speaker';
+
+    const routePlan = selectDynamicEvaluationRoute({
+      wordCount: Math.max(integrity.wordCount, telemetry.timingSummary.totalUserWords),
+      mode: typedScenario.mode || 'technical',
+      tone: typedScenario.tone || 'conversational',
+      topic: typedScenario.title,
+      topicPrimer: typedScenario.settingBrief,
+      longestSentenceWords: integrity.longestSentenceWords,
+      hasPreviousSessionSummary: Boolean(
+        typeof previousSessionSummary === 'string' &&
+          previousSessionSummary.trim().length > 0
+      ),
+      practicingVocabCount: vocabList.length,
+      isGibberishOrLowEffort: integrity.isGibberishOrLowEffort,
+      cooldownUntil: modelCooldownUntil,
+      unsupportedUntil: modelUnsupportedUntil,
+    });
+
+    const cacheKey = makeCacheKey('evaluate-converse-benchmark-v1', {
+      scenarioId: typedScenario.id,
+      pace: safePace,
+      annotatedDialogue: annotatedDialogue.slice(0, 6000),
+      vocabList,
+      routePrimary: `${routePlan.primary.model}:${routePlan.primary.thinkingLabel}`,
+    });
+
+    const systemInstruction = `You are a senior conversational-fluency assessor delivering the **Quillit Conversational Fluency Benchmark** for a ${studentDescriptor} practicing live real-time text dialogue.
+Unlike static essay grading, you evaluate HOW the learner performs LIVE across turns: contextual listening, tone adaptation, real-time response tempo, conversational initiative, spoken grammar under pressure, clarity, and natural phrasing.
+
+8 BENCHMARK PARAMETERS (1-10 integers, honest strict grading, ZERO inflation):
+1. contextCoherence (18% weight): Did every learner turn directly answer, track, and build on what ${typedScenario.personaName} just asked or said without drifting off-topic?
+2. naturalnessSpokenFlow (16% weight): Does the learner sound like an authentic, natural human conversationalist (contractions, spoken cadence, clean transitions) vs stiff textbook prose?
+3. grammarMechanics (16% weight): Subject-verb agreement, verb tense accuracy, word choice (e.g. "improvise" vs "improve"), punctuation, and sentence control under live pressure.
+4. toneRegister (14% weight): Did tone and register fit "${typedScenario.title}" with ${typedScenario.personaName} (${typedScenario.personaRole}) at ${safePace} pace?
+5. responsivenessTempo (12% weight): Factor in the measured reply times, think-to-type latency, and live WPM relative to turn length. A thoughtful 35-word reply in 18s is brisk & fluent; a 4-word reply taking 45s indicates hesitation.
+6. conversationalInitiative (10% weight): Did the learner carry momentum with concrete details, examples, or natural follow-ups instead of dead-end replies?
+7. clarityConciseness (8% weight): Crisp, readable messages free of breathless 45-word run-ons or repetition.
+8. vocabularyPrecision (6% — LOWEST WEIGHTAGE): Bonus layer ONLY. Never penalize crisp plain spoken English for avoiding fancy words. STRICTLY BANNED thesaurus-slop: utilize, delve, tapestry, myriad, plethora, endeavor, commence, facilitate, synergy, leverage, paramount.
+
+CRITICAL VERBATIM GROUNDING RULES:
+- Quote ONLY from the LEARNER'S own turns (never quote ${typedScenario.personaName}!) for pinpointedRewrites, grammarFixes, and vocabUpgrades.
+- Every pinpointedRewrite.original, grammarFix.original, and vocabUpgrade.used MUST appear verbatim in the learner's turns.
+- In parameterNotes, write 1 crisp evidence-grounded sentence per parameter citing specific turns, phrases, or measured response times.
+- Provide concise, insightful contextVerdict, toneVerdict, pacingVerdict, whatImprovedPoints (2-3 bullets), pinpointedRewrites (2-4 highest-impact learner turn rewrites with explicit spoken-English rules), grammarFixes (up to 6 surgical fixes), and vocabUpgrades (2-4 natural spoken upgrades).`;
+
+    const tSum = telemetry.timingSummary;
+    const prompt = `SCENARIO: ${typedScenario.title} — ${typedScenario.settingBrief}
+PARTNER: ${typedScenario.personaName} (${typedScenario.personaRole}) | PACE: ${safePace.toUpperCase()}
+MEASURED LIVE TELEMETRY:
+- Turns: ${tSum.turnCount} learner replies · ${tSum.totalUserWords} words (${tSum.avgWordsPerTurn} words/turn) · Session duration: ${tSum.totalDurationSec}s
+- Response Time: ${tSum.avgResponseTimeSec !== null ? `avg ${tSum.avgResponseTimeSec}s (median ${tSum.medianResponseTimeSec}s, fastest ${tSum.fastestTurnSec}s, slowest ${tSum.slowestTurnSec}s)` : 'not measured'}
+- Formulation & Speed: ${tSum.avgThinkTimeSec !== null ? `avg ${tSum.avgThinkTimeSec}s think-to-type` : 'unmeasured'}${tSum.avgWpm !== null ? ` · ${tSum.avgWpm} WPM typing` : ''} · Objective Tempo Band: ${tSum.tempoBand} (${tSum.timingCalibrationScore}/10)
+- Live In-Time Averages: ctx=${telemetry.inTimeAverages.contextAlignment ?? 'n/a'}, tone=${telemetry.inTimeAverages.toneMatch ?? 'n/a'}, gram=${telemetry.inTimeAverages.grammarAccuracy ?? 'n/a'}, nat=${telemetry.inTimeAverages.naturalness ?? 'n/a'}, vocab=${telemetry.inTimeAverages.vocabQuality ?? 'n/a'}
+${previousSessionSummary ? `Previous Coaching Note: ${previousSessionSummary}\n` : ''}${vocabList.length > 0 ? `Target Practicing Vocabulary: ${vocabList.join(', ')}\n` : ''}
+TIME-ANNOTATED CONVERSATION TRANSCRIPT:
+"""
+${annotatedDialogue.slice(0, 5600)}
+"""
+
+LEARNER-ONLY TEXT (for strict verbatim quotes):
+"""
+${userTurnsText.slice(0, 3600)}
+"""`;
+
+    try {
+      const { parsed, stepUsed, downgraded, cached, latencyMs } =
+        await executeDynamicEvaluationCall({
+          cacheKey,
+          contents: prompt,
+          systemInstruction,
+          cascade: routePlan.cascade,
+          responseSchema: {
+            type: Type.OBJECT,
+            properties: {
+              suggestedTitle: { type: Type.STRING },
+              parameters: {
+                type: Type.OBJECT,
+                properties: {
+                  contextCoherence: { type: Type.INTEGER },
+                  naturalnessSpokenFlow: { type: Type.INTEGER },
+                  grammarMechanics: { type: Type.INTEGER },
+                  toneRegister: { type: Type.INTEGER },
+                  responsivenessTempo: { type: Type.INTEGER },
+                  conversationalInitiative: { type: Type.INTEGER },
+                  clarityConciseness: { type: Type.INTEGER },
+                  vocabularyPrecision: { type: Type.INTEGER },
+                },
+                required: [
+                  'contextCoherence',
+                  'naturalnessSpokenFlow',
+                  'grammarMechanics',
+                  'toneRegister',
+                  'responsivenessTempo',
+                  'conversationalInitiative',
+                  'clarityConciseness',
+                  'vocabularyPrecision',
+                ],
+              },
+              parameterNotes: {
+                type: Type.OBJECT,
+                properties: {
+                  contextCoherence: { type: Type.STRING },
+                  naturalnessSpokenFlow: { type: Type.STRING },
+                  grammarMechanics: { type: Type.STRING },
+                  toneRegister: { type: Type.STRING },
+                  responsivenessTempo: { type: Type.STRING },
+                  conversationalInitiative: { type: Type.STRING },
+                  clarityConciseness: { type: Type.STRING },
+                  vocabularyPrecision: { type: Type.STRING },
+                },
+                required: [
+                  'contextCoherence',
+                  'naturalnessSpokenFlow',
+                  'grammarMechanics',
+                  'toneRegister',
+                  'responsivenessTempo',
+                  'conversationalInitiative',
+                  'clarityConciseness',
+                  'vocabularyPrecision',
+                ],
+              },
+              contextVerdict: { type: Type.STRING },
+              toneVerdict: { type: Type.STRING },
+              pacingVerdict: { type: Type.STRING },
+              feedbackImplemented: { type: Type.STRING },
+              feedbackCheck: {
+                type: Type.OBJECT,
+                properties: {
+                  status: { type: Type.STRING },
+                  implemented: { type: Type.STRING },
+                  missed: { type: Type.STRING },
+                },
+                required: ['status', 'implemented', 'missed'],
+              },
+              whatImproved: { type: Type.STRING },
+              whatImprovedPoints: {
+                type: Type.ARRAY,
+                items: {
+                  type: Type.OBJECT,
+                  properties: {
+                    title: { type: Type.STRING },
+                    detail: { type: Type.STRING },
+                  },
+                  required: ['title', 'detail'],
+                },
+              },
+              strictImprovements: { type: Type.STRING },
+              pinpointedRewrites: {
+                type: Type.ARRAY,
+                items: {
+                  type: Type.OBJECT,
+                  properties: {
+                    original: { type: Type.STRING },
+                    rewrite: { type: Type.STRING },
+                    rule: { type: Type.STRING },
+                    category: { type: Type.STRING },
+                  },
+                  required: ['original', 'rewrite', 'rule', 'category'],
+                },
+              },
+              grammarFixes: {
+                type: Type.ARRAY,
+                items: {
+                  type: Type.OBJECT,
+                  properties: {
+                    original: { type: Type.STRING },
+                    corrected: { type: Type.STRING },
+                    rule: { type: Type.STRING },
+                    category: { type: Type.STRING },
+                  },
+                  required: ['original', 'corrected', 'rule', 'category'],
+                },
+              },
+              vocabUpgrades: {
+                type: Type.ARRAY,
+                items: {
+                  type: Type.OBJECT,
+                  properties: {
+                    used: { type: Type.STRING },
+                    betterAlternative: { type: Type.STRING },
+                    explanation: { type: Type.STRING },
+                    contextSnippet: { type: Type.STRING },
+                    contextTag: { type: Type.STRING },
+                  },
+                  required: [
+                    'used',
+                    'betterAlternative',
+                    'explanation',
+                    'contextSnippet',
+                    'contextTag',
+                  ],
+                },
+              },
+              masteredWordsUsed: {
+                type: Type.ARRAY,
+                items: { type: Type.STRING },
+              },
+            },
+            required: [
+              'suggestedTitle',
+              'parameters',
+              'parameterNotes',
+              'contextVerdict',
+              'toneVerdict',
+              'pacingVerdict',
+              'feedbackImplemented',
+              'feedbackCheck',
+              'whatImproved',
+              'whatImprovedPoints',
+              'strictImprovements',
+              'pinpointedRewrites',
+              'grammarFixes',
+              'vocabUpgrades',
+              'masteredWordsUsed',
+            ],
+          },
+        });
+
+      const groundedFixes = filterGroundedGrammarFixes(
+        userTurnsText,
+        Array.isArray(parsed.grammarFixes)
+          ? (parsed.grammarFixes as Parameters<typeof filterGroundedGrammarFixes>[1])
+          : []
+      );
+      const groundedPinpoints = filterGroundedPinpointedRewrites(
+        userTurnsText,
+        Array.isArray(parsed.pinpointedRewrites)
+          ? (parsed.pinpointedRewrites as Parameters<
+              typeof filterGroundedPinpointedRewrites
+            >[1])
+          : []
+      );
+      const groundedVocab = filterGroundedVocabUpgrades(
+        userTurnsText,
+        Array.isArray(parsed.vocabUpgrades)
+          ? (parsed.vocabUpgrades as Parameters<typeof filterGroundedVocabUpgrades>[1])
+          : []
+      );
+
+      const calibrated = calibrateConversationBenchmark({
+        userTurnsText,
+        messages: rawMessages,
+        pace: safePace,
+        elapsedSeconds: Number(elapsedSeconds) || 0,
+        rawParameters: (parsed.parameters || {}) as Partial<ConversationBenchmarkScores>,
+        rawParameterNotes:
+          parsed.parameterNotes && typeof parsed.parameterNotes === 'object'
+            ? (parsed.parameterNotes as Record<string, string>)
+            : undefined,
+        grammarFixesCount: groundedFixes.length,
+        contextVerdict: String(parsed.contextVerdict || ''),
+        toneVerdict: String(parsed.toneVerdict || ''),
+        pacingVerdict: String(parsed.pacingVerdict || ''),
+      });
+
+      const whatImprovedPoints = sanitizeWhatImprovedPoints(
+        Array.isArray(parsed.whatImprovedPoints)
+          ? (parsed.whatImprovedPoints as Array<{ title?: unknown; detail?: unknown }>)
+          : undefined
+      );
+      const rawFeedbackStatus = String(parsed.feedbackImplemented || 'Baseline');
+      const feedbackStatus = (
+        ['Yes', 'Partial', 'No', 'Baseline'].includes(rawFeedbackStatus)
+          ? rawFeedbackStatus
+          : rawFeedbackStatus === 'Partially'
+            ? 'Partial'
+            : 'Baseline'
+      ) as Parameters<typeof sanitizeFeedbackCheck>[0]['status'];
+      const feedbackCheck = sanitizeFeedbackCheck({
+        status: feedbackStatus,
+        raw:
+          parsed.feedbackCheck && typeof parsed.feedbackCheck === 'object'
+            ? (parsed.feedbackCheck as { implemented?: unknown; missed?: unknown })
+            : null,
+      });
+      const groundedRewrite = sanitizeRewrittenSample(
+        userTurnsText,
+        groundedPinpoints[0]
+          ? {
+              original: groundedPinpoints[0].original,
+              improved: groundedPinpoints[0].rewrite,
+              why: groundedPinpoints[0].rule,
+            }
+          : null
+      );
+
+      const b = calibrated.benchmark;
+      res.json({
+        evaluationStatus: 'completed',
+        modelUsed: stepUsed.model,
+        thinkingLevelUsed: stepUsed.thinkingLabel,
+        routingMeta: {
+          model: stepUsed.model,
+          thinkingLevel: stepUsed.thinkingLabel,
+          tierLabel: stepUsed.tierLabel,
+          reason: stepUsed.reason,
+          latencyMs,
+        },
+        downgraded,
+        cached,
+        suggestedTitle:
+          sanitizeCoachProse(String(parsed.suggestedTitle || '')).slice(0, 90) ||
+          `Live Chat: ${typedScenario.title}`,
+        scores: calibrated.rubricScores,
+        metricNotes: {
+          naturalVoiceFlow: b.parameterNotes.naturalnessSpokenFlow,
+          claritySimplicity: b.parameterNotes.contextCoherence,
+          grammarMechanics: b.parameterNotes.grammarMechanics,
+          toneEngagement: b.parameterNotes.toneRegister,
+          sentenceVarietyCadence: b.parameterNotes.responsivenessTempo,
+          concisenessDirectness: b.parameterNotes.clarityConciseness,
+        },
+        cefrLevel: calibrated.cefrLevel,
+        internationalMetrics: {
+          ieltsBand: calibrated.ieltsBand,
+          toeflEquivalent: calibrated.toeflEquivalent,
+          lexicalResource: b.parameters.vocabularyPrecision,
+          coherenceCohesion: b.parameters.contextCoherence,
+          taskAchievement: b.parameters.conversationalInitiative,
+          registerControl: b.parameters.toneRegister,
+          grammarAccuracy: b.parameters.grammarMechanics,
+          fleschReadingEase: 0,
+          fkGradeLevel: 0,
+        },
+        toneVerdict: b.toneVerdict,
+        flowVerdict: b.pacingVerdict,
+        feedbackImplemented: feedbackCheck.status,
+        feedbackCheck,
+        whatImproved: sanitizeCoachProse(String(parsed.whatImproved || '')),
+        whatImprovedPoints,
+        strictImprovements: sanitizeCoachProse(
+          String(parsed.strictImprovements || '')
+        ),
+        pinpointedRewrites: groundedPinpoints,
+        rewrittenSample: groundedRewrite,
+        grammarFixes: groundedFixes,
+        vocabUpgrades: groundedVocab,
+        masteredWordsUsed: Array.isArray(parsed.masteredWordsUsed)
+          ? parsed.masteredWordsUsed.map(String)
+          : [],
+        conversationBenchmark: b,
+      });
+    } catch (err) {
+      const raw = err instanceof Error ? err.message : String(err);
+      res.status(503).json({
+        error: raw || 'Unable to complete conversation benchmark evaluation right now.',
       });
     }
   });

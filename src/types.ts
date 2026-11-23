@@ -282,15 +282,112 @@ export interface ConversationRecast {
   tip: string;
 }
 
+export interface ConversationTurnInTimeAnalysis {
+  contextAlignment: number; // 1-10
+  toneMatch: number; // 1-10
+  grammarAccuracy: number; // 1-10
+  naturalness: number; // 1-10
+  vocabQuality: number; // 1-10
+  turnNote: string;
+}
+
+export interface ConversationTurnTelemetry {
+  responseTimeMs?: number; // Total time from partner message ready -> user send
+  thinkTimeMs?: number; // Time from partner message ready -> user first keystroke
+  composeTimeMs?: number; // Time from first keystroke -> user send
+  wordCount: number;
+  wordsPerMinute?: number;
+  revisionCount?: number;
+}
+
 export interface ConversationMessage {
   id: string;
   role: 'user' | 'partner';
   text: string;
   timestamp: string;
+  createdAtMs?: number;
   recast?: ConversationRecast | null;
+  inTimeAnalysis?: ConversationTurnInTimeAnalysis | null;
+  telemetry?: ConversationTurnTelemetry;
   usedTargetWords?: string[];
   modelUsed?: string;
   latencyMs?: number;
+  isEditedOpener?: boolean;
+}
+
+export interface ConversationBenchmarkScores {
+  contextCoherence: number; // 1-10 (18%)
+  naturalnessSpokenFlow: number; // 1-10 (16%)
+  grammarMechanics: number; // 1-10 (16%)
+  toneRegister: number; // 1-10 (14%)
+  responsivenessTempo: number; // 1-10 (12%)
+  conversationalInitiative: number; // 1-10 (10%)
+  clarityConciseness: number; // 1-10 (8%)
+  vocabularyPrecision: number; // 1-10 (6% - lowest weightage)
+}
+
+export type ConversationBenchmarkNotes = Partial<
+  Record<keyof ConversationBenchmarkScores, string>
+>;
+
+export type ConversationTempoBand =
+  | 'Snappy'
+  | 'Natural'
+  | 'Measured'
+  | 'Deliberate'
+  | 'Hesitant';
+
+export type ConversationBenchmarkTier =
+  | 'Mastery'
+  | 'Proficient'
+  | 'Operational'
+  | 'Developing'
+  | 'Foundational';
+
+export interface ConversationTimingSummary {
+  turnCount: number;
+  totalUserWords: number;
+  avgWordsPerTurn: number;
+  totalDurationSec: number;
+  avgResponseTimeSec: number | null;
+  medianResponseTimeSec: number | null;
+  fastestTurnSec: number | null;
+  slowestTurnSec: number | null;
+  avgThinkTimeSec: number | null;
+  avgWpm: number | null;
+  tempoBand: ConversationTempoBand;
+  timingCalibrationScore: number; // 1-10 objective timing fairness score
+}
+
+export interface ConversationTurnArcPoint {
+  turnNumber: number;
+  excerpt: string;
+  wordCount: number;
+  responseTimeSec: number | null;
+  thinkTimeSec: number | null;
+  inTimeScore: number | null; // 1-10 composite of in-time analysis
+  turnNote: string;
+  hasRecast: boolean;
+}
+
+export interface ConversationBenchmarkReport {
+  benchmarkIndex: number; // 0-100 weighted index
+  benchmarkTier: ConversationBenchmarkTier;
+  spokenInteractionCefr: string;
+  parameters: ConversationBenchmarkScores;
+  parameterNotes: ConversationBenchmarkNotes;
+  timingSummary: ConversationTimingSummary;
+  contextVerdict: string;
+  toneVerdict: string;
+  pacingVerdict: string;
+  turnArc: ConversationTurnArcPoint[];
+  inTimeAverages: {
+    contextAlignment: number | null;
+    toneMatch: number | null;
+    grammarAccuracy: number | null;
+    naturalness: number | null;
+    vocabQuality: number | null;
+  };
 }
 
 export interface SavedConversationThread {
@@ -301,5 +398,6 @@ export interface SavedConversationThread {
   updatedAt: string;
   evaluatedSessionId?: string;
   finalScore?: number;
+  benchmarkIndex?: number;
   cefrLevel?: string;
 }

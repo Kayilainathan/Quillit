@@ -30,8 +30,10 @@ import {
   ScoreTrendChart,
   WordVolumeChart,
 } from './Charts';
+import { ConverseFluencyChart } from './ConverseFluencyChart';
 import { FluencyHeatmap } from './FluencyHeatmap';
 import { EvaluationReportView } from './EvaluationReportView';
+import { isConverseSession } from '../utils/converseAnalytics';
 
 interface DashboardViewProps {
   sessions: WritingSession[];
@@ -40,6 +42,7 @@ interface DashboardViewProps {
   todayISO: string;
   theme: 'light' | 'dark';
   onStartWriting: () => void;
+  onStartConverse?: () => void;
 }
 
 export function DashboardView({
@@ -49,6 +52,7 @@ export function DashboardView({
   todayISO,
   theme,
   onStartWriting,
+  onStartConverse,
 }: DashboardViewProps) {
   const [searchQuery, setSearchQuery] = useState('');
   const [modeFilter, setModeFilter] = useState<string>('all');
@@ -110,7 +114,13 @@ export function DashboardView({
   const filteredSessions = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
     return completed.filter((s) => {
-      if (modeFilter !== 'all' && s.mode !== modeFilter) return false;
+      if (modeFilter === 'converse') {
+        if (!isConverseSession(s)) return false;
+      } else if (modeFilter === 'written') {
+        if (isConverseSession(s)) return false;
+      } else if (modeFilter !== 'all' && s.mode !== modeFilter) {
+        return false;
+      }
       if (!q) return true;
       return (
         s.topicDescription.toLowerCase().includes(q) ||
@@ -280,6 +290,13 @@ export function DashboardView({
           <RubricProfileChart sessions={completed} />
         </div>
       </section>
+
+      {/* Converse Spoken Interaction Fluency vs Written Sessions (Recharts) */}
+      <ConverseFluencyChart
+        sessions={completed}
+        onStartConverse={onStartConverse}
+        onStartWriting={onStartWriting}
+      />
 
       {/* International Evaluation & Proficiency Standards */}
       <section
@@ -538,6 +555,8 @@ export function DashboardView({
               className="input-tactile px-3 py-1.5 text-xs"
             >
               <option value="all">All Modes</option>
+              <option value="converse">Converse (Live Chat)</option>
+              <option value="written">Written Drafts Only</option>
               <option value="journal">Personal Journal</option>
               <option value="linkedin">LinkedIn Post</option>
               <option value="email">Professional Email</option>

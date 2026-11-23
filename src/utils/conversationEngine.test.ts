@@ -7,6 +7,7 @@ import {
   createCustomConversationScenario,
   detectUsedTargetWords,
   getConversationScenarios,
+  pickFreshOpeningLine,
   sanitizeConversationTurnResponse,
   selectConversationTurnRoute,
 } from './conversationEngine';
@@ -171,4 +172,48 @@ test('detectUsedTargetWords handles simple inflections without substring false p
     ['stabilize', 'resolve', 'art']
   );
   assert.deepEqual(hits, ['stabilize', 'resolve']);
+});
+
+test('pickFreshOpeningLine rotates non-repeating opening lines across consecutive sessions', () => {
+  const scenario = getConversationScenarios()[0];
+  const first = pickFreshOpeningLine({ scenario, seedIndex: 0 });
+  const second = pickFreshOpeningLine({
+    scenario,
+    avoidOpenings: [first.openingLine],
+    seedIndex: 0,
+  });
+  const third = pickFreshOpeningLine({
+    scenario,
+    avoidOpenings: [first.openingLine, second.openingLine],
+    seedIndex: 0,
+  });
+
+  assert.notEqual(first.openingLine, second.openingLine);
+  assert.notEqual(second.openingLine, third.openingLine);
+  assert.notEqual(first.openingLine, third.openingLine);
+  assert.ok(second.initialSparks.length >= 2);
+});
+
+test('sanitizeConversationTurnResponse clamps and preserves real-time inTimeAnalysis scores', () => {
+  const cleaned = sanitizeConversationTurnResponse(
+    {
+      reply: 'Makes sense! How did you test it?',
+      hasRecast: false,
+      inTimeAnalysis: {
+        contextAlignment: 9,
+        toneMatch: 8,
+        grammarAccuracy: 12, // clamped to 10
+        naturalness: 0, // clamped to 1
+        vocabQuality: 8,
+        turnNote: 'Direct, grounded answer that stays tightly on context.',
+      },
+      replySparks: ['Explain how I tested edge cases'],
+    },
+    'We measured sensor drift across three thermal cycles.'
+  );
+  assert.ok(cleaned.inTimeAnalysis);
+  assert.equal(cleaned.inTimeAnalysis?.contextAlignment, 9);
+  assert.equal(cleaned.inTimeAnalysis?.grammarAccuracy, 10);
+  assert.equal(cleaned.inTimeAnalysis?.naturalness, 1);
+  assert.match(cleaned.inTimeAnalysis?.turnNote ?? '', /Direct, grounded/);
 });

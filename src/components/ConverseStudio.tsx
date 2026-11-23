@@ -10,6 +10,8 @@ import {
   History,
   Lightbulb,
   MessageSquare,
+  Pencil,
+  RefreshCw,
   RotateCcw,
   Send,
   Sparkles,
@@ -17,10 +19,12 @@ import {
 } from 'lucide-react';
 import type {
   CoachHighlightPoint,
+  ConversationBenchmarkReport,
   ConversationMessage,
   ConversationPace,
   ConversationRecast,
   ConversationScenario,
+  ConversationTurnInTimeAnalysis,
   EvaluationRoutingMeta,
   FeedbackImplementationDetail,
   FeedbackImplementedStatus,
@@ -52,7 +56,13 @@ import {
   createCustomConversationScenario,
   detectUsedTargetWords,
   getConversationScenarios,
+  pickFreshOpeningLine,
 } from '../utils/conversationEngine';
+import {
+  aggregateConversationTelemetry,
+  buildOfflineConversationBenchmark,
+  computeInTimeComposite,
+} from '../utils/conversationBenchmark';
 import { selectDynamicEvaluationRoute } from '../utils/evaluationRouter';
 import { buildInstantLocalEvaluation } from '../utils/fastEvaluate';
 import { runOfflineProofread } from '../utils/offlineProofreader';
@@ -61,8 +71,10 @@ import {
   EvaluationLoadingCard,
   EvaluationReportView,
 } from './EvaluationReportView';
+import { ConversationBenchmarkView } from './ConversationBenchmarkView';
 
 const THREADS_STORAGE_KEY = 'quillit_converse_threads_v1';
+const RECENT_OPENINGS_STORAGE_KEY = 'quillit_converse_recent_openings_v1';
 
 interface ConverseEvaluationPayload {
   evaluationStatus?: 'completed' | 'queued_for_reset';
@@ -86,6 +98,7 @@ interface ConverseEvaluationPayload {
   masteredWordsUsed?: string[];
   grammarFixes: GrammarFix[];
   vocabUpgrades: VocabSuggestion[];
+  conversationBenchmark?: ConversationBenchmarkReport;
 }
 
 interface ConverseStudioProps {
@@ -140,6 +153,35 @@ function persistSavedThreads(threads: SavedConversationThread[]): void {
   }
 }
 
+function loadRecentOpenings(): Record<string, string[]> {
+  try {
+    const raw = localStorage.getItem(RECENT_OPENINGS_STORAGE_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function recordRecentOpening(scenarioId: string, openingLine: string): string[] {
+  const trimmed = openingLine.trim();
+  const map = loadRecentOpenings();
+  const existing = Array.isArray(map[scenarioId]) ? map[scenarioId] : [];
+  if (!trimmed) return existing;
+  const deduped = [
+    trimmed,
+    ...existing.filter((line) => line.trim().toLowerCase() !== trimmed.toLowerCase()),
+  ].slice(0, 8);
+  map[scenarioId] = deduped;
+  try {
+    localStorage.setItem(RECENT_OPENINGS_STORAGE_KEY, JSON.stringify(map));
+  } catch {
+    // ignore storage quota limits
+  }
+  return deduped;
+}
+
 const PACE_OPTIONS: Array<{ id: ConversationPace; label: string; hint: string }> = [
   { id: 'relaxed', label: 'Relaxed', hint: 'Warm & patient follow-ups' },
   { id: 'natural', label: 'Natural', hint: 'Everyday spoken rhythm' },
@@ -170,6 +212,9 @@ export function ConverseStudio({
   const [replySparks, setReplySparks] = useState<string[]>([]);
   const [draftInput, setDraftInput] = useState('');
   const [partnerTyping, setPartnerTyping] = useState(false);
+  const [openingLoading, setOpeningLoading] = useState(false);
+  const [editingOpener, setEditingOpener] = useState(false);
+  const [openerDraft, setOpenerDraft] = useState('');
   const [coachTipsEnabled, setCoachTipsEnabled] = useState(true);
   const [expandedRecasts, setExpandedRecasts] = useState<Record<string, boolean>>({});
   const [showSparks, setShowSparks] = useState(false);
@@ -183,7 +228,7 @@ export function ConverseStudio({
   const [chatError, setChatError] = useState<string | null>(null);
   const [offlineModeNote, setOfflineModeNote] = useState(false);
 
-  // Evaluation state (single-pass atomic coaching report)
+  // Evaluation state (single-pass Conversational Fluency Benchmark)
   const [evaluating, setEvaluating] = useState(false);
   const [evaluatingTierLabel, setEvaluatingTierLabel] =
     useState('Hydrogen · Medium');
@@ -196,6 +241,14 @@ export function ConverseStudio({
 
   const threadEndRef = useRef<HTMLDivElement | null>(null);
   const composerRef = useRef<HTMLTextAreaElement | null>(null);
+
+  // Genuine client-side turn timing telemetry refs
+  const partnerPromptedAtRef = useRef<number>(Date.now());
+  const firstKeystrokeAtRef = useRef<number | null>(null);
+  const revisionCountRef = useRef<number>(0);
+  const prevDraftLenRef = useRef<number>(0);
+  const openingRequestIdRef = useRef<number>(0);
+  const openingSeedRef = useRef<number>(0);
 
   const practicingWordStrings = useMemo(
     () =>
@@ -219,14 +272,38 @@ export function ConverseStudio({
     [messages, practicingWordStrings]
   );
 
+  const liveTiming = useMemo(
+    () =>
+      aggregateConversationTelemetry({
+        messages,
+        pace,
+        elapsedSeconds,
+      }).timingSummary,
+    [messages, pace, elapsedSeconds]
+  );
+
+  function resetTurnTimingClock() {
+    partnerPromptedAtRef.current = Date.now();
+    firstKeystrokeAtRef.current = null;
+    revisionCountRef.current = 0;
+    prevDraftLenRef.current = 0;
+  }
+
   // Report status up to App header for quiet background dot when user switches tabs
   useEffect(() => {
     onConverseStatusChange?.({
-      inProgress: evaluating || partnerTyping,
+      inProgress: evaluating || partnerTyping || openingLoading,
       hasCompletedResult: Boolean(evaluation),
       hasActiveChat: Boolean(activeScenario),
     });
-  }, [evaluating, partnerTyping, evaluation, activeScenario, onConverseStatusChange]);
+  }, [
+    evaluating,
+    partnerTyping,
+    openingLoading,
+    evaluation,
+    activeScenario,
+    onConverseStatusChange,
+  ]);
 
   // Live session timer while actively conversing before evaluation
   useEffect(() => {
@@ -240,7 +317,7 @@ export function ConverseStudio({
   // Smoothly keep latest message in view
   useEffect(() => {
     threadEndRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
-  }, [messages.length, partnerTyping]);
+  }, [messages.length, partnerTyping, openingLoading]);
 
   // Persist active thread into local history whenever messages update
   useEffect(() => {
@@ -253,6 +330,7 @@ export function ConverseStudio({
         messages,
         updatedAt: new Date().toISOString(),
         finalScore: evaluation ? computeTotalScore(evaluation.scores) : undefined,
+        benchmarkIndex: evaluation?.conversationBenchmark?.benchmarkIndex,
         cefrLevel: evaluation?.cefrLevel,
       };
       const next = [
@@ -264,17 +342,101 @@ export function ConverseStudio({
     });
   }, [activeThreadId, activeScenario, pace, messages, evaluation]);
 
+  async function fetchFreshOpening(
+    scenario: ConversationScenario,
+    extraAvoid: string[] = []
+  ) {
+    const reqId = ++openingRequestIdRef.current;
+    const storedAvoid = loadRecentOpenings()[scenario.id] || [];
+    const avoidOpenings = Array.from(
+      new Set([...extraAvoid, ...storedAvoid].filter(Boolean))
+    ).slice(0, 8);
+
+    setOpeningLoading(true);
+    setEditingOpener(false);
+    setOpenerDraft('');
+
+    const controller = new AbortController();
+    const timeoutId = window.setTimeout(() => controller.abort(), 7500);
+
+    try {
+      const res = await fetch(getApiUrl('/api/converse-opening'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        signal: controller.signal,
+        body: JSON.stringify({
+          scenario,
+          pace,
+          studentProfile,
+          avoidOpenings,
+        }),
+      });
+      const data = await safeParseJsonResponse<{
+        openingLine?: string;
+        initialSparks?: string[];
+        modelUsed?: string;
+        error?: string;
+      }>(res);
+
+      if (openingRequestIdRef.current !== reqId) return;
+
+      if (res.ok && data?.openingLine && data.openingLine.trim().length >= 8) {
+        const freshLine = data.openingLine.trim();
+        recordRecentOpening(scenario.id, freshLine);
+        const openingMsg: ConversationMessage = {
+          id: `msg-open-${Date.now()}`,
+          role: 'partner',
+          text: freshLine,
+          timestamp: formatNowTime(),
+          createdAtMs: Date.now(),
+          modelUsed: data.modelUsed,
+        };
+        setMessages([openingMsg]);
+        setReplySparks(
+          Array.isArray(data.initialSparks) && data.initialSparks.length > 0
+            ? data.initialSparks
+            : scenario.initialSparks
+        );
+        setOfflineModeNote(false);
+        resetTurnTimingClock();
+        return;
+      }
+      throw new Error(data?.error || 'Dynamic opening unavailable');
+    } catch {
+      if (openingRequestIdRef.current !== reqId) return;
+      openingSeedRef.current += 1;
+      const freshLocal = pickFreshOpeningLine({
+        scenario,
+        studentProfile,
+        avoidOpenings,
+        seedIndex: openingSeedRef.current,
+      });
+      recordRecentOpening(scenario.id, freshLocal.openingLine);
+      const openingMsg: ConversationMessage = {
+        id: `msg-open-${Date.now()}`,
+        role: 'partner',
+        text: freshLocal.openingLine,
+        timestamp: formatNowTime(),
+        createdAtMs: Date.now(),
+        modelUsed: 'rotated-opener',
+      };
+      setMessages([openingMsg]);
+      setReplySparks(freshLocal.initialSparks);
+      resetTurnTimingClock();
+    } finally {
+      window.clearTimeout(timeoutId);
+      if (openingRequestIdRef.current === reqId) {
+        setOpeningLoading(false);
+        window.setTimeout(() => composerRef.current?.focus(), 60);
+      }
+    }
+  }
+
   function startScenario(scenario: ConversationScenario) {
     const threadId = `chat-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
-    const openingMsg: ConversationMessage = {
-      id: `msg-open-${Date.now()}`,
-      role: 'partner',
-      text: scenario.openingLine,
-      timestamp: formatNowTime(),
-    };
     setActiveThreadId(threadId);
     setActiveScenario(scenario);
-    setMessages([openingMsg]);
+    setMessages([]);
     setReplySparks(scenario.initialSparks);
     setDraftInput('');
     setElapsedSeconds(0);
@@ -286,7 +448,53 @@ export function ConverseStudio({
     setEvaluation(null);
     setLoggedSuccess(false);
     setPromotedWords([]);
-    window.setTimeout(() => composerRef.current?.focus(), 80);
+    setEditingOpener(false);
+    setOpenerDraft('');
+    resetTurnTimingClock();
+    void fetchFreshOpening(scenario);
+  }
+
+  function handleRegenerateOpener() {
+    if (!activeScenario || openingLoading || partnerTyping || metrics.userTurnCount > 0) {
+      return;
+    }
+    const currentLine = messages[0]?.text ? [messages[0].text] : [];
+    void fetchFreshOpening(activeScenario, currentLine);
+  }
+
+  function handleStartEditOpener() {
+    if (messages.length === 0 || messages[0].role !== 'partner' || metrics.userTurnCount > 0) {
+      return;
+    }
+    setOpenerDraft(messages[0].text);
+    setEditingOpener(true);
+  }
+
+  function handleSaveEditedOpener() {
+    const trimmed = openerDraft.trim();
+    if (!trimmed || messages.length === 0 || messages[0].role !== 'partner') {
+      setEditingOpener(false);
+      return;
+    }
+    setMessages((prev) =>
+      prev.map((m, idx) =>
+        idx === 0
+          ? {
+              ...m,
+              text: trimmed,
+              timestamp: formatNowTime(),
+              createdAtMs: Date.now(),
+              isEditedOpener: true,
+            }
+          : m
+      )
+    );
+    if (activeScenario) {
+      recordRecentOpening(activeScenario.id, trimmed);
+    }
+    setEditingOpener(false);
+    resetTurnTimingClock();
+    window.setTimeout(() => composerRef.current?.focus(), 40);
   }
 
   function handleStartCustomScenario(e: React.FormEvent) {
@@ -324,31 +532,60 @@ export function ConverseStudio({
   }
 
   function handleExitToLobby() {
+    openingRequestIdRef.current += 1;
     setActiveScenario(null);
     setActiveThreadId(null);
     setMessages([]);
     setEvaluation(null);
     setEvaluating(false);
+    setOpeningLoading(false);
+    setEditingOpener(false);
     setChatError(null);
     setDraftInput('');
   }
 
   async function handleSendMessage(overrideText?: string) {
-    if (!activeScenario || partnerTyping || evaluating) return;
+    if (!activeScenario || partnerTyping || openingLoading || evaluating) return;
     const text = (overrideText ?? draftInput).trim();
     if (!text) return;
 
     setChatError(null);
     setShowSparks(false);
+    setEditingOpener(false);
+
+    const nowMs = Date.now();
+    const wordCount = text.split(/\s+/).filter(Boolean).length;
+    const responseTimeMs = Math.max(400, nowMs - partnerPromptedAtRef.current);
+    const thinkTimeMs =
+      firstKeystrokeAtRef.current !== null
+        ? Math.max(0, firstKeystrokeAtRef.current - partnerPromptedAtRef.current)
+        : undefined;
+    const composeTimeMs =
+      firstKeystrokeAtRef.current !== null
+        ? Math.max(400, nowMs - firstKeystrokeAtRef.current)
+        : responseTimeMs;
+    const wordsPerMinute = Math.min(
+      180,
+      Math.max(5, Math.round(wordCount / (composeTimeMs / 60_000)))
+    );
 
     const usedInTurn = detectUsedTargetWords(text, practicingWordStrings);
-    const userMsgId = `msg-u-${Date.now()}`;
+    const userMsgId = `msg-u-${nowMs}`;
     const userMessage: ConversationMessage = {
       id: userMsgId,
       role: 'user',
       text,
       timestamp: formatNowTime(),
+      createdAtMs: nowMs,
       usedTargetWords: usedInTurn,
+      telemetry: {
+        responseTimeMs,
+        thinkTimeMs,
+        composeTimeMs,
+        wordCount,
+        wordsPerMinute,
+        revisionCount: revisionCountRef.current,
+      },
     };
 
     const historyBeforeSend = messages.map((m) => ({
@@ -380,6 +617,7 @@ export function ConverseStudio({
       const data = await safeParseJsonResponse<{
         reply?: string;
         recast?: ConversationRecast | null;
+        inTimeAnalysis?: ConversationTurnInTimeAnalysis;
         replySparks?: string[];
         modelUsed?: string;
         latencyMs?: number;
@@ -391,11 +629,13 @@ export function ConverseStudio({
       }
 
       setOfflineModeNote(false);
+      const partnerArrivedAt = Date.now();
       const partnerMessage: ConversationMessage = {
-        id: `msg-p-${Date.now()}`,
+        id: `msg-p-${partnerArrivedAt}`,
         role: 'partner',
         text: data.reply,
         timestamp: formatNowTime(),
+        createdAtMs: partnerArrivedAt,
         modelUsed: data.modelUsed,
         latencyMs: data.latencyMs,
       };
@@ -403,7 +643,13 @@ export function ConverseStudio({
       setMessages((prev) =>
         prev
           .map((m) =>
-            m.id === userMsgId && data.recast ? { ...m, recast: data.recast } : m
+            m.id === userMsgId
+              ? {
+                  ...m,
+                  ...(data.recast ? { recast: data.recast } : {}),
+                  ...(data.inTimeAnalysis ? { inTimeAnalysis: data.inTimeAnalysis } : {}),
+                }
+              : m
           )
           .concat(partnerMessage)
       );
@@ -411,6 +657,7 @@ export function ConverseStudio({
       if (Array.isArray(data.replySparks) && data.replySparks.length > 0) {
         setReplySparks(data.replySparks);
       }
+      resetTurnTimingClock();
     } catch {
       // Seamless offline fallback on static hosts or dropped network
       setOfflineModeNote(true);
@@ -419,15 +666,26 @@ export function ConverseStudio({
         text,
         metrics.userTurnCount + 1
       );
+      const partnerArrivedAt = Date.now();
       const partnerMessage: ConversationMessage = {
-        id: `msg-p-${Date.now()}`,
+        id: `msg-p-${partnerArrivedAt}`,
         role: 'partner',
         text: offlineReply.reply,
         timestamp: formatNowTime(),
+        createdAtMs: partnerArrivedAt,
         modelUsed: 'offline-partner',
       };
-      setMessages((prev) => [...prev, partnerMessage]);
+      setMessages((prev) =>
+        prev
+          .map((m) =>
+            m.id === userMsgId && offlineReply.inTimeAnalysis
+              ? { ...m, inTimeAnalysis: offlineReply.inTimeAnalysis }
+              : m
+          )
+          .concat(partnerMessage)
+      );
       setReplySparks(offlineReply.replySparks);
+      resetTurnTimingClock();
     } finally {
       setPartnerTyping(false);
       window.setTimeout(() => composerRef.current?.focus(), 40);
@@ -442,7 +700,16 @@ export function ConverseStudio({
   }
 
   function handleComposerChange(e: React.ChangeEvent<HTMLTextAreaElement>) {
-    setDraftInput(e.target.value);
+    const val = e.target.value;
+    if (firstKeystrokeAtRef.current === null && val.trim().length > 0) {
+      firstKeystrokeAtRef.current = Date.now();
+    }
+    if (val.length < prevDraftLenRef.current - 2) {
+      revisionCountRef.current += 1;
+    }
+    prevDraftLenRef.current = val.length;
+
+    setDraftInput(val);
     const el = e.target;
     el.style.height = 'auto';
     el.style.height = `${Math.min(el.scrollHeight, 140)}px`;
@@ -558,7 +825,13 @@ export function ConverseStudio({
   }
 
   async function handleFinishAndEvaluate() {
-    if (!activeScenario || !metrics.canEvaluate || evaluating || partnerTyping) {
+    if (
+      !activeScenario ||
+      !metrics.canEvaluate ||
+      evaluating ||
+      partnerTyping ||
+      openingLoading
+    ) {
       return;
     }
 
@@ -581,25 +854,17 @@ export function ConverseStudio({
     setEvaluating(true);
 
     try {
-      const res = await fetch(getApiUrl('/api/evaluate'), {
+      const res = await fetch(getApiUrl('/api/evaluate-conversation'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          content: userTurnsText,
-          mode: MODE_LABELS[activeScenario.mode],
-          tone: TONE_LABELS[activeScenario.tone],
-          topic: `Live Chat: ${activeScenario.title}`,
-          needsAutoTitle: false,
-          topicPrimer: activeScenario.settingBrief,
+          scenario: activeScenario,
+          pace,
+          messages,
+          elapsedSeconds,
           previousSessionSummary: coachContext.previousSessionSummary,
           practicingVocab: practicingWordStrings,
           studentProfile,
-          conversationContext: {
-            partnerName: activeScenario.personaName,
-            scenarioTitle: activeScenario.title,
-            turnCount: metrics.userTurnCount,
-            dialogueTranscript,
-          },
         }),
       });
 
@@ -608,13 +873,13 @@ export function ConverseStudio({
       >(res);
 
       if (!res.ok || !data || data.error) {
-        throw new Error(data?.error || 'API unavailable');
+        throw new Error(data?.error || 'Conversation benchmark API unavailable');
       }
 
       setEvaluation(data);
       persistConversationSession(data, userTurnsText, dialogueTranscript);
     } catch {
-      // Transparent offline rubric fallback only if API is unreachable
+      // Transparent offline benchmark fallback only if API is unreachable
       const offlineIssues = runOfflineProofread(userTurnsText);
       const localEval = buildInstantLocalEvaluation(
         userTurnsText,
@@ -623,17 +888,28 @@ export function ConverseStudio({
         offlineIssues,
         `Live Chat: ${activeScenario.title}`
       );
+      const offlineBench = buildOfflineConversationBenchmark({
+        messages,
+        userTurnsText,
+        pace,
+        elapsedSeconds,
+        grammarFixes: localEval.grammarFixes,
+      });
       const fallbackPayload: ConverseEvaluationPayload = {
         evaluationStatus: 'completed',
         modelUsed: localEval.modelUsed,
         routingMeta: localEval.routingMeta,
         suggestedTitle: localEval.suggestedTitle,
-        scores: localEval.scores,
+        scores: offlineBench.rubricScores,
         metricNotes: localEval.metricNotes,
-        cefrLevel: localEval.cefrLevel,
-        internationalMetrics: localEval.internationalMetrics,
-        toneVerdict: localEval.toneVerdict,
-        flowVerdict: localEval.flowVerdict,
+        cefrLevel: offlineBench.cefrLevel,
+        internationalMetrics: {
+          ...localEval.internationalMetrics,
+          ieltsBand: offlineBench.ieltsBand,
+          toeflEquivalent: offlineBench.toeflEquivalent,
+        },
+        toneVerdict: offlineBench.benchmark.toneVerdict,
+        flowVerdict: offlineBench.benchmark.pacingVerdict,
         feedbackImplemented: localEval.feedbackImplemented,
         feedbackCheck: localEval.feedbackCheck,
         whatImproved: localEval.whatImproved,
@@ -643,6 +919,7 @@ export function ConverseStudio({
         rewrittenSample: localEval.rewrittenSample,
         grammarFixes: localEval.grammarFixes,
         vocabUpgrades: localEval.vocabUpgrades,
+        conversationBenchmark: offlineBench.benchmark,
       };
       setEvaluation(fallbackPayload);
       persistConversationSession(fallbackPayload, userTurnsText, dialogueTranscript);
@@ -743,9 +1020,11 @@ export function ConverseStudio({
                       </div>
                       <div className="text-[11px] font-mono-tabular text-ink-muted mt-0.5">
                         {uTurns} replies · {thread.pace}
-                        {typeof thread.finalScore === 'number'
-                          ? ` · Scored ${thread.finalScore}/60 (${thread.cefrLevel || 'B2'})`
-                          : ' · In progress'}
+                        {typeof thread.benchmarkIndex === 'number'
+                          ? ` · Benchmark ${thread.benchmarkIndex}/100 (${thread.cefrLevel || 'B2'})`
+                          : typeof thread.finalScore === 'number'
+                            ? ` · Scored ${thread.finalScore}/60 (${thread.cefrLevel || 'B2'})`
+                            : ' · In progress'}
                       </div>
                     </button>
                     <button
@@ -941,11 +1220,13 @@ export function ConverseStudio({
               <button
                 type="button"
                 data-testid="converse-evaluate-btn"
-                disabled={!metrics.canEvaluate || evaluating || partnerTyping}
+                disabled={
+                  !metrics.canEvaluate || evaluating || partnerTyping || openingLoading
+                }
                 onClick={() => void handleFinishAndEvaluate()}
                 title={
                   metrics.canEvaluate
-                    ? 'Score this conversation with the full rubric & Detailed Report'
+                    ? 'Score this conversation with the 8-parameter Conversational Fluency Benchmark'
                     : `Send ${Math.max(1, metrics.turnsNeeded)} more ${
                         metrics.turnsNeeded === 1 ? 'reply' : 'replies'
                       } (${metrics.wordsNeeded > 0 ? `${metrics.wordsNeeded} more words` : 'ready'}) to evaluate`
@@ -955,9 +1236,9 @@ export function ConverseStudio({
                 <Sparkles className="w-3.5 h-3.5" aria-hidden="true" />
                 <span>
                   {evaluating
-                    ? 'Evaluating...'
+                    ? 'Benchmarking...'
                     : evaluation
-                      ? 'Re-evaluate'
+                      ? 'Re-benchmark'
                       : 'Finish & Evaluate'}
                 </span>
               </button>
@@ -966,13 +1247,21 @@ export function ConverseStudio({
 
           {/* Subtle Session Metrics & Vocab Targets Bar */}
           <div className="px-4 sm:px-5 py-2 border-b border-border-subtle bg-subtle/40 flex flex-wrap items-center justify-between gap-2 text-[11px] font-mono-tabular text-ink-muted">
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2">
               <span>
                 {metrics.userTurnCount}{' '}
                 {metrics.userTurnCount === 1 ? 'reply' : 'replies'}
               </span>
               <span>·</span>
               <span>{metrics.totalUserWords} words</span>
+              {liveTiming.avgResponseTimeSec !== null && (
+                <>
+                  <span>·</span>
+                  <span data-testid="converse-live-avg-reply">
+                    avg {liveTiming.avgResponseTimeSec}s reply
+                  </span>
+                </>
+              )}
               {!metrics.canEvaluate && (
                 <>
                   <span>·</span>
@@ -980,8 +1269,8 @@ export function ConverseStudio({
                     {metrics.turnsNeeded > 0
                       ? `${metrics.turnsNeeded} more ${
                           metrics.turnsNeeded === 1 ? 'reply' : 'replies'
-                        } to unlock scorecard`
-                      : `${metrics.wordsNeeded} more words to unlock scorecard`}
+                        } to unlock benchmark`
+                      : `${metrics.wordsNeeded} more words to unlock benchmark`}
                   </span>
                 </>
               )}
@@ -1043,10 +1332,24 @@ export function ConverseStudio({
             aria-live="polite"
             className="flex-1 overflow-y-auto px-4 sm:px-5 py-5 space-y-4"
           >
-            {messages.map((msg) => {
+            {messages.map((msg, msgIdx) => {
               const isUser = msg.role === 'user';
-              const hasRecast = Boolean(coachTipsEnabled && isUser && msg.recast);
+              const isEditableOpener =
+                msgIdx === 0 &&
+                msg.role === 'partner' &&
+                metrics.userTurnCount === 0 &&
+                !openingLoading;
+              const inTimeComposite = msg.inTimeAnalysis
+                ? computeInTimeComposite(msg.inTimeAnalysis)
+                : null;
+              const hasLiveInsight = Boolean(
+                coachTipsEnabled && isUser && (msg.recast || msg.inTimeAnalysis)
+              );
               const recastOpen = Boolean(expandedRecasts[msg.id]);
+              const replySec =
+                typeof msg.telemetry?.responseTimeMs === 'number'
+                  ? Math.round((msg.telemetry.responseTimeMs / 1000) * 10) / 10
+                  : null;
 
               return (
                 <div
@@ -1070,30 +1373,103 @@ export function ConverseStudio({
                       </span>
                     )}
 
-                    <div
-                      className={`px-3.5 py-2.5 text-sm leading-relaxed whitespace-pre-wrap ${
-                        isUser
-                          ? 'bg-accent text-ink-inverse rounded-2xl rounded-br-sm'
-                          : 'bg-subtle text-ink-primary border border-border-subtle rounded-2xl rounded-bl-sm'
-                      }`}
-                    >
-                      {msg.text}
-                    </div>
+                    {isEditableOpener && editingOpener ? (
+                      <div className="w-full min-w-[260px] sm:min-w-[360px] p-3 rounded-xl bg-subtle border border-border-strong space-y-2">
+                        <label
+                          htmlFor="converse-opener-editor"
+                          className="block text-[10px] font-mono-tabular uppercase tracking-wider text-ink-muted"
+                        >
+                          Customize opening line from {activeScenario.personaName}
+                        </label>
+                        <textarea
+                          id="converse-opener-editor"
+                          data-testid="converse-edit-opener-input"
+                          rows={3}
+                          value={openerDraft}
+                          onChange={(e) => setOpenerDraft(e.target.value)}
+                          className="input-tactile w-full resize-none px-3 py-2 text-sm leading-relaxed"
+                          autoFocus
+                        />
+                        <div className="flex items-center justify-end gap-2">
+                          <button
+                            type="button"
+                            onClick={() => setEditingOpener(false)}
+                            className="btn-ghost px-2.5 py-1 text-xs text-ink-secondary cursor-pointer"
+                          >
+                            Cancel
+                          </button>
+                          <button
+                            type="button"
+                            data-testid="converse-save-opener-btn"
+                            disabled={openerDraft.trim().length < 4}
+                            onClick={handleSaveEditedOpener}
+                            className="btn-primary px-3 py-1 text-xs font-medium disabled:opacity-45"
+                          >
+                            Save opener
+                          </button>
+                        </div>
+                      </div>
+                    ) : (
+                      <div
+                        data-testid={
+                          msgIdx === 0 && msg.role === 'partner'
+                            ? 'converse-opening-text'
+                            : undefined
+                        }
+                        className={`px-3.5 py-2.5 text-sm leading-relaxed whitespace-pre-wrap ${
+                          isUser
+                            ? 'bg-accent text-ink-inverse rounded-2xl rounded-br-sm'
+                            : 'bg-subtle text-ink-primary border border-border-subtle rounded-2xl rounded-bl-sm'
+                        }`}
+                      >
+                        {msg.text}
+                      </div>
+                    )}
                   </div>
 
-                  {/* Quiet Timestamp + Target Word Hit + Optional Collapsible Gentle Recast */}
+                  {/* Quiet Timestamp + Telemetry + Opener Controls + Optional Collapsible In-Time Insight */}
                   <div
                     className={`mt-1 flex flex-wrap items-center gap-2 text-[10px] font-mono-tabular text-ink-muted ${
                       isUser ? 'pr-1 justify-end' : 'pl-8 justify-start'
                     }`}
                   >
                     <span>{msg.timestamp}</span>
+                    {msg.isEditedOpener && <span>· customized</span>}
+                    {isUser && replySec !== null && (
+                      <span data-testid={`turn-latency-${msg.id}`}>
+                        · {replySec}s reply
+                      </span>
+                    )}
                     {msg.usedTargetWords && msg.usedTargetWords.length > 0 && (
                       <span className="text-status-success">
                         · used {msg.usedTargetWords.join(', ')}
                       </span>
                     )}
-                    {hasRecast && (
+                    {isEditableOpener && !editingOpener && (
+                      <>
+                        <span>·</span>
+                        <button
+                          type="button"
+                          data-testid="converse-new-opener-btn"
+                          onClick={handleRegenerateOpener}
+                          className="inline-flex items-center gap-1 font-sans text-[11px] font-medium text-ink-secondary hover:text-ink-primary transition-colors cursor-pointer"
+                        >
+                          <RefreshCw className="w-3 h-3" aria-hidden="true" />
+                          <span>New opener</span>
+                        </button>
+                        <span>·</span>
+                        <button
+                          type="button"
+                          data-testid="converse-edit-opener-btn"
+                          onClick={handleStartEditOpener}
+                          className="inline-flex items-center gap-1 font-sans text-[11px] font-medium text-ink-secondary hover:text-ink-primary transition-colors cursor-pointer"
+                        >
+                          <Pencil className="w-3 h-3" aria-hidden="true" />
+                          <span>Edit opener</span>
+                        </button>
+                      </>
+                    )}
+                    {hasLiveInsight && (
                       <button
                         type="button"
                         data-testid={`recast-toggle-${msg.id}`}
@@ -1105,36 +1481,64 @@ export function ConverseStudio({
                         }
                         className="inline-link-tactile text-[11px] font-sans font-medium text-ink-secondary hover:text-ink-primary cursor-pointer"
                       >
-                        {recastOpen ? 'Hide phrasing tip' : '1 phrasing tip'}
+                        {recastOpen
+                          ? 'Hide turn note'
+                          : msg.recast
+                            ? '1 phrasing tip'
+                            : inTimeComposite !== null
+                              ? `In-time · ${inTimeComposite}/10`
+                              : 'Turn note'}
                       </button>
                     )}
                   </div>
 
-                  {hasRecast && recastOpen && msg.recast && (
+                  {hasLiveInsight && recastOpen && (
                     <div
                       data-testid="converse-recast-card"
-                      className="mt-1.5 max-w-[85%] sm:max-w-[76%] p-3 rounded-md bg-subtle border border-border-default text-xs space-y-1 converse-recast-in"
+                      className="mt-1.5 max-w-[85%] sm:max-w-[76%] p-3 rounded-md bg-subtle border border-border-default text-xs space-y-2 converse-recast-in"
                     >
-                      <div className="text-[11px] text-ink-secondary">
-                        <span className="line-through text-ink-muted">
-                          &ldquo;{msg.recast.original}&rdquo;
-                        </span>{' '}
-                        <span className="text-ink-muted">&rarr;</span>{' '}
-                        <span className="font-medium text-status-success">
-                          &ldquo;{msg.recast.naturalVersion}&rdquo;
-                        </span>
-                      </div>
-                      <p className="text-[11px] text-ink-secondary leading-relaxed">
-                        {msg.recast.tip}
-                      </p>
+                      {msg.recast && (
+                        <div className="space-y-1">
+                          <div className="text-[11px] text-ink-secondary">
+                            <span className="line-through text-ink-muted">
+                              &ldquo;{msg.recast.original}&rdquo;
+                            </span>{' '}
+                            <span className="text-ink-muted">&rarr;</span>{' '}
+                            <span className="font-medium text-status-success">
+                              &ldquo;{msg.recast.naturalVersion}&rdquo;
+                            </span>
+                          </div>
+                          <p className="text-[11px] text-ink-secondary leading-relaxed">
+                            {msg.recast.tip}
+                          </p>
+                        </div>
+                      )}
+                      {msg.inTimeAnalysis && (
+                        <div
+                          className={
+                            msg.recast ? 'pt-2 border-t border-border-subtle space-y-1' : 'space-y-1'
+                          }
+                        >
+                          <div className="text-[10px] font-mono-tabular text-ink-muted">
+                            Context {msg.inTimeAnalysis.contextAlignment}/10 · Tone{' '}
+                            {msg.inTimeAnalysis.toneMatch}/10 · Grammar{' '}
+                            {msg.inTimeAnalysis.grammarAccuracy}/10 · Flow{' '}
+                            {msg.inTimeAnalysis.naturalness}/10 · Vocab{' '}
+                            {msg.inTimeAnalysis.vocabQuality}/10
+                          </div>
+                          <p className="text-[11px] text-ink-secondary leading-relaxed">
+                            {msg.inTimeAnalysis.turnNote}
+                          </p>
+                        </div>
+                      )}
                     </div>
                   )}
                 </div>
               );
             })}
 
-            {/* Live Partner Typing Indicator */}
-            {partnerTyping && (
+            {/* Live Partner Typing / Fresh Opening Indicator */}
+            {(partnerTyping || openingLoading) && (
               <div
                 data-testid="converse-typing-indicator"
                 className="flex items-end gap-2.5 converse-msg-in"
@@ -1145,10 +1549,17 @@ export function ConverseStudio({
                 >
                   {activeScenario.personaInitials}
                 </span>
-                <div className="px-3.5 py-2.5 rounded-2xl rounded-bl-sm bg-subtle border border-border-subtle inline-flex items-center gap-1.5">
-                  <span className="w-1.5 h-1.5 rounded-full bg-ink-muted converse-typing-dot" />
-                  <span className="w-1.5 h-1.5 rounded-full bg-ink-muted converse-typing-dot converse-typing-dot-2" />
-                  <span className="w-1.5 h-1.5 rounded-full bg-ink-muted converse-typing-dot converse-typing-dot-3" />
+                <div className="px-3.5 py-2.5 rounded-2xl rounded-bl-sm bg-subtle border border-border-subtle inline-flex items-center gap-2">
+                  <span className="inline-flex items-center gap-1.5">
+                    <span className="w-1.5 h-1.5 rounded-full bg-ink-muted converse-typing-dot" />
+                    <span className="w-1.5 h-1.5 rounded-full bg-ink-muted converse-typing-dot converse-typing-dot-2" />
+                    <span className="w-1.5 h-1.5 rounded-full bg-ink-muted converse-typing-dot converse-typing-dot-3" />
+                  </span>
+                  {openingLoading && (
+                    <span className="text-[11px] text-ink-muted">
+                      Crafting a fresh opener...
+                    </span>
+                  )}
                   <span className="sr-only">
                     {activeScenario.personaName} is typing
                   </span>
@@ -1213,7 +1624,7 @@ export function ConverseStudio({
                 value={draftInput}
                 onChange={handleComposerChange}
                 onKeyDown={handleComposerKeyDown}
-                disabled={partnerTyping || evaluating}
+                disabled={partnerTyping || openingLoading || evaluating}
                 aria-label="Conversation reply input"
                 placeholder={`Reply to ${activeScenario.personaName}... (Enter to send)`}
                 className="input-tactile flex-1 resize-none px-3.5 py-2.5 text-sm leading-relaxed max-h-[140px]"
@@ -1221,7 +1632,7 @@ export function ConverseStudio({
               <button
                 type="button"
                 data-testid="converse-send-btn"
-                disabled={!draftInput.trim() || partnerTyping || evaluating}
+                disabled={!draftInput.trim() || partnerTyping || openingLoading || evaluating}
                 onClick={() => void handleSendMessage()}
                 aria-label="Send message"
                 className="btn-primary h-[42px] px-3.5 inline-flex items-center justify-center gap-1.5 text-xs font-medium shrink-0 disabled:opacity-45"
@@ -1258,40 +1669,73 @@ export function ConverseStudio({
                   </div>
                 )}
 
-                <EvaluationReportView
-                  report={{
-                    topic:
-                      evaluation.suggestedTitle ||
-                      `Live Chat: ${activeScenario.title}`,
-                    modeLabel: `Live Chat · ${MODE_LABELS[activeScenario.mode]}`,
-                    scores: evaluation.scores,
-                    metricNotes: evaluation.metricNotes,
-                    cefrLevel: evaluation.cefrLevel,
-                    toneVerdict: evaluation.toneVerdict,
-                    flowVerdict: evaluation.flowVerdict,
-                    internationalMetrics: deriveInternationalMetrics({
+                {evaluation.conversationBenchmark ? (
+                  <ConversationBenchmarkView
+                    data={{
+                      scenarioTitle:
+                        evaluation.suggestedTitle || activeScenario.title,
+                      partnerName: activeScenario.personaName,
+                      pace,
+                      benchmark: evaluation.conversationBenchmark,
                       scores: evaluation.scores,
-                      content: userTurnsText,
-                      internationalMetrics: evaluation.internationalMetrics,
-                    }),
-                    feedbackImplemented: evaluation.feedbackImplemented,
-                    feedbackCheck: evaluation.feedbackCheck,
-                    whatImproved: evaluation.whatImproved,
-                    whatImprovedPoints: evaluation.whatImprovedPoints,
-                    strictImprovements: evaluation.strictImprovements,
-                    pinpointedRewrites: evaluation.pinpointedRewrites,
-                    rewrittenSample: evaluation.rewrittenSample,
-                    grammarFixes: evaluation.grammarFixes,
-                    vocabUpgrades: evaluation.vocabUpgrades,
-                    routingMeta: evaluation.routingMeta,
-                    modelUsed: evaluation.modelUsed,
-                  }}
-                  defaultView="summary"
-                  savedSuccess={loggedSuccess}
-                  existingVocabSet={existingVocabSet}
-                  savedVocabKeys={savedVocabKeys}
-                  onSaveVocabItem={handleSaveVocabItem}
-                />
+                      cefrLevel: evaluation.cefrLevel,
+                      internationalMetrics: deriveInternationalMetrics({
+                        scores: evaluation.scores,
+                        content: userTurnsText,
+                        internationalMetrics: evaluation.internationalMetrics,
+                      }),
+                      feedbackImplemented: evaluation.feedbackImplemented,
+                      feedbackCheck: evaluation.feedbackCheck,
+                      whatImproved: evaluation.whatImproved,
+                      whatImprovedPoints: evaluation.whatImprovedPoints,
+                      strictImprovements: evaluation.strictImprovements,
+                      pinpointedRewrites: evaluation.pinpointedRewrites,
+                      grammarFixes: evaluation.grammarFixes,
+                      vocabUpgrades: evaluation.vocabUpgrades,
+                      routingMeta: evaluation.routingMeta,
+                      modelUsed: evaluation.modelUsed,
+                    }}
+                    savedSuccess={loggedSuccess}
+                    existingVocabSet={existingVocabSet}
+                    savedVocabKeys={savedVocabKeys}
+                    onSaveVocabItem={handleSaveVocabItem}
+                  />
+                ) : (
+                  <EvaluationReportView
+                    report={{
+                      topic:
+                        evaluation.suggestedTitle ||
+                        `Live Chat: ${activeScenario.title}`,
+                      modeLabel: `Live Chat · ${MODE_LABELS[activeScenario.mode]}`,
+                      scores: evaluation.scores,
+                      metricNotes: evaluation.metricNotes,
+                      cefrLevel: evaluation.cefrLevel,
+                      toneVerdict: evaluation.toneVerdict,
+                      flowVerdict: evaluation.flowVerdict,
+                      internationalMetrics: deriveInternationalMetrics({
+                        scores: evaluation.scores,
+                        content: userTurnsText,
+                        internationalMetrics: evaluation.internationalMetrics,
+                      }),
+                      feedbackImplemented: evaluation.feedbackImplemented,
+                      feedbackCheck: evaluation.feedbackCheck,
+                      whatImproved: evaluation.whatImproved,
+                      whatImprovedPoints: evaluation.whatImprovedPoints,
+                      strictImprovements: evaluation.strictImprovements,
+                      pinpointedRewrites: evaluation.pinpointedRewrites,
+                      rewrittenSample: evaluation.rewrittenSample,
+                      grammarFixes: evaluation.grammarFixes,
+                      vocabUpgrades: evaluation.vocabUpgrades,
+                      routingMeta: evaluation.routingMeta,
+                      modelUsed: evaluation.modelUsed,
+                    }}
+                    defaultView="summary"
+                    savedSuccess={loggedSuccess}
+                    existingVocabSet={existingVocabSet}
+                    savedVocabKeys={savedVocabKeys}
+                    onSaveVocabItem={handleSaveVocabItem}
+                  />
+                )}
 
                 <div className="pt-3 border-t border-border-subtle flex flex-wrap items-center justify-between gap-2">
                   <button

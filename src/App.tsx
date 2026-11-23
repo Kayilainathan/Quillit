@@ -2685,6 +2685,7 @@ export default function App() {
             todayISO={todayISO}
             theme={theme}
             onStartWriting={() => setActiveView('write')}
+            onStartConverse={() => setActiveView('converse')}
           />
         )}
 
