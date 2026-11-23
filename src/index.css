@@ -915,6 +915,40 @@
   animation-delay: 320ms;
 }
 
+/* Vocabulary Mastery Celebration Pulse (Threshold-Verified Mastered Items) */
+@keyframes vocabMasteredBadgePulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 transparent;
+  }
+  50% {
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--status-success) 20%, transparent);
+  }
+}
+
+@keyframes vocabMasteredRowCelebrate {
+  0% {
+    background-color: transparent;
+  }
+  35% {
+    background-color: color-mix(in srgb, var(--status-success) 10%, transparent);
+  }
+  70% {
+    background-color: color-mix(in srgb, var(--status-success) 4%, transparent);
+  }
+  100% {
+    background-color: transparent;
+  }
+}
+
+.vocab-mastered-pulse {
+  animation: vocabMasteredBadgePulse 3.2s ease-in-out infinite;
+}
+
+.vocab-row-mastered-celebrate {
+  animation: vocabMasteredRowCelebrate 2.2s ease-in-out 2;
+}
+
 /* Reduced Motion Compliance */
 @media (prefers-reduced-motion: reduce) {
   *,
@@ -955,7 +989,9 @@
   .welcome-pen-nib,
   .converse-msg-in,
   .converse-recast-in,
-  .converse-typing-dot {
+  .converse-typing-dot,
+  .vocab-mastered-pulse,
+  .vocab-row-mastered-celebrate {
     transform: none !important;
     animation: none !important;
   }

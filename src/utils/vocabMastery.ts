@@ -1,4 +1,4 @@
-import type { VocabEntry, WritingSession } from '../types';
+import type { GrammarFix, VocabEntry, WritingSession } from '../types';
 
 export type VocabMasteryTier = 'new' | 'emerging' | 'familiar' | 'mastered';
 
@@ -8,28 +8,46 @@ export interface VocabMasterySummary {
   tier: VocabMasteryTier;
   label: 'New' | 'Emerging' | 'Familiar' | 'Mastered';
   correctUses: number;
+  sessionCount: number;
   filledSegments: 0 | 1 | 2 | 3;
+  reachedUsageThreshold: boolean;
   manualMastered: boolean;
   matchedSessionDates: string[];
   tooltip: string;
 }
+
+const OPTIONAL_CONNECTORS = new Set([
+  'a',
+  'an',
+  'the',
+  'its',
+  'their',
+  'our',
+  'your',
+  'my',
+]);
 
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 /**
- * Extracts normalized candidate words or multi-word phrases from a VocabEntry's
- * target `betterAlternative` field (e.g., "stabilize / refine" -> ["stabilize", "refine"]).
+ * Extracts normalized candidate words or multi-word expressions from a VocabEntry's
+ * `betterAlternative` field. Handles slash/comma/semicolon/"or" lists and strips
+ * parenthetical glosses (e.g., "mitigate (risk) / stabilize" -> ["mitigate", "stabilize"]).
  */
 export function extractVocabCandidates(entry: VocabEntry): string[] {
   const raw = (entry.betterAlternative || '').trim();
   if (!raw) return [];
 
+  // Remove parenthetical notes like "(verb)" or "(technical)"
+  const withoutParens = raw.replace(/\([^)]*\)/g, ' ');
+  const parts = withoutParens.split(/\s*(?:\/|;|,|\bor\b)\s*/i);
+
   const seen = new Set<string>();
   const candidates: string[] = [];
 
-  for (const part of raw.split('/')) {
+  for (const part of parts) {
     const cleaned = part
       .replace(/^["'“”‘’(\[\s]+|["'“”‘’)\]\s.,!?;:]+$/g, '')
       .replace(/\s+/g, ' ')
@@ -44,58 +62,192 @@ export function extractVocabCandidates(entry: VocabEntry): string[] {
 }
 
 /**
- * Builds a word-boundary matcher that tolerates common English inflections
- * (silent-e, consonant-y, plurals/past/participle) for single words while
- * preventing substring false positives (e.g., "resolve" will not match "unresolved").
+ * Builds a bidirectional inflection-tolerant regex fragment for a single word.
+ * Matches base <-> past (-ed/-ied) <-> gerund (-ing) <-> plural/3rd-person (-s/-es/-ies)
+ * regardless of which tense/form is stored in `betterAlternative`.
  */
-export function buildVocabCandidateRegex(candidate: string): RegExp {
-  const normalized = candidate.trim().toLowerCase();
+function buildSingleWordPattern(rawWord: string): string {
+  const word = rawWord.trim().toLowerCase();
 
-  // Multi-word expression: match exact phrase with flexible internal whitespace,
-  // allowing simple plural/past inflection on the final word.
-  if (normalized.includes(' ')) {
-    const words = normalized.split(/\s+/);
-    const head = words.slice(0, -1).map(escapeRegExp).join('\\s+');
-    const tail = words[words.length - 1];
-    const tailPattern = buildSingleWordPattern(tail);
-    return new RegExp(`\\b${head}\\s+${tailPattern}\\b`, 'i');
+  // Handle hyphenated words cleanly (e.g. "closed-loop" matches "closed-loop" or "closed loop")
+  if (word.includes('-')) {
+    const segments = word.split('-').filter(Boolean);
+    if (segments.length > 1) {
+      return segments.map((seg) => buildSingleWordPattern(seg)).join('[\\s-]+');
+    }
   }
 
-  return new RegExp(`\\b${buildSingleWordPattern(normalized)}\\b`, 'i');
-}
+  // Keep short words / function words exact to avoid false positives
+  if (word.length < 4) {
+    return escapeRegExp(word);
+  }
 
-function buildSingleWordPattern(word: string): string {
-  const escaped = escapeRegExp(word);
-  if (word.endsWith('e') && word.length >= 4) {
+  // Consonant + ied / ies (e.g., "quantified", "applies", "clarifies", "stabilizes")
+  if (/(?:ied|ies)$/.test(word) && word.length >= 5) {
+    const stem = escapeRegExp(word.slice(0, -3));
+    return `${stem}(?:y|ies|ied|ying)`;
+  }
+
+  // -ing form (e.g., "stabilizing", "running", "calibrating")
+  if (word.endsWith('ing') && word.length >= 6) {
+    const base = word.slice(0, -3);
+    // Doubled trailing consonant like "mapping" -> "map"
+    if (base.length >= 3 && base[base.length - 1] === base[base.length - 2]) {
+      const shortStem = escapeRegExp(base.slice(0, -1));
+      const dbl = escapeRegExp(base[base.length - 1]);
+      return `${shortStem}(?:${dbl}(?:ed|ing)|e|es|ed|ing|s)?`;
+    }
+    const stem = escapeRegExp(base);
+    return `${stem}(?:e|es|ed|ing|s|y)?`;
+  }
+
+  // -ed form (e.g., "stabilized", "resolved", "pinpointed", "mapped")
+  if (word.endsWith('ed') && word.length >= 5) {
+    const base = word.slice(0, -2);
+    if (base.length >= 3 && base[base.length - 1] === base[base.length - 2]) {
+      const shortStem = escapeRegExp(base.slice(0, -1));
+      const dbl = escapeRegExp(base[base.length - 1]);
+      return `${shortStem}(?:${dbl}(?:ed|ing)|e|es|ed|ing|s)?`;
+    }
+    const stem = escapeRegExp(base);
+    return `${stem}(?:e|es|ed|ing|s)?`;
+  }
+
+  // -es form (e.g., "compensates", "operates", "reaches", "fixes")
+  if (word.endsWith('es') && word.length >= 5) {
+    if (/(?:ses|xes|zes|ches|shes)$/.test(word)) {
+      const stem = escapeRegExp(word.slice(0, -2));
+      return `${stem}(?:s|es|ed|ing)?`;
+    }
+    // Silent-e verb with -s (e.g. "compensates" -> "compensat" + e|es|ed|ing)
+    const stem = escapeRegExp(word.slice(0, -2));
+    return `${stem}(?:e|es|ed|ing)`;
+  }
+
+  // Trailing -s (excluding -ss, -us, -is like "focus", "basis", "address")
+  if (word.endsWith('s') && !/(?:ss|us|is)$/.test(word) && word.length >= 5) {
+    const stem = escapeRegExp(word.slice(0, -1));
+    return `${stem}(?:s|es|ed|ing)?`;
+  }
+
+  // Silent-e base word (e.g., "stabilize", "resolve", "calibrate")
+  if (word.endsWith('e') && !word.endsWith('ee') && word.length >= 4) {
     const stem = escapeRegExp(word.slice(0, -1));
     return `${stem}(?:e|es|ed|ing)`;
   }
-  if (word.endsWith('y') && word.length >= 4 && !/[aeiou]y$/.test(word)) {
+
+  // Consonant + y base word (e.g., "clarify", "quantify", "apply")
+  if (word.endsWith('y') && !/[aeiou]y$/.test(word) && word.length >= 4) {
+    const escaped = escapeRegExp(word);
     const stem = escapeRegExp(word.slice(0, -1));
     return `(?:${escaped}|${stem}(?:ies|ied)|${escaped}ing)`;
   }
+
+  const escaped = escapeRegExp(word);
   return `${escaped}(?:s|es|ed|ing)?`;
 }
 
 /**
- * Returns true if the session's grammar evaluator explicitly flagged this word/phrase
- * as a misuse and replaced it with something else (so misused occurrences are not
- * counted toward correct mastery).
+ * Builds a word-boundary matcher for either a single word or a multi-word expression.
+ * For multi-word phrases, inflects EVERY content word and allows optional articles
+ * ("a", "an", "the", "our", "its") to vary naturally.
+ */
+export function buildVocabCandidateRegex(candidate: string, flags = 'i'): RegExp {
+  const normalized = candidate.trim().toLowerCase();
+
+  if (normalized.includes(' ')) {
+    const words = normalized.split(/\s+/).filter(Boolean);
+    const parts: string[] = [];
+
+    for (let i = 0; i < words.length; i++) {
+      const token = words[i];
+      const isMiddleConnector =
+        i > 0 && i < words.length - 1 && OPTIONAL_CONNECTORS.has(token);
+      if (isMiddleConnector) {
+        parts.push(`(?:\\s+(?:a|an|the|its|their|our|your|my))?`);
+      } else {
+        const prefix = parts.length > 0 ? '\\s+' : '';
+        parts.push(`${prefix}${buildSingleWordPattern(token)}`);
+      }
+    }
+
+    return new RegExp(`\\b${parts.join('')}\\b`, flags);
+  }
+
+  return new RegExp(`\\b${buildSingleWordPattern(normalized)}\\b`, flags);
+}
+
+/**
+ * Counts how many occurrences of a candidate phrase were explicitly flagged and
+ * replaced away as a misuse in `grammarFixes`.
+ */
+export function countFlaggedMisuses(
+  candidateRegex: RegExp,
+  grammarFixes?: GrammarFix[]
+): number {
+  if (!Array.isArray(grammarFixes) || grammarFixes.length === 0) {
+    return 0;
+  }
+
+  const testRegex = new RegExp(candidateRegex.source, 'i');
+  let misuses = 0;
+  for (const fix of grammarFixes) {
+    const orig = (fix.original || '').trim();
+    const corr = (fix.corrected || '').trim();
+    if (!orig) continue;
+    if (testRegex.test(orig) && !testRegex.test(corr)) {
+      misuses += 1;
+    }
+  }
+  return misuses;
+}
+
+/**
+ * Backwards-compatible boolean check for whether a candidate was flagged as misused in a session.
  */
 export function wasCandidateFlaggedAsError(
   candidateRegex: RegExp,
   session: WritingSession
 ): boolean {
-  if (!Array.isArray(session.grammarFixes) || session.grammarFixes.length === 0) {
-    return false;
+  return countFlaggedMisuses(candidateRegex, session.grammarFixes) > 0;
+}
+
+/**
+ * Counts verified correct occurrences of a VocabEntry inside a single text body
+ * (deduplicating overlapping candidate spans and subtracting any grammar-flagged misuses).
+ */
+export function countCorrectUsesInText(
+  entry: VocabEntry,
+  text: string,
+  grammarFixes?: GrammarFix[]
+): number {
+  const trimmed = (text || '').trim();
+  if (!trimmed) return 0;
+
+  const candidates = extractVocabCandidates(entry);
+  if (candidates.length === 0) return 0;
+
+  const matchedSpans: Array<[number, number]> = [];
+  let flaggedMisuses = 0;
+
+  for (const candidate of candidates) {
+    const globalRegex = buildVocabCandidateRegex(candidate, 'gi');
+    const localMisuses = countFlaggedMisuses(globalRegex, grammarFixes);
+    flaggedMisuses += localMisuses;
+
+    for (const match of trimmed.matchAll(globalRegex)) {
+      const start = match.index ?? 0;
+      const end = start + match[0].length;
+      const overlapsExisting = matchedSpans.some(
+        ([s, e]) => start < e && end > s
+      );
+      if (!overlapsExisting) {
+        matchedSpans.push([start, end]);
+      }
+    }
   }
 
-  return session.grammarFixes.some((fix) => {
-    const orig = (fix.original || '').trim();
-    const corr = (fix.corrected || '').trim();
-    if (!orig) return false;
-    return candidateRegex.test(orig) && !candidateRegex.test(corr);
-  });
+  return Math.max(0, matchedSpans.length - flaggedMisuses);
 }
 
 /**
@@ -106,21 +258,23 @@ export function computeVocabMastery(
   entry: VocabEntry,
   sessions: WritingSession[]
 ): VocabMasterySummary {
-  const candidates = extractVocabCandidates(entry);
-  const candidateMatchers = candidates.map((c) => buildVocabCandidateRegex(c));
   const matchedDates: string[] = [];
+  let totalVerifiedUses = 0;
 
-  if (candidateMatchers.length > 0 && sessions.length > 0) {
+  if (sessions.length > 0) {
     for (const session of sessions) {
-      if (session.status !== 'Completed') continue;
+      if (session.status === 'Draft') continue;
       const content = (session.content || '').trim();
       if (!content) continue;
 
-      const usedCorrectly = candidateMatchers.some(
-        (regex) => regex.test(content) && !wasCandidateFlaggedAsError(regex, session)
+      const usesInSession = countCorrectUsesInText(
+        entry,
+        content,
+        session.grammarFixes
       );
 
-      if (usedCorrectly) {
+      if (usesInSession > 0) {
+        totalVerifiedUses += usesInSession;
         matchedDates.push(session.date);
       }
     }
@@ -129,7 +283,13 @@ export function computeVocabMastery(
   // Most recent dates first
   matchedDates.sort((a, b) => b.localeCompare(a));
 
-  const correctUses = matchedDates.length;
+  const persistedFloor =
+    typeof entry.correctUseCount === 'number' && Number.isFinite(entry.correctUseCount)
+      ? Math.max(0, Math.floor(entry.correctUseCount))
+      : 0;
+
+  const correctUses = Math.max(totalVerifiedUses, persistedFloor);
+  const sessionCount = matchedDates.length;
   const recentSummary =
     matchedDates.length > 0
       ? ` (${matchedDates.slice(0, 3).join(', ')}${matchedDates.length > 3 ? ', ...' : ''})`
@@ -140,10 +300,16 @@ export function computeVocabMastery(
       tier: 'mastered',
       label: 'Mastered',
       correctUses,
+      sessionCount,
       filledSegments: 3,
+      reachedUsageThreshold: true,
       manualMastered: false,
       matchedSessionDates: matchedDates,
-      tooltip: `Mastery Level: Mastered — Used correctly in ${correctUses} sessions${recentSummary}.`,
+      tooltip: `Mastery Level: Mastered — Used correctly ${correctUses} times${
+        sessionCount > 0
+          ? ` across ${sessionCount} ${sessionCount === 1 ? 'session' : 'sessions'}${recentSummary}`
+          : ''
+      }.`,
     };
   }
 
@@ -152,10 +318,12 @@ export function computeVocabMastery(
       tier: 'familiar',
       label: 'Familiar',
       correctUses,
+      sessionCount,
       filledSegments: 2,
+      reachedUsageThreshold: false,
       manualMastered: false,
       matchedSessionDates: matchedDates,
-      tooltip: `Mastery Level: Familiar — Used correctly in 2 sessions${recentSummary}. Use correctly in 1 more session to reach Mastered.`,
+      tooltip: `Mastery Level: Familiar — Used correctly 2 times${recentSummary}. 1 more correct use to reach Mastered.`,
     };
   }
 
@@ -164,10 +332,12 @@ export function computeVocabMastery(
       tier: 'emerging',
       label: 'Emerging',
       correctUses,
+      sessionCount,
       filledSegments: 1,
+      reachedUsageThreshold: false,
       manualMastered: false,
       matchedSessionDates: matchedDates,
-      tooltip: `Mastery Level: Emerging — Used correctly in 1 session${recentSummary}. Use correctly in 2 more sessions to reach Mastered.`,
+      tooltip: `Mastery Level: Emerging — Used correctly 1 time${recentSummary}. 2 more correct uses to reach Mastered.`,
     };
   }
 
@@ -176,11 +346,13 @@ export function computeVocabMastery(
       tier: 'mastered',
       label: 'Mastered',
       correctUses: 0,
+      sessionCount: 0,
       filledSegments: 3,
+      reachedUsageThreshold: false,
       manualMastered: true,
       matchedSessionDates: [],
       tooltip:
-        'Mastery Level: Mastered (marked manually) — 0 verified session uses recorded yet.',
+        'Mastery Level: Mastered (marked manually) — Use it in Write or Converse sessions to log verified uses.',
     };
   }
 
@@ -188,11 +360,13 @@ export function computeVocabMastery(
     tier: 'new',
     label: 'New',
     correctUses: 0,
+    sessionCount: 0,
     filledSegments: 0,
+    reachedUsageThreshold: false,
     manualMastered: false,
     matchedSessionDates: [],
     tooltip:
-      'Mastery Level: New — Not yet used in a completed session. Use it naturally in 3 sessions to master.',
+      'Mastery Level: New — Not yet used in a completed session. Use it correctly 3 times across writing or live chat sessions to master.',
   };
 }
 

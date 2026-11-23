@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {
   computeVocabMastery,
   computeVocabularyMasteryMap,
+  countCorrectUsesInText,
   extractVocabCandidates,
 } from './vocabMastery';
 import type { VocabEntry, WritingSession } from '../types';
@@ -56,11 +57,15 @@ function makeSession(overrides: Partial<WritingSession> = {}): WritingSession {
   };
 }
 
-test('extractVocabCandidates splits slash alternatives and trims punctuation', () => {
+test('extractVocabCandidates splits slash, comma, and "or" lists and strips parenthetical notes', () => {
   const entry = makeVocab({
-    betterAlternative: '"stabilize" / refine the output / a',
+    betterAlternative: '"stabilize" (verb) / refine the output, compensate or a',
   });
-  assert.deepEqual(extractVocabCandidates(entry), ['stabilize', 'refine the output']);
+  assert.deepEqual(extractVocabCandidates(entry), [
+    'stabilize',
+    'refine the output',
+    'compensate',
+  ]);
 });
 
 test('computeVocabMastery returns New (0/3) when unused or only present in Draft sessions', () => {
@@ -83,11 +88,37 @@ test('computeVocabMastery returns New (0/3) when unused or only present in Draft
   assert.equal(summary.label, 'New');
   assert.equal(summary.correctUses, 0);
   assert.equal(summary.filledSegments, 0);
+  assert.equal(summary.reachedUsageThreshold, false);
   assert.equal(summary.manualMastered, false);
 });
 
-test('computeVocabMastery counts inflections and multi-word expressions across completed sessions without substring false positives', () => {
-  const entry = makeVocab({ betterAlternative: 'resolve / proportional correction' });
+test('computeVocabMastery matches stored past/plural/gerund headwords bidirectionally against base and inflected text', () => {
+  const pastEntry = makeVocab({ betterAlternative: 'stabilized' });
+  const thirdPersonEntry = makeVocab({ betterAlternative: 'compensates' });
+  const iedEntry = makeVocab({ betterAlternative: 'quantified' });
+
+  const sessions = [
+    makeSession({
+      id: 's1',
+      date: '2026-11-10',
+      content: 'The feedback loop helps stabilize the signal and compensate for noise.',
+    }),
+    makeSession({
+      id: 's2',
+      date: '2026-11-14',
+      content: 'We quantify residual drift while stabilizing the thermal loop.',
+    }),
+  ];
+
+  assert.equal(computeVocabMastery(pastEntry, sessions).correctUses, 2);
+  assert.equal(computeVocabMastery(thirdPersonEntry, sessions).correctUses, 1);
+  assert.equal(computeVocabMastery(iedEntry, sessions).correctUses, 1);
+});
+
+test('computeVocabMastery matches verb-first multi-word phrases with flexible articles without substring false positives', () => {
+  const entry = makeVocab({
+    betterAlternative: 'applies a proportional correction / resolve',
+  });
   const sessions = [
     makeSession({
       id: 's1',
@@ -97,7 +128,7 @@ test('computeVocabMastery counts inflections and multi-word expressions across c
     makeSession({
       id: 's2',
       date: '2026-11-14',
-      content: 'The controller applies a proportional correction automatically.',
+      content: 'The controller applied proportional correction automatically.',
     }),
     makeSession({
       id: 's3',
@@ -115,7 +146,7 @@ test('computeVocabMastery counts inflections and multi-word expressions across c
   assert.deepEqual(summary.matchedSessionDates, ['2026-11-14', '2026-11-10']);
 });
 
-test('computeVocabMastery excludes sessions where grammarFixes flagged the word as misused', () => {
+test('computeVocabMastery excludes occurrences flagged as misused in grammarFixes', () => {
   const entry = makeVocab({ betterAlternative: 'improvise' });
   const sessions = [
     makeSession({
@@ -154,7 +185,7 @@ test('computeVocabMastery excludes sessions where grammarFixes flagged the word 
   assert.deepEqual(summary.matchedSessionDates, ['2026-11-16']);
 });
 
-test('computeVocabMastery reaches Mastered at 3+ correct sessions and preserves exact higher counts', () => {
+test('computeVocabMastery reaches Mastered threshold at 3+ correct uses across sessions and flags reachedUsageThreshold', () => {
   const entry = makeVocab({ betterAlternative: 'clarify' });
   const sessions = [
     makeSession({ id: 's1', date: '2026-11-01', content: 'Let me clarify the scope.' }),
@@ -168,10 +199,26 @@ test('computeVocabMastery reaches Mastered at 3+ correct sessions and preserves 
   assert.equal(summary.label, 'Mastered');
   assert.equal(summary.correctUses, 4);
   assert.equal(summary.filledSegments, 3);
+  assert.equal(summary.reachedUsageThreshold, true);
   assert.equal(summary.manualMastered, false);
 });
 
-test('computeVocabMastery respects manual mastered override when 0 sessions matched', () => {
+test('countCorrectUsesInText counts multiple verified uses in one text and honors persisted correctUseCount floor', () => {
+  const entry = makeVocab({ betterAlternative: 'calibrate', correctUseCount: 3 });
+  assert.equal(
+    countCorrectUsesInText(
+      entry,
+      'First we calibrate the probe, then we calibrated the backup sensor.'
+    ),
+    2
+  );
+  const summary = computeVocabMastery(entry, []);
+  assert.equal(summary.tier, 'mastered');
+  assert.equal(summary.correctUses, 3);
+  assert.equal(summary.reachedUsageThreshold, true);
+});
+
+test('computeVocabMastery distinguishes manual mastered override from threshold-verified mastery', () => {
   const entry = makeVocab({ betterAlternative: 'calibrate', mastered: true });
   const map = computeVocabularyMasteryMap([entry], []);
   const summary = map.get(entry.id);
@@ -180,5 +227,6 @@ test('computeVocabMastery respects manual mastered override when 0 sessions matc
   assert.equal(summary.label, 'Mastered');
   assert.equal(summary.correctUses, 0);
   assert.equal(summary.filledSegments, 3);
+  assert.equal(summary.reachedUsageThreshold, false);
   assert.equal(summary.manualMastered, true);
 });

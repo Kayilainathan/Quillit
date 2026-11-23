@@ -79,24 +79,40 @@ test('buildConversationTranscript separates user-only text from full dialogue tr
   assert.match(dialogueTranscript, /You: I am tuning/);
 });
 
-test('selectConversationTurnRoute favors Flash Lite fast path and fails over to Hydrogen on cooldown', () => {
+test('selectConversationTurnRoute favors Flash Lite fast path and cascades across all 5 Gemini generations on cooldown', () => {
   const fastRoute = selectConversationTurnRoute({ pace: 'natural', turnCount: 2 });
   assert.equal(fastRoute.primary.model, 'gemini-3.1-flash-lite');
   assert.equal(fastRoute.primary.thinkingLabel, 'MINIMAL');
+  assert.ok(fastRoute.cascade.length >= 5);
 
   const challengingRoute = selectConversationTurnRoute({ pace: 'challenging', turnCount: 2 });
   assert.equal(challengingRoute.primary.model, 'gemini-3.1-flash-lite');
   assert.equal(challengingRoute.primary.thinkingLabel, 'LOW');
 
   const now = 100_000;
-  const failoverRoute = selectConversationTurnRoute({
+  // When Flash Lite 3.1 cools down, natural pace cascades immediately to Gemini 3 Flash Low
+  const failover1 = selectConversationTurnRoute({
     pace: 'natural',
     turnCount: 3,
     cooldownUntil: { 'gemini-3.1-flash-lite': now + 20_000 },
     now,
   });
-  assert.equal(failoverRoute.primary.model, 'gemini-4-hydrogen');
-  assert.equal(failoverRoute.primary.thinkingLabel, 'LOW');
+  assert.equal(failover1.primary.model, 'gemini-3-flash-preview');
+  assert.equal(failover1.primary.thinkingLabel, 'LOW');
+
+  // When Flash Lite 3.1, Gemini 3 Flash, and Hydrogen all cool down -> Flash 2.5 Lite safety floor
+  const failoverDeep = selectConversationTurnRoute({
+    pace: 'natural',
+    turnCount: 3,
+    cooldownUntil: {
+      'gemini-3.1-flash-lite': now + 20_000,
+      'gemini-3-flash-preview': now + 20_000,
+      'gemini-4-hydrogen': now + 20_000,
+    },
+    now,
+  });
+  assert.equal(failoverDeep.primary.model, 'gemini-2.5-flash-lite');
+  assert.equal(failoverDeep.primary.thinkingLabel, 'STANDARD');
 });
 
 test('sanitizeConversationTurnResponse grounds recasts strictly to user draft and strips robotic AI prefixes', () => {

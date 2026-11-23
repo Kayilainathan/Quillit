@@ -1,4 +1,4 @@
-import { useMemo, useState, type FormEvent } from 'react';
+import { useEffect, useMemo, useState, type FormEvent } from 'react';
 import {
   BookMarked,
   Check,
@@ -36,6 +36,30 @@ interface VocabularyViewProps {
 
 type VocabSubView = 'lexicon' | 'recall';
 
+const MASTERED_CELEBRATED_KEY = 'quillit_vocab_mastered_celebrated_v1';
+
+function loadCelebratedIds(): Set<string> {
+  try {
+    const raw = localStorage.getItem(MASTERED_CELEBRATED_KEY);
+    if (!raw) return new Set();
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? new Set(parsed.map(String)) : new Set();
+  } catch {
+    return new Set();
+  }
+}
+
+function saveCelebratedIds(ids: Set<string>): void {
+  try {
+    localStorage.setItem(
+      MASTERED_CELEBRATED_KEY,
+      JSON.stringify(Array.from(ids).slice(-400))
+    );
+  } catch {
+    // ignore storage quota errors
+  }
+}
+
 function MasteryLevelBadge({
   mastery,
 }: {
@@ -59,14 +83,19 @@ function MasteryLevelBadge({
         ? 'bg-accent'
         : 'bg-ink-secondary';
 
+  const shouldPulse = mastery.reachedUsageThreshold;
+
   return (
     <span
       data-testid="vocab-mastery-badge"
       data-mastery-tier={mastery.tier}
       data-mastery-uses={mastery.correctUses}
+      data-mastery-pulse={shouldPulse ? 'true' : 'false'}
       title={mastery.tooltip}
       aria-label={mastery.tooltip}
-      className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded border text-[11px] leading-none whitespace-nowrap select-none ${containerClasses}`}
+      className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded border text-[11px] leading-none whitespace-nowrap select-none ${containerClasses} ${
+        shouldPulse ? 'vocab-mastered-pulse' : ''
+      }`}
     >
       <span
         aria-hidden="true"
@@ -84,12 +113,16 @@ function MasteryLevelBadge({
         ))}
       </span>
       <span className="font-medium">{mastery.label}</span>
-      <span aria-hidden="true" className="opacity-55">
-        ·
-      </span>
-      <span className="font-mono-tabular font-medium">
-        {mastery.correctUses}×
-      </span>
+      {!mastery.manualMastered && (
+        <>
+          <span aria-hidden="true" className="opacity-55">
+            ·
+          </span>
+          <span className="font-mono-tabular font-medium">
+            {mastery.correctUses}×
+          </span>
+        </>
+      )}
     </span>
   );
 }
@@ -136,6 +169,38 @@ export function VocabularyView({
     () => computeVocabularyMasteryMap(vocabulary, sessions),
     [vocabulary, sessions]
   );
+
+  // Celebrate entries the moment they cross the 3x usage threshold into Mastered
+  const [newlyMasteredIds, setNewlyMasteredIds] = useState<Set<string>>(
+    () => new Set()
+  );
+
+  useEffect(() => {
+    const celebrated = loadCelebratedIds();
+    const freshIds: string[] = [];
+
+    for (const [id, summary] of masteryMap.entries()) {
+      if (summary.reachedUsageThreshold && !celebrated.has(id)) {
+        freshIds.push(id);
+        celebrated.add(id);
+      }
+    }
+
+    if (freshIds.length === 0) return;
+
+    saveCelebratedIds(celebrated);
+    setNewlyMasteredIds((prev) => new Set([...prev, ...freshIds]));
+
+    const timer = window.setTimeout(() => {
+      setNewlyMasteredIds((prev) => {
+        const next = new Set(prev);
+        for (const id of freshIds) next.delete(id);
+        return next;
+      });
+    }, 4800);
+
+    return () => window.clearTimeout(timer);
+  }, [masteryMap]);
 
   // Resolve effective category for every entry (AI category if present, else deterministic local)
   const categorizedEntries = useMemo(
@@ -250,7 +315,7 @@ export function VocabularyView({
             Personal Lexicon
           </h1>
           <p className="text-xs sm:text-sm text-ink-secondary">
-            Alphabetical A to Z word bank organized by writing craft. Words auto-graduate to Mastered when used naturally in drafts.
+            Alphabetical A to Z word bank. Use any word correctly 3× in Write or Converse to reach Mastered.
           </p>
         </div>
 
@@ -672,11 +737,14 @@ export function VocabularyView({
                         tier: item.mastered ? 'mastered' : 'new',
                         label: item.mastered ? 'Mastered' : 'New',
                         correctUses: 0,
+                        sessionCount: 0,
                         filledSegments: item.mastered ? 3 : 0,
+                        reachedUsageThreshold: false,
                         manualMastered: item.mastered,
                         matchedSessionDates: [],
                         tooltip: '',
                       };
+                      const isCelebrating = newlyMasteredIds.has(item.id);
                       const showReplacement =
                         item.used.trim().toLowerCase() !==
                         item.betterAlternative.trim().toLowerCase();
@@ -685,7 +753,10 @@ export function VocabularyView({
                         <div
                           key={item.id}
                           data-testid={`vocab-entry-${item.id}`}
-                          className="row-tactile px-5 py-4 flex flex-col sm:flex-row sm:items-start justify-between gap-4"
+                          data-mastery-celebrating={isCelebrating ? 'true' : 'false'}
+                          className={`row-tactile px-5 py-4 flex flex-col sm:flex-row sm:items-start justify-between gap-4 ${
+                            isCelebrating ? 'vocab-row-mastered-celebrate' : ''
+                          }`}
                         >
                           <div className="space-y-1.5 min-w-0">
                             <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1">
@@ -727,16 +798,26 @@ export function VocabularyView({
                               <span aria-hidden="true">·</span>
                               <span
                                 className={
-                                  mastery.correctUses > 0
-                                    ? 'font-mono-tabular text-ink-secondary'
-                                    : 'text-ink-muted'
+                                  mastery.reachedUsageThreshold
+                                    ? 'font-mono-tabular font-medium text-status-success'
+                                    : mastery.correctUses > 0
+                                      ? 'font-mono-tabular text-ink-secondary'
+                                      : 'text-ink-muted'
                                 }
                               >
-                                {mastery.correctUses === 0
-                                  ? 'Not yet used in sessions'
-                                  : `Used correctly in ${mastery.correctUses} ${
-                                      mastery.correctUses === 1 ? 'session' : 'sessions'
-                                    }`}
+                                {mastery.correctUses > 0
+                                  ? `Used correctly ${mastery.correctUses}×${
+                                      mastery.sessionCount > 0
+                                        ? ` across ${mastery.sessionCount} ${
+                                            mastery.sessionCount === 1
+                                              ? 'session'
+                                              : 'sessions'
+                                          }`
+                                        : ''
+                                    }`
+                                  : mastery.manualMastered
+                                    ? 'Marked mastered manually · 0 session uses'
+                                    : 'Use correctly 3× in Write or Converse to master'}
                               </span>
                             </div>
                           </div>

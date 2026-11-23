@@ -6,6 +6,11 @@ import type {
   StudentProfile,
 } from '../types';
 
+import {
+  formatTierLabel,
+  type ActiveEvalModel,
+} from './evaluationRouter';
+
 export interface ConversationMetrics {
   userTurnCount: number;
   partnerTurnCount: number;
@@ -18,8 +23,8 @@ export interface ConversationMetrics {
 }
 
 export interface ConversationTurnRouteStep {
-  model: 'gemini-3.1-flash-lite' | 'gemini-4-hydrogen';
-  thinkingLabel: 'MINIMAL' | 'LOW';
+  model: ActiveEvalModel;
+  thinkingLabel: 'MINIMAL' | 'LOW' | 'STANDARD';
   tierLabel: string;
 }
 
@@ -291,52 +296,87 @@ export function buildConversationTranscript(
 
 /**
  * Selects the fastest suitable Gemini model & thinking tier for real-time texting turns.
- * Live texting prioritizes <2s latency (Flash Lite MINIMAL/LOW) with automatic failover to Hydrogen LOW.
+ * Cascades seamlessly across 5 non-deprecated Gemini generations (Flash Lite 3.1 -> Flash 2.5 Lite
+ * -> Gemini 3 Flash -> Gemini 2.5 Flash -> Hydrogen) so live conversation never stalls.
  */
 export function selectConversationTurnRoute(input: {
   pace: ConversationPace;
   turnCount: number;
-  cooldownUntil?: Partial<Record<'gemini-3.1-flash-lite' | 'gemini-4-hydrogen', number>>;
+  cooldownUntil?: Partial<Record<ActiveEvalModel, number>>;
+  unsupportedUntil?: Partial<Record<ActiveEvalModel, number>>;
   now?: number;
 }): ConversationTurnRoutePlan {
   const now = input.now ?? Date.now();
-  const flashAvailable =
-    (input.cooldownUntil?.['gemini-3.1-flash-lite'] ?? 0) <= now;
-  const hydrogenAvailable =
-    (input.cooldownUntil?.['gemini-4-hydrogen'] ?? 0) <= now;
+  const cooldown = input.cooldownUntil ?? {};
+  const unsupported = input.unsupportedUntil ?? {};
 
-  const flashLow: ConversationTurnRouteStep = {
-    model: 'gemini-3.1-flash-lite',
-    thinkingLabel: 'LOW',
-    tierLabel: 'Flash Lite · Low',
-  };
-  const flashMinimal: ConversationTurnRouteStep = {
+  const isUnsupported = (model: ActiveEvalModel): boolean =>
+    (unsupported[model] ?? 0) > now;
+  const isCoolingDown = (model: ActiveEvalModel): boolean =>
+    (cooldown[model] ?? 0) > now;
+
+  const flashLiteInstant: ConversationTurnRouteStep = {
     model: 'gemini-3.1-flash-lite',
     thinkingLabel: 'MINIMAL',
-    tierLabel: 'Flash Lite · Instant',
+    tierLabel: formatTierLabel('gemini-3.1-flash-lite', 'MINIMAL'),
+  };
+  const flashLiteLow: ConversationTurnRouteStep = {
+    model: 'gemini-3.1-flash-lite',
+    thinkingLabel: 'LOW',
+    tierLabel: formatTierLabel('gemini-3.1-flash-lite', 'LOW'),
+  };
+  const flash25Lite: ConversationTurnRouteStep = {
+    model: 'gemini-2.5-flash-lite',
+    thinkingLabel: 'STANDARD',
+    tierLabel: formatTierLabel('gemini-2.5-flash-lite', 'STANDARD'),
+  };
+  const gemini3FlashLow: ConversationTurnRouteStep = {
+    model: 'gemini-3-flash-preview',
+    thinkingLabel: 'LOW',
+    tierLabel: formatTierLabel('gemini-3-flash-preview', 'LOW'),
+  };
+  const gemini25Flash: ConversationTurnRouteStep = {
+    model: 'gemini-2.5-flash',
+    thinkingLabel: 'STANDARD',
+    tierLabel: formatTierLabel('gemini-2.5-flash', 'STANDARD'),
   };
   const hydrogenLow: ConversationTurnRouteStep = {
     model: 'gemini-4-hydrogen',
     thinkingLabel: 'LOW',
-    tierLabel: 'Hydrogen · Low',
+    tierLabel: formatTierLabel('gemini-4-hydrogen', 'LOW'),
   };
 
   const preferLow = input.pace === 'challenging' || input.turnCount >= 6;
   const preferredOrder: ConversationTurnRouteStep[] = preferLow
-    ? [flashLow, hydrogenLow, flashMinimal]
-    : [flashMinimal, flashLow, hydrogenLow];
+    ? [
+        flashLiteLow,
+        gemini3FlashLow,
+        hydrogenLow,
+        gemini25Flash,
+        flash25Lite,
+        flashLiteInstant,
+      ]
+    : [
+        flashLiteInstant,
+        gemini3FlashLow,
+        hydrogenLow,
+        flash25Lite,
+        gemini25Flash,
+        flashLiteLow,
+      ];
 
-  const available = preferredOrder.filter((step) =>
-    step.model === 'gemini-3.1-flash-lite' ? flashAvailable : hydrogenAvailable
-  );
-  const cascade = available.length > 0 ? available : preferredOrder;
+  const supported = preferredOrder.filter((step) => !isUnsupported(step.model));
+  const pool = supported.length > 0 ? supported : preferredOrder;
+  const healthy = pool.filter((step) => !isCoolingDown(step.model));
+  const cooled = pool.filter((step) => isCoolingDown(step.model));
+  const cascade = [...healthy, ...cooled];
 
   return {
     primary: cascade[0],
     cascade,
     reason: preferLow
-      ? 'Nuanced live reply with fast low-latency reasoning'
-      : 'Real-time conversational texting speed',
+      ? 'Nuanced live reply with fast multi-generation failover'
+      : 'Real-time conversational texting speed with zero-stall failover',
   };
 }
 

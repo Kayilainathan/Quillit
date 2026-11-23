@@ -44,6 +44,10 @@ import {
   applyAiCategoriesToVocabulary,
   classifyVocabEntryLocally,
 } from './utils/vocabCatalog';
+import {
+  MASTERY_TARGET_USES,
+  countCorrectUsesInText,
+} from './utils/vocabMastery';
 import { formatWritingDaysSummary } from './utils/fastEvaluate';
 import { decryptVault, encryptVault, isEncryptedEnvelope } from './utils/crypto';
 import { getApiUrl, safeParseJsonResponse } from './utils/apiBase';
@@ -1751,26 +1755,44 @@ export default function App() {
           )
         : prev.calendarSlots;
 
-      const deterministicIds = detectPracticingVocabUsed(
-        newSession.content,
-        prev.vocabulary
+      const deterministicIds = new Set(
+        detectPracticingVocabUsed(newSession.content, prev.vocabulary)
       );
       const aiPhraseSet = new Set(
         (aiMasteredWords ?? []).map((w) => w.trim().toLowerCase())
       );
-      const promotedIdSet = new Set(deterministicIds);
-      for (const v of prev.vocabulary) {
-        if (!v.mastered && aiPhraseSet.has(v.betterAlternative.toLowerCase())) {
-          promotedIdSet.add(v.id);
-        }
-      }
+      const promotedIdSet = new Set<string>();
 
       const updatedVocab = prev.vocabulary.map((v) => {
-        if (promotedIdSet.has(v.id) && !v.mastered) {
+        const textUses =
+          newSession.status === 'Draft'
+            ? 0
+            : countCorrectUsesInText(
+                v,
+                newSession.content,
+                newSession.grammarFixes
+              );
+        const aiCredited = aiPhraseSet.has(v.betterAlternative.toLowerCase());
+        const matchedThisSession =
+          textUses > 0 || aiCredited || deterministicIds.has(v.id);
+
+        if (!matchedThisSession) return v;
+
+        const addedUses = Math.max(textUses, aiCredited || deterministicIds.has(v.id) ? 1 : 0);
+        const nextCount = (v.correctUseCount ?? 0) + addedUses;
+        const shouldMarkMastered =
+          v.mastered || aiCredited || nextCount >= MASTERY_TARGET_USES;
+
+        if (shouldMarkMastered && !v.mastered) {
           promotedWords.push(v.betterAlternative);
-          return { ...v, mastered: true };
+          promotedIdSet.add(v.id);
         }
-        return v;
+
+        return {
+          ...v,
+          mastered: shouldMarkMastered,
+          correctUseCount: nextCount,
+        };
       });
 
       if (canUseFirestore && cloudUser) {

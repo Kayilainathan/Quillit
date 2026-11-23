@@ -76,6 +76,7 @@ export interface VocabEntry {
   mastered: boolean;
   sessionId?: string;
   aiCategory?: string;
+  correctUseCount?: number;
 }
 
 export interface RewrittenSample {
@@ -106,7 +107,7 @@ export interface PinpointedRewrite {
 
 export interface EvaluationRoutingMeta {
   model: string;
-  thinkingLevel: 'HIGH' | 'MEDIUM' | 'LOW' | 'MINIMAL' | 'LOCAL';
+  thinkingLevel: 'HIGH' | 'MEDIUM' | 'LOW' | 'MINIMAL' | 'STANDARD' | 'LOCAL';
   tierLabel: string;
   reason: string;
   latencyMs?: number;

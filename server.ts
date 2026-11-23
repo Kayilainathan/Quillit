@@ -18,7 +18,13 @@ import {
   sanitizeWhatImprovedPoints,
 } from './src/utils/evaluationCalibration';
 import {
+  ACTIVE_GEMINI_TEXT_MODELS,
+  MODEL_CAPABILITIES,
+  getModelStepTimeoutMs,
+  normalizeThinkingLabel,
   selectDynamicEvaluationRoute,
+  selectUtilityModelCascade,
+  supportsThinkingLevel,
   type ActiveEvalModel,
   type ActiveThinkingLabel,
   type EvaluationRouteStep,
@@ -36,17 +42,29 @@ const __dirname = path.dirname(__filename);
 const PORT = 3000;
 
 /**
- * Ordered model cascade from primary high-speed flash model to ultra-light lower-quota fallback.
- * When a model hits 429/503 or quota limits, the server immediately switches (<5ms) to the next tier
- * and places the rate-limited model on a cooldown timer so subsequent requests skip straight to the available lower model.
+ * Multi-generation active Gemini text model cascade (zero deprecated 1.5/2.0 models).
+ * When any tier hits 429/503, STEP_TIMEOUT, or 404/unsupported, the server immediately
+ * cascades (<5ms) down to the next healthy generation (Gemini 4 Hydrogen -> Gemini 3 Flash
+ * -> Flash Lite 3.1 -> Gemini 2.5 Flash -> Flash 2.5 Lite) so Evaluation and all AI routes never stall.
  */
-const MODEL_TIERS = ['gemini-4-hydrogen', 'gemini-3.1-flash-lite'] as const;
-type ModelTier = (typeof MODEL_TIERS)[number];
-type CoachTaskKind = 'evaluate' | 'realtime' | 'schedule' | 'pivot' | 'topics';
+const MODEL_TIERS = ACTIVE_GEMINI_TEXT_MODELS;
+type ModelTier = ActiveEvalModel;
+type CoachTaskKind = 'realtime' | 'schedule' | 'pivot' | 'topics';
 
 const modelCooldownUntil: Record<ModelTier, number> = {
   'gemini-4-hydrogen': 0,
+  'gemini-3-flash-preview': 0,
   'gemini-3.1-flash-lite': 0,
+  'gemini-2.5-flash': 0,
+  'gemini-2.5-flash-lite': 0,
+};
+
+const modelUnsupportedUntil: Record<ModelTier, number> = {
+  'gemini-4-hydrogen': 0,
+  'gemini-3-flash-preview': 0,
+  'gemini-3.1-flash-lite': 0,
+  'gemini-2.5-flash': 0,
+  'gemini-2.5-flash-lite': 0,
 };
 
 let lastSuccessfulModel: ModelTier = 'gemini-4-hydrogen';
@@ -144,28 +162,101 @@ function isQuotaOrOverloadError(err: unknown): boolean {
   );
 }
 
+function isUnsupportedOrNotFoundError(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err);
+  return (
+    msg.includes('404') ||
+    msg.includes('NOT_FOUND') ||
+    msg.includes('not found') ||
+    msg.includes('is not supported') ||
+    msg.includes('PERMISSION_DENIED') ||
+    msg.includes('403')
+  );
+}
+
+function isInvalidArgumentError(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err);
+  return msg.includes('400') || msg.includes('INVALID_ARGUMENT');
+}
+
+function isTimeoutError(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err);
+  return msg.includes('STEP_TIMEOUT');
+}
+
 function getCandidateModelOrder(): ModelTier[] {
   const now = Date.now();
-  const available = MODEL_TIERS.filter((m) => now >= modelCooldownUntil[m]);
+  const supported = MODEL_TIERS.filter((m) => now >= modelUnsupportedUntil[m]);
+  const pool = supported.length > 0 ? supported : [...MODEL_TIERS];
+  const available = pool.filter((m) => now >= modelCooldownUntil[m]);
   if (available.length > 0) {
     return available;
   }
-  return ['gemini-3.1-flash-lite', 'gemini-4-hydrogen'];
+  return [...pool].reverse();
 }
 
 function getRemainingCooldownSeconds(): number {
   const now = Date.now();
-  const activeCooldowns = MODEL_TIERS.map((m) =>
-    Math.max(0, Math.ceil((modelCooldownUntil[m] - now) / 1000))
-  ).filter((s) => s > 0);
-  if (activeCooldowns.length === 0) return 25;
-  return Math.max(10, Math.min(45, Math.min(...activeCooldowns)));
+  const activeCooldowns = MODEL_TIERS.filter(
+    (m) => now >= modelUnsupportedUntil[m]
+  )
+    .map((m) => Math.max(0, Math.ceil((modelCooldownUntil[m] - now) / 1000)))
+    .filter((s) => s > 0);
+  if (activeCooldowns.length === 0) return 20;
+  return Math.max(10, Math.min(40, Math.min(...activeCooldowns)));
 }
 
-function toSdkThinkingLevel(label: ActiveThinkingLabel): ThinkingLevel {
-  if (label === 'HIGH') return ThinkingLevel.HIGH;
-  if (label === 'MEDIUM') return ThinkingLevel.MEDIUM;
+function toSdkThinkingLevel(
+  model: ModelTier,
+  label: ActiveThinkingLabel
+): ThinkingLevel | null {
+  if (!supportsThinkingLevel(model)) return null;
+  const normalized = normalizeThinkingLabel(model, label);
+  if (normalized === 'HIGH') return ThinkingLevel.HIGH;
+  if (normalized === 'MEDIUM') return ThinkingLevel.MEDIUM;
+  if (normalized === 'MINIMAL') return ThinkingLevel.MINIMAL;
   return ThinkingLevel.LOW;
+}
+
+/**
+ * Builds a strictly model-safe Gemini request config:
+ * - Never sends `thinkingConfig.thinkingLevel` to Gemini 2.5 models (Gemini 3/4 only).
+ * - Never sends `ThinkingLevel.MINIMAL` to `gemini-4-hydrogen`.
+ * - Never caps `maxOutputTokens` artificially low so detailed reports never truncate.
+ */
+function buildModelRequestConfig(params: {
+  model: ModelTier;
+  thinkingLabel: ActiveThinkingLabel;
+  systemInstruction: string;
+  responseSchema: Record<string, unknown>;
+  includeSeed?: boolean;
+}): Record<string, unknown> {
+  const {
+    model,
+    thinkingLabel,
+    systemInstruction,
+    responseSchema,
+    includeSeed = true,
+  } = params;
+
+  const config: Record<string, unknown> = {
+    systemInstruction,
+    responseMimeType: 'application/json',
+    responseSchema,
+  };
+
+  if (includeSeed) {
+    config.seed = 42;
+  }
+
+  const sdkThinking = toSdkThinkingLevel(model, thinkingLabel);
+  if (sdkThinking !== null) {
+    config.thinkingConfig = {
+      thinkingLevel: sdkThinking,
+    };
+  }
+
+  return config;
 }
 
 function isTransientNetworkError(err: unknown): boolean {
@@ -182,42 +273,29 @@ function isTransientNetworkError(err: unknown): boolean {
   );
 }
 
-/**
- * Dynamically adapts thinking depth to draft complexity, prompt size, and active model tier
- * for non-evaluation utility endpoints (schedule, realtime, pivot, topics).
- */
-function selectDynamicThinkingProfile(
-  task: CoachTaskKind,
-  complexityMetric: number,
-  model: ModelTier
-): { level: ThinkingLevel; label: 'HIGH' | 'MEDIUM' | 'LOW' | 'MINIMAL' } {
-  if (model === 'gemini-4-hydrogen') {
-    if (task === 'evaluate') {
-      return { level: ThinkingLevel.MEDIUM, label: 'MEDIUM' };
-    }
-    if (task === 'schedule') {
-      return complexityMetric > 4
-        ? { level: ThinkingLevel.MEDIUM, label: 'MEDIUM' }
-        : { level: ThinkingLevel.LOW, label: 'LOW' };
-    }
-    return { level: ThinkingLevel.LOW, label: 'LOW' };
+function recordModelFailure(model: ModelTier, err: unknown): void {
+  const msg = err instanceof Error ? err.message : String(err);
+  if (isUnsupportedOrNotFoundError(err)) {
+    modelUnsupportedUntil[model] = Date.now() + 30 * 60_000;
+    return;
   }
-
-  if (task === 'evaluate') {
-    return { level: ThinkingLevel.LOW, label: 'LOW' };
+  if (isTimeoutError(err)) {
+    modelCooldownUntil[model] = Date.now() + 20_000;
+    return;
   }
-  if (task === 'schedule' && complexityMetric > 6) {
-    return { level: ThinkingLevel.LOW, label: 'LOW' };
+  if (isQuotaOrOverloadError(err)) {
+    const isRateLimit =
+      msg.includes('429') || msg.includes('RESOURCE_EXHAUSTED');
+    modelCooldownUntil[model] = Date.now() + (isRateLimit ? 40_000 : 18_000);
   }
-  return { level: ThinkingLevel.MINIMAL, label: 'MINIMAL' };
 }
 
 /**
- * Dedicated high-reliability evaluation executor with:
- * - Dynamic per-request (model, thinkingLevel) cascade chosen from word count + topic rigor
+ * Dedicated high-reliability evaluation executor (core heart of Quillit):
+ * - Dynamic multi-generation cascade: Hydrogen (Gen 4) -> Gemini 3 Flash -> Flash Lite 3.1 -> Gemini 2.5 Flash -> Flash 2.5 Lite
+ * - Instant (<5ms) skip over cooled-down, timed-out, or unsupported models (never retries a failed model on a second thinking tier)
  * - SHA-256 response cache & single-flight in-flight deduplication
- * - Single quick backoff retry on transient 5xx/network hiccups before escalating down cascade
- * - Unlimited output token headroom (no artificial maxOutputTokens cap) so deep reasoning + detailed reports never truncate
+ * - Unlimited output token headroom so deep reasoning + detailed H2 coach reports never truncate
  */
 async function executeDynamicEvaluationCall(params: {
   cacheKey: string;
@@ -264,37 +342,59 @@ async function executeDynamicEvaluationCall(params: {
   const taskPromise = (async () => {
     const ai = getAiClient();
     let lastErr: unknown;
+    const failedModelsThisRequest = new Set<ActiveEvalModel>();
 
     for (let i = 0; i < cascade.length; i += 1) {
       const step = cascade[i];
+      const now = Date.now();
+
+      // Never retry a model that already failed/timed-out/404'd in this request or is known unsupported
+      if (
+        failedModelsThisRequest.has(step.model) ||
+        modelUnsupportedUntil[step.model] > now
+      ) {
+        continue;
+      }
+
+      // If this model is cooled down, skip it whenever another healthy supported model remains later in the cascade
+      if (modelCooldownUntil[step.model] > now) {
+        const hasHealthyAlternativeAhead = cascade
+          .slice(i + 1)
+          .some(
+            (next) =>
+              !failedModelsThisRequest.has(next.model) &&
+              modelUnsupportedUntil[next.model] <= now &&
+              modelCooldownUntil[next.model] <= now
+          );
+        if (hasHealthyAlternativeAhead) {
+          continue;
+        }
+      }
+
       const downgraded = i > 0 || step.model !== primaryModel;
-      const maxAttempts = 2;
+      const stepTimeoutMs = getModelStepTimeoutMs(
+        step.model,
+        step.thinkingLabel,
+        'evaluate'
+      );
 
-      const stepTimeoutMs =
-        step.model === 'gemini-4-hydrogen'
-          ? step.thinkingLabel === 'HIGH'
-            ? 32_000
-            : step.thinkingLabel === 'MEDIUM'
-              ? 28_000
-              : 18_000
-          : 16_000;
-
-      for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+      let includeSeed = true;
+      for (let attempt = 0; attempt < 2; attempt += 1) {
         let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
         try {
+          const config = buildModelRequestConfig({
+            model: step.model,
+            thinkingLabel: step.thinkingLabel,
+            systemInstruction,
+            responseSchema,
+            includeSeed,
+          });
+
           const response = await Promise.race([
             ai.models.generateContent({
               model: step.model,
               contents,
-              config: {
-                systemInstruction,
-                seed: 42,
-                responseMimeType: 'application/json',
-                responseSchema,
-                thinkingConfig: {
-                  thinkingLevel: toSdkThinkingLevel(step.thinkingLabel),
-                },
-              },
+              config,
             }),
             new Promise<never>((_, reject) => {
               timeoutHandle = setTimeout(() => {
@@ -331,28 +431,36 @@ async function executeDynamicEvaluationCall(params: {
         } catch (err) {
           if (timeoutHandle) clearTimeout(timeoutHandle);
           lastErr = err;
-          const errMsg = err instanceof Error ? err.message : String(err);
-          if (errMsg.includes('STEP_TIMEOUT')) {
-            // Never wait twice on a slow tier: cascade immediately to the next faster tier
-            break;
+
+          if (
+            isUnsupportedOrNotFoundError(err) ||
+            isTimeoutError(err) ||
+            isQuotaOrOverloadError(err)
+          ) {
+            recordModelFailure(step.model, err);
+            failedModelsThisRequest.add(step.model);
+            break; // Immediately cascade (<1ms) to next available generation
           }
-          if (isQuotaOrOverloadError(err)) {
-            const isRateLimit =
-              errMsg.includes('429') || errMsg.includes('RESOURCE_EXHAUSTED');
-            modelCooldownUntil[step.model] =
-              Date.now() + (isRateLimit ? 38_000 : 15_000);
-            break; // Immediately cascade to next available model/tier
+
+          if (attempt === 0 && isInvalidArgumentError(err) && includeSeed) {
+            includeSeed = false;
+            continue; // Clean retry without optional seed before cascading
           }
+
           if (attempt === 0 && isTransientNetworkError(err)) {
-            await new Promise((r) => setTimeout(r, 350));
+            await new Promise((r) => setTimeout(r, 250));
             continue;
           }
+
+          failedModelsThisRequest.add(step.model);
           break;
         }
       }
     }
 
-    throw lastErr || new Error('All Gemini evaluation tiers are currently busy.');
+    throw (
+      lastErr || new Error('All Gemini evaluation tiers are currently busy.')
+    );
   })();
 
   inFlightRequests.set(cacheKey, taskPromise);
@@ -371,8 +479,10 @@ async function executeDynamicEvaluationCall(params: {
 }
 
 /**
- * Executes a Gemini JSON request across MODEL_TIERS with immediate fast fail-over
- * and dynamic thinking budget calibration.
+ * Executes any utility Gemini JSON request across ALL 5 active generations with strict
+ * per-step timeouts, instant fast fail-over, and model-safe thinking config calibration.
+ * Fast-tier utility tasks default to Flash Lite / Flash 2.5 Lite / Gemini 3 Flash first
+ * to keep Hydrogen headroom wide open for the core Evaluation Engine.
  */
 async function executeCascadingJsonCall(params: {
   cacheKey: string;
@@ -396,9 +506,9 @@ async function executeCascadingJsonCall(params: {
     systemInstruction,
     responseSchema,
     allowCache = true,
-    task = 'evaluate',
-    complexityMetric = 120,
-    preferFastTier = false,
+    task = 'topics',
+    complexityMetric = 60,
+    preferFastTier,
   } = params;
 
   if (allowCache) {
@@ -428,50 +538,76 @@ async function executeCascadingJsonCall(params: {
 
   const taskPromise = (async () => {
     const ai = getAiClient();
-    const baseCandidates = getCandidateModelOrder();
-    const candidates = preferFastTier
-      ? [
-          ...baseCandidates.filter((m) => m === 'gemini-3.1-flash-lite'),
-          ...baseCandidates.filter((m) => m !== 'gemini-3.1-flash-lite'),
-        ]
-      : baseCandidates;
+    const cascade = selectUtilityModelCascade({
+      task,
+      complexityMetric,
+      preferFastTier,
+      cooldownUntil: modelCooldownUntil,
+      unsupportedUntil: modelUnsupportedUntil,
+    });
+    const primaryModel = cascade[0]?.model ?? 'gemini-3.1-flash-lite';
+    const failedModelsThisRequest = new Set<ActiveEvalModel>();
     let lastErr: unknown;
 
-    for (let i = 0; i < candidates.length; i += 1) {
-      const model = candidates[i];
-      const downgraded = !preferFastTier && model !== 'gemini-4-hydrogen';
-      const thinking = selectDynamicThinkingProfile(task, complexityMetric, model);
+    for (let i = 0; i < cascade.length; i += 1) {
+      const step = cascade[i];
+      if (
+        failedModelsThisRequest.has(step.model) ||
+        modelUnsupportedUntil[step.model] > Date.now()
+      ) {
+        continue;
+      }
+
+      const downgraded = i > 0 || step.model !== primaryModel;
+      const stepTimeoutMs = getModelStepTimeoutMs(
+        step.model,
+        step.thinkingLabel,
+        task
+      );
+      let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
 
       try {
-        const config: Record<string, unknown> = {
+        const config = buildModelRequestConfig({
+          model: step.model,
+          thinkingLabel: step.thinkingLabel,
           systemInstruction,
-          seed: 42,
-          responseMimeType: 'application/json',
           responseSchema,
-          thinkingConfig: { thinkingLevel: thinking.level },
-        };
-
-        const response = await ai.models.generateContent({
-          model,
-          contents,
-          config,
+          includeSeed: true,
         });
+
+        const response = await Promise.race([
+          ai.models.generateContent({
+            model: step.model,
+            contents,
+            config,
+          }),
+          new Promise<never>((_, reject) => {
+            timeoutHandle = setTimeout(() => {
+              reject(
+                new Error(
+                  `STEP_TIMEOUT: ${step.model} (${step.thinkingLabel}) exceeded ${stepTimeoutMs}ms`
+                )
+              );
+            }, stepTimeoutMs);
+          }),
+        ]);
+        if (timeoutHandle) clearTimeout(timeoutHandle);
 
         const rawText = (response.text ?? '').trim();
         if (!rawText) {
-          throw new Error(`Empty response from ${model}`);
+          throw new Error(`Empty response from ${step.model}`);
         }
 
         const parsed = JSON.parse(rawText) as Record<string, unknown>;
-        lastSuccessfulModel = model;
+        lastSuccessfulModel = step.model;
         if (downgraded) {
           totalAutoDowngrades += 1;
         }
 
         const resultEnvelope = {
           parsed,
-          modelUsed: model,
-          thinkingLevelUsed: thinking.label,
+          modelUsed: step.model,
+          thinkingLevelUsed: step.thinkingLabel,
           downgraded,
         };
 
@@ -480,23 +616,19 @@ async function executeCascadingJsonCall(params: {
         }
         return resultEnvelope;
       } catch (err) {
+        if (timeoutHandle) clearTimeout(timeoutHandle);
         lastErr = err;
-        if (isQuotaOrOverloadError(err)) {
-          const msg = err instanceof Error ? err.message : String(err);
-          const isRateLimit =
-            msg.includes('429') || msg.includes('RESOURCE_EXHAUSTED');
-          modelCooldownUntil[model] =
-            Date.now() + (isRateLimit ? 38_000 : 15_000);
+        recordModelFailure(step.model, err);
+        failedModelsThisRequest.add(step.model);
+        if (i < cascade.length - 1) {
           continue;
         }
-        if (i < candidates.length - 1) {
-          continue;
-        }
-        throw err;
       }
     }
 
-    throw lastErr || new Error('All Gemini model tiers are currently rate-limited.');
+    throw (
+      lastErr || new Error('All Gemini model tiers are currently busy.')
+    );
   })();
 
   inFlightRequests.set(cacheKey, taskPromise);
@@ -869,10 +1001,24 @@ async function createApp() {
       hasKey: Boolean(process.env.GEMINI_API_KEY),
       activeModel: candidates[0],
       lastSuccessfulModel,
-      tiers: MODEL_TIERS.map((m) => ({
-        model: m,
-        cooldownSeconds: Math.max(0, Math.ceil((modelCooldownUntil[m] - now) / 1000)),
-      })),
+      tiers: MODEL_TIERS.map((m) => {
+        const cooldownSeconds = Math.max(
+          0,
+          Math.ceil((modelCooldownUntil[m] - now) / 1000)
+        );
+        const unsupportedSeconds = Math.max(
+          0,
+          Math.ceil((modelUnsupportedUntil[m] - now) / 1000)
+        );
+        return {
+          model: m,
+          tierName: MODEL_CAPABILITIES[m].shortLabel,
+          generation: MODEL_CAPABILITIES[m].generation,
+          available: cooldownSeconds === 0 && unsupportedSeconds === 0,
+          cooldownSeconds,
+          unsupportedSeconds,
+        };
+      }),
       totalCacheHits,
       totalAutoDowngrades,
     });
@@ -927,9 +1073,10 @@ async function createApp() {
       practicingVocabCount: vocabList.length,
       isGibberishOrLowEffort: integrity.isGibberishOrLowEffort,
       cooldownUntil: modelCooldownUntil,
+      unsupportedUntil: modelUnsupportedUntil,
     });
 
-    const cacheKey = makeCacheKey('evaluate-coach-v5', {
+    const cacheKey = makeCacheKey('evaluate-coach-v6', {
       content: trimmedContent,
       mode,
       tone,
@@ -1321,7 +1468,7 @@ ${trimmedContent}
         vocabUpgrades: groundedVocab,
       });
     } catch (err) {
-      if (isQuotaOrOverloadError(err)) {
+      if (isQuotaOrOverloadError(err) || isTimeoutError(err)) {
         const provisional = buildServerQueuedEvaluation(
           trimmedContent,
           String(mode),
@@ -1336,7 +1483,8 @@ ${trimmedContent}
             model: 'queued-pending-reset',
             thinkingLevel: 'LOCAL',
             tierLabel: 'Queued (Rate Limit Reset)',
-            reason: 'API rate limit reached; queued for automatic retry.',
+            reason:
+              'All live Gemini tiers briefly busy; queued for automatic retry.',
           },
           downgraded: true,
           cached: false,
@@ -1381,6 +1529,7 @@ ${trimmedContent}
         await executeCascadingJsonCall({
           cacheKey,
           task: 'realtime',
+          preferFastTier: true,
           complexityMetric: wordCount,
           contents: `Mode:${mode}|Tone:${tone}\nDraft:\n"""\n${trimmedContent}\n"""`,
           systemInstruction:
@@ -2305,6 +2454,7 @@ ${compactEntries.map((e) => `${e.id}: "${e.word}" (replaces "${e.replaces}", mod
       pace: safePace,
       turnCount,
       cooldownUntil: modelCooldownUntil,
+      unsupportedUntil: modelUnsupportedUntil,
     });
 
     const responseSchema = {
@@ -2332,27 +2482,39 @@ ${compactEntries.map((e) => `${e.id}: "${e.word}" (replaces "${e.replaces}", mod
     const startedAt = Date.now();
     try {
       const ai = getAiClient();
+      const failedModelsThisRequest = new Set<ActiveEvalModel>();
       let lastErr: unknown;
 
-      for (const step of routePlan.cascade) {
-        const stepTimeoutMs =
-          step.model === 'gemini-3.1-flash-lite' ? 12_000 : 18_000;
+      for (let i = 0; i < routePlan.cascade.length; i += 1) {
+        const step = routePlan.cascade[i];
+        const now = Date.now();
+
+        if (
+          failedModelsThisRequest.has(step.model) ||
+          modelUnsupportedUntil[step.model] > now
+        ) {
+          continue;
+        }
+
+        const stepTimeoutMs = getModelStepTimeoutMs(
+          step.model,
+          step.thinkingLabel,
+          'converse'
+        );
         let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
         try {
-          const thinkingLevel =
-            step.thinkingLabel === 'MINIMAL' && step.model === 'gemini-3.1-flash-lite'
-              ? ThinkingLevel.MINIMAL
-              : ThinkingLevel.LOW;
+          const config = buildModelRequestConfig({
+            model: step.model,
+            thinkingLabel: step.thinkingLabel,
+            systemInstruction,
+            responseSchema,
+            includeSeed: false,
+          });
 
           const chat = ai.chats.create({
             model: step.model,
             history: sdkHistory,
-            config: {
-              systemInstruction,
-              responseMimeType: 'application/json',
-              responseSchema,
-              thinkingConfig: { thinkingLevel },
-            },
+            config,
           });
 
           const response = await Promise.race([
@@ -2377,6 +2539,9 @@ ${compactEntries.map((e) => `${e.id}: "${e.word}" (replaces "${e.replaces}", mod
           const parsed = JSON.parse(rawText) as Record<string, unknown>;
           const sanitized = sanitizeConversationTurnResponse(parsed, cleanUserMsg);
           lastSuccessfulModel = step.model;
+          if (i > 0) {
+            totalAutoDowngrades += 1;
+          }
 
           res.json({
             reply: sanitized.reply,
@@ -2391,14 +2556,9 @@ ${compactEntries.map((e) => `${e.id}: "${e.word}" (replaces "${e.replaces}", mod
         } catch (err) {
           if (timeoutHandle) clearTimeout(timeoutHandle);
           lastErr = err;
-          if (isQuotaOrOverloadError(err)) {
-            const msg = err instanceof Error ? err.message : String(err);
-            const isRateLimit =
-              msg.includes('429') || msg.includes('RESOURCE_EXHAUSTED');
-            modelCooldownUntil[step.model] =
-              Date.now() + (isRateLimit ? 38_000 : 15_000);
-          }
-          // Cascade immediately to next fast tier
+          recordModelFailure(step.model, err);
+          failedModelsThisRequest.add(step.model);
+          // Cascade immediately (<1ms) to next fast generation
         }
       }
 
