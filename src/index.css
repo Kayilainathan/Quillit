@@ -1155,6 +1155,21 @@
   animation: quoteHighlightPulse 420ms var(--ease-out-expo) both;
 }
 
+@keyframes postEvalPopupEnter {
+  0% {
+    opacity: 0;
+    transform: translate3d(0, 14px, 0) scale(0.975);
+  }
+  100% {
+    opacity: 1;
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+}
+
+.post-eval-popup-enter {
+  animation: postEvalPopupEnter 260ms var(--ease-out-expo) both;
+}
+
 /* Smooth momentum touch scrolling & quiet hidden scrollbars for mobile strips */
 .scroll-smooth-touch {
   scroll-behavior: smooth;
@@ -1226,7 +1241,8 @@
   .drawer-reveal,
   .tab-indicator-slide,
   .ink-progress-shimmer::after,
-  .quote-highlight-mark {
+  .quote-highlight-mark,
+  .post-eval-popup-enter {
     transform: none !important;
     animation: none !important;
   }

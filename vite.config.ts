@@ -43,6 +43,21 @@ export default defineConfig(({ command }) => {
         },
       },
     ],
+    build: {
+      chunkSizeWarningLimit: 900,
+      rolldownOptions: {
+        output: {
+          codeSplitting: {
+            groups: [
+              { name: 'vendor-firebase', test: /node_modules\/(firebase|@firebase)\// },
+              { name: 'vendor-charts', test: /node_modules\/(recharts|d3|d3-.*|victory-vendor)\// },
+              { name: 'vendor-motion', test: /node_modules\/(motion|framer-motion)\// },
+              { name: 'vendor-react', test: /node_modules\/(react|react-dom|scheduler)\// },
+            ],
+          },
+        },
+      },
+    },
     resolve: {
       alias: {
         '@': path.resolve(import.meta.dirname, '.'),

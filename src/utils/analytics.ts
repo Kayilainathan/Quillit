@@ -9,6 +9,7 @@ import type {
   WritingMode,
   WritingSession,
 } from '../types';
+import { getSentenceSpans } from './constraintChallenges';
 
 export const MODE_LABELS: Record<WritingMode, string> = {
   journal: 'Personal Journal',
@@ -184,10 +185,7 @@ const FILLER_WORDS = [
 
 export function analyzeDraftLocally(text: string): LiveDraftDiagnostics {
   const wordCount = countWords(text);
-  const rawSentences = text
-    .split(/[.!?]+/)
-    .map((s) => s.trim())
-    .filter((s) => s.length > 0);
+  const rawSentences = getSentenceSpans(text).map((s) => s.text);
   const sentenceCount = rawSentences.length;
   const avgWordsPerSentence =
     sentenceCount > 0 ? Number((wordCount / sentenceCount).toFixed(1)) : 0;

@@ -55,9 +55,25 @@ function buildDrillInstructionBlock(drillContext?: {
   if (!drillContext || !drillContext.drillType || drillContext.drillType === 'standard') {
     const payload = drillContext?.drillPayload;
     if (payload?.constraintLabel) {
-      return `\nACTIVE CONSTRAINT MICRO-CHALLENGE: "${String(payload.constraintLabel)}" (Local live check: ${
-        payload.constraintPassed ? 'PASSED (0 violations)' : `${Number(payload.constraintViolations || 1)} violation(s) detected`
-      }). Briefly acknowledge their constraint discipline in drillVerdict without inflating or distorting the 6 core scores.`;
+      const scoreTag =
+        typeof payload.constraintAdherenceScore === 'number'
+          ? `, Adherence ${payload.constraintAdherenceScore}%`
+          : '';
+      const excerpts =
+        Array.isArray(payload.constraintExcerpts) &&
+        payload.constraintExcerpts.length > 0
+          ? ` Flagged spans: ${(payload.constraintExcerpts as string[])
+              .slice(0, 4)
+              .join('; ')}.`
+          : '';
+      const ruleNote = payload.constraintRule
+        ? ` Rule: ${String(payload.constraintRule)}.`
+        : '';
+      return `\nACTIVE CONSTRAINT MICRO-CHALLENGE: "${String(payload.constraintLabel)}"${ruleNote} (Deterministic check: ${
+        payload.constraintPassed
+          ? `PASSED · 0 violations${scoreTag}`
+          : `${Number(payload.constraintViolations || 1)} violation(s)${scoreTag}`
+      }).${excerpts} Briefly acknowledge their exact constraint discipline in drillVerdict without inflating or distorting the 6 core scores.`;
     }
     return '';
   }

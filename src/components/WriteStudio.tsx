@@ -110,9 +110,26 @@ import {
   evaluateRegisterShift,
 } from '../utils/audienceLadder';
 import {
-  CONSTRAINT_CHALLENGES,
+  pickRandomConstraint,
   type ConstraintChallenge,
 } from '../utils/constraintChallenges';
+import {
+  ConstraintPickerDrawer,
+  LiveConstraintRail,
+} from './ConstraintStudioPanel';
+import {
+  createIdlePostEvalClearState,
+  dismissPostEvalClear,
+  readAutoClearPreference,
+  setPostEvalClearPaused,
+  startPostEvalClearPrompt,
+  tickPostEvalClear,
+  togglePostEvalAutoClear,
+  transitionToClearedUndo,
+  writeAutoClearPreference,
+  type PostEvalClearState,
+} from '../utils/postEvalClear';
+import { PostEvalClearPopup } from './PostEvalClearPopup';
 import {
   DEFAULT_FLOW_SPRINT_SECONDS,
   shouldBlockFlowBeforeInput,
@@ -300,6 +317,26 @@ export function WriteStudio({
   const [sprintAutoPaused, setSprintAutoPaused] = useState(false);
   const [showPrevRoundsDrawer, setShowPrevRoundsDrawer] = useState(false);
   const evalAsideRef = useRef<HTMLElement | null>(null);
+
+  // Post-Evaluation 3s Smart Clear & Non-Destructive Undo State
+  const [clearPopupState, setClearPopupState] = useState<PostEvalClearState>(() =>
+    createIdlePostEvalClearState('editor', readAutoClearPreference())
+  );
+  const [lastEvaluatedSnapshot, setLastEvaluatedSnapshot] = useState<{
+    topic: string;
+    content: string;
+    roomAText: string;
+    roomBText: string;
+  } | null>(null);
+  const lastClearedDraftRef = useRef<{
+    topic: string;
+    content: string;
+    roomAText: string;
+    roomBText: string;
+    activeDraftId: string | null;
+    activeSlotId: string | undefined;
+    loggedSessionId: string | null;
+  } | null>(null);
 
   // Skeleton Reconstruction State
   const [skeletonPassage, setSkeletonPassage] = useState<SkeletonPassage>(() =>
@@ -789,9 +826,117 @@ export function WriteStudio({
     setRevisionContext(null);
   }
 
+  function handleLocateConstraintSpan(start: number, end: number) {
+    const el = document.getElementById(
+      'writing-editor'
+    ) as HTMLTextAreaElement | null;
+    if (!el) return;
+    playTactileClick(tactileSoundEnabled);
+    el.focus();
+    el.setSelectionRange(start, end);
+    el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  }
+
+  function executeClearEditorForFreshPage() {
+    lastClearedDraftRef.current = {
+      topic,
+      content,
+      roomAText,
+      roomBText,
+      activeDraftId,
+      activeSlotId,
+      loggedSessionId: activeLoggedSessionIdRef.current,
+    };
+    setTopic('');
+    setContent('');
+    setDebouncedContent('');
+    setRoomAText('');
+    setRoomBText('');
+    setActiveDraftId(null);
+    setActiveSlotId(undefined);
+    setDraftSavedLabel(null);
+    setAutoTitledBanner(null);
+    setLiveAppliedNotice(null);
+    setErrorMessage(null);
+    setSprintRunning(false);
+    setSprintAutoPaused(false);
+    setSprintRoundIdx(0);
+    setSprintRounds(['', '', '']);
+    setSprintSecondsLeft(COMPRESSION_ROUNDS[0].durationSec);
+    setFlowLockActive(false);
+    setFlowSecondsLeft(DEFAULT_FLOW_SPRINT_SECONDS);
+    setRevisionContext(null);
+    activeLoggedSessionIdRef.current = null;
+    playTactileClick(tactileSoundEnabled);
+  }
+
+  function handleRestoreClearedEditor() {
+    const snap = lastClearedDraftRef.current;
+    if (!snap) {
+      setClearPopupState((prev) => dismissPostEvalClear(prev));
+      return;
+    }
+    setTopic(snap.topic);
+    setContent(snap.content);
+    setDebouncedContent(snap.content);
+    setRoomAText(snap.roomAText);
+    setRoomBText(snap.roomBText);
+    setActiveDraftId(snap.activeDraftId);
+    setActiveSlotId(snap.activeSlotId);
+    activeLoggedSessionIdRef.current = snap.loggedSessionId;
+    lastClearedDraftRef.current = null;
+    setClearPopupState((prev) => dismissPostEvalClear(prev));
+    playTactileClick(tactileSoundEnabled);
+    window.setTimeout(() => document.getElementById('writing-editor')?.focus(), 50);
+  }
+
+  const executeClearEditorRef = useRef(executeClearEditorForFreshPage);
+  executeClearEditorRef.current = executeClearEditorForFreshPage;
+
+  useEffect(() => {
+    if (clearPopupState.phase === 'idle' || clearPopupState.paused) return;
+    if (
+      clearPopupState.phase === 'countdown' &&
+      !clearPopupState.autoClearEnabled
+    ) {
+      return;
+    }
+    const timer = window.setInterval(() => {
+      setClearPopupState((prev) => {
+        const { nextState, shouldExecuteClear, shouldExpireUndo } =
+          tickPostEvalClear(prev, 100);
+        if (shouldExecuteClear) {
+          window.setTimeout(() => executeClearEditorRef.current(), 0);
+        }
+        if (shouldExpireUndo) {
+          lastClearedDraftRef.current = null;
+        }
+        return nextState;
+      });
+    }, 100);
+    return () => window.clearInterval(timer);
+  }, [
+    clearPopupState.phase,
+    clearPopupState.paused,
+    clearPopupState.autoClearEnabled,
+  ]);
+
   function handleStartRevisionPass() {
     if (!evaluation) return;
     playTactileClick(tactileSoundEnabled);
+    // If editor was cleared after evaluation, restore the evaluated draft cleanly for Pass 2
+    if (!content.trim() && lastEvaluatedSnapshot?.content) {
+      setTopic(lastEvaluatedSnapshot.topic);
+      setContent(lastEvaluatedSnapshot.content);
+      setDebouncedContent(lastEvaluatedSnapshot.content);
+      if (lastEvaluatedSnapshot.roomAText) {
+        setRoomAText(lastEvaluatedSnapshot.roomAText);
+      }
+      if (lastEvaluatedSnapshot.roomBText) {
+        setRoomBText(lastEvaluatedSnapshot.roomBText);
+      }
+    }
+    setClearPopupState((prev) => dismissPostEvalClear(prev));
     const pass1Id =
       activeLoggedSessionIdRef.current || `SESSION_${todayISO.replace(/-/g, '')}`;
     const pass1Score = computeTotalScore(evaluation.scores);
@@ -1405,12 +1550,31 @@ export function WriteStudio({
         drillType: 'standard',
         drillPayload: {
           constraintLabel: activeConstraint?.shortLabel,
+          constraintRule: activeConstraint?.rule,
           constraintPassed: constraintResult?.passed,
           constraintViolations: constraintResult?.violationCount,
+          constraintAdherenceScore: constraintResult?.adherenceScore,
+          constraintExcerpts: constraintResult?.matches
+            .slice(0, 5)
+            .map((m) => m.excerpt),
           noBackspaceUsed: flowLockUsedInDraftRef.current,
         },
       },
       drillMeta: baseMeta,
+      localDrillVerdict:
+        activeConstraint && constraintResult
+          ? {
+              headline: `Constraint · ${activeConstraint.shortLabel}`,
+              badge: constraintResult.passed
+                ? `${constraintResult.adherenceScore}% Clean`
+                : `${constraintResult.adherenceScore}% · ${constraintResult.violationCount} flag${
+                    constraintResult.violationCount === 1 ? '' : 's'
+                  }`,
+              summary: constraintResult.passed
+                ? `Zero rule violations. ${activeConstraint.whyItMatters}`
+                : `${constraintResult.details.replace(/\.?$/, '.')} Review the highlighted spans in the editor to reach 100% adherence.`,
+            }
+          : undefined,
     };
   }
 
@@ -1602,10 +1766,10 @@ export function WriteStudio({
     setEvaluatingTierLabel(predictedRoute.primary.tierLabel);
 
     // Single-pass atomic evaluation (PSR-01: zero provisional score jump)
+    setClearPopupState((prev) => dismissPostEvalClear(prev));
     setEvaluating(true);
     try {
-      const apiBase = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/$/, '');
-      const res = await fetch(`${apiBase}/api/evaluate`, {
+      const res = await fetch(getApiUrl('/api/evaluate'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -1627,11 +1791,12 @@ export function WriteStudio({
           drillContext,
         }),
       });
-      const contentType = res.headers.get('content-type') || '';
-      if (!res.ok || !contentType.includes('application/json')) {
+      const data = await safeParseJsonResponse<
+        EvaluationPayload & { error?: string }
+      >(res);
+      if (!res.ok || !data) {
         throw new Error('Static host or API unavailable');
       }
-      const data = (await res.json()) as EvaluationPayload & { error?: string };
       if (data.error) {
         throw new Error(data.error);
       }
@@ -1657,6 +1822,12 @@ export function WriteStudio({
         isProvisionalInstant: false,
       };
       setEvaluation(finalEval);
+      setLastEvaluatedSnapshot({
+        topic: finalTopic,
+        content: submittedDraft,
+        roomAText,
+        roomBText,
+      });
 
       persistEvaluatedSession(
         finalEval,
@@ -1673,6 +1844,7 @@ export function WriteStudio({
         setResetCountdown(secs);
       } else {
         setResetCountdown(0);
+        setClearPopupState((prev) => startPostEvalClearPrompt(prev));
       }
     } catch {
       const currentOfflineIssues = runOfflineProofread(submittedDraft);
@@ -1697,6 +1869,12 @@ export function WriteStudio({
         setAutoTitledBanner(fallbackTopic);
       }
       setEvaluation(mergedOffline);
+      setLastEvaluatedSnapshot({
+        topic: fallbackTopic,
+        content: submittedDraft,
+        roomAText,
+        roomBText,
+      });
       persistEvaluatedSession(
         mergedOffline,
         fallbackTopic,
@@ -1706,6 +1884,7 @@ export function WriteStudio({
         localDrillVerdict
       );
       setResetCountdown(0);
+      setClearPopupState((prev) => startPostEvalClearPrompt(prev));
     } finally {
       setEvaluating(false);
     }
@@ -2246,7 +2425,7 @@ export function WriteStudio({
                       data-testid="constraint-picker-toggle"
                       data-active={activeConstraint ? 'true' : 'false'}
                       onClick={() => setShowConstraintPicker((v) => !v)}
-                      className="btn-chip inline-flex items-center gap-1 px-2.5 py-1 text-[11px] font-medium whitespace-nowrap"
+                      className="btn-chip inline-flex items-center gap-1.5 px-2.5 py-1 text-[11px] font-medium whitespace-nowrap"
                     >
                       <SlidersHorizontal className="w-3 h-3" aria-hidden="true" />
                       <span>
@@ -2254,6 +2433,17 @@ export function WriteStudio({
                           ? activeConstraint.shortLabel
                           : '+ Constraint'}
                       </span>
+                      {activeConstraint && constraintResult && (
+                        <span
+                          className={`font-mono-tabular text-[10px] ${
+                            constraintResult.passed
+                              ? 'text-status-success'
+                              : 'text-status-warning'
+                          }`}
+                        >
+                          · {constraintResult.adherenceScore}%
+                        </span>
+                      )}
                     </button>
                     {activeConstraint && (
                       <button
@@ -2285,47 +2475,27 @@ export function WriteStudio({
                   </div>
                 </div>
 
-                {/* Inline Constraint Challenge Picker */}
+                {/* QuillBot-Inspired Categorized Constraint Studio Drawer */}
                 {showConstraintPicker && (
-                  <div
-                    data-testid="constraint-picker-drawer"
-                    className="drawer-reveal pt-2.5 border-t border-border-subtle space-y-2"
-                  >
-                    <div className="flex items-center justify-between text-[11px]">
-                      <span className="font-medium text-ink-primary">
-                        Pick a Constraint Challenge (live deterministic verification)
-                      </span>
-                      <button
-                        type="button"
-                        onClick={() => setShowConstraintPicker(false)}
-                        className="btn-ghost p-0.5"
-                      >
-                        <X className="w-3 h-3" aria-hidden="true" />
-                      </button>
-                    </div>
-                    <div className="flex flex-wrap gap-1.5 max-h-32 overflow-y-auto">
-                      {CONSTRAINT_CHALLENGES.map((ch) => {
-                        const isSelected = activeConstraint?.id === ch.id;
-                        return (
-                          <button
-                            key={ch.id}
-                            type="button"
-                            data-testid={`constraint-option-${ch.id}`}
-                            data-active={isSelected ? 'true' : 'false'}
-                            title={ch.rule}
-                            onClick={() => {
-                              playTactileClick(tactileSoundEnabled);
-                              setActiveConstraint(isSelected ? null : ch);
-                              setShowConstraintPicker(false);
-                            }}
-                            className="btn-chip px-2.5 py-1 text-[11px] font-medium"
-                          >
-                            {ch.shortLabel}
-                          </button>
-                        );
-                      })}
-                    </div>
-                  </div>
+                  <ConstraintPickerDrawer
+                    mode={mode}
+                    modeLabel={MODE_LABELS[mode]}
+                    draftText={effectiveDraftText}
+                    activeConstraint={activeConstraint}
+                    onSelect={(ch) => {
+                      playTactileClick(tactileSoundEnabled);
+                      setActiveConstraint(ch);
+                      setShowConstraintPicker(false);
+                    }}
+                    onRollRandom={() => {
+                      playTactileClick(tactileSoundEnabled);
+                      setActiveConstraint(
+                        pickRandomConstraint(activeConstraint?.id, mode)
+                      );
+                      setShowConstraintPicker(false);
+                    }}
+                    onClose={() => setShowConstraintPicker(false)}
+                  />
                 )}
               </div>
             )}
@@ -3030,7 +3200,26 @@ export function WriteStudio({
                 </div>
               )}
 
-              {/* Live Zero-Quota Prose Diagnostics Bar (Signal/Noise + Sentence Rhythm Strip + Constraint) */}
+              {/* Live Constraint Adherence Rail (QuillBot-style inline inspector + click-to-locate) */}
+              {activeConstraint && constraintResult && (
+                <LiveConstraintRail
+                  constraint={activeConstraint}
+                  result={constraintResult}
+                  wordCount={diagnostics.wordCount}
+                  canLocateInEditor={activeDrill !== 'three-rooms'}
+                  onLocateSpan={handleLocateConstraintSpan}
+                  onOpenPicker={() => setShowConstraintPicker(true)}
+                  onShuffle={() => {
+                    playTactileClick(tactileSoundEnabled);
+                    setActiveConstraint(
+                      pickRandomConstraint(activeConstraint.id, mode)
+                    );
+                  }}
+                  onClear={() => setActiveConstraint(null)}
+                />
+              )}
+
+              {/* Live Zero-Quota Prose Diagnostics Bar (Signal/Noise + Sentence Rhythm Strip) */}
               {diagnostics.wordCount >= 8 && (
                 <div
                   data-testid="live-prose-diagnostics"
@@ -3081,25 +3270,6 @@ export function WriteStudio({
                       </span>
                     )}
                   </div>
-
-                  {activeConstraint && constraintResult && (
-                    <span
-                      data-testid="live-constraint-status"
-                      className={
-                        constraintResult.passed
-                          ? 'text-status-success font-medium'
-                          : 'text-status-warning font-medium'
-                      }
-                    >
-                      {constraintResult.passed
-                        ? `✓ ${activeConstraint.shortLabel}`
-                        : `${constraintResult.violationCount} rule ${
-                            constraintResult.violationCount === 1
-                              ? 'flag'
-                              : 'flags'
-                          }: ${constraintResult.details}`}
-                    </span>
-                  )}
                 </div>
               )}
 
@@ -3400,7 +3570,11 @@ export function WriteStudio({
 
                 <EvaluationReportView
                   report={{
-                    topic: topic || evaluation.suggestedTitle || 'Writing Session',
+                    topic:
+                      topic ||
+                      evaluation.suggestedTitle ||
+                      lastEvaluatedSnapshot?.topic ||
+                      'Writing Session',
                     modeLabel: MODE_LABELS[mode],
                     scores: evaluation.scores,
                     metricNotes: evaluation.metricNotes,
@@ -3429,7 +3603,9 @@ export function WriteStudio({
                     drillVerdict: evaluation.drillVerdict,
                     revisionDelta: lastRevisionDelta,
                   }}
-                  draftContent={effectiveDraftText}
+                  draftContent={
+                    effectiveDraftText || lastEvaluatedSnapshot?.content || ''
+                  }
                   savedSuccess={savedSuccess}
                   existingVocabSet={existingVocabSet}
                   savedVocabKeys={savedVocabKeys}
@@ -3443,6 +3619,32 @@ export function WriteStudio({
           </aside>
         )}
       </div>
+
+      <PostEvalClearPopup
+        state={clearPopupState}
+        onClearNow={() => {
+          executeClearEditorForFreshPage();
+          setClearPopupState((prev) => transitionToClearedUndo(prev));
+        }}
+        onKeep={() =>
+          setClearPopupState((prev) => dismissPostEvalClear(prev))
+        }
+        onRestore={handleRestoreClearedEditor}
+        onToggleAutoClear={() =>
+          setClearPopupState((prev) => {
+            const next = togglePostEvalAutoClear(prev);
+            writeAutoClearPreference(next.autoClearEnabled);
+            return next;
+          })
+        }
+        onPauseChange={(paused) =>
+          setClearPopupState((prev) => setPostEvalClearPaused(prev, paused))
+        }
+        onDismissUndo={() => {
+          lastClearedDraftRef.current = null;
+          setClearPopupState((prev) => dismissPostEvalClear(prev));
+        }}
+      />
 
       {quickVocabToast && (
         <div

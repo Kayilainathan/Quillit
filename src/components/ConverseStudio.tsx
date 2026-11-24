@@ -73,6 +73,19 @@ import {
   EvaluationReportView,
 } from './EvaluationReportView';
 import { ConversationBenchmarkView } from './ConversationBenchmarkView';
+import {
+  createIdlePostEvalClearState,
+  dismissPostEvalClear,
+  readAutoClearPreference,
+  setPostEvalClearPaused,
+  startPostEvalClearPrompt,
+  tickPostEvalClear,
+  togglePostEvalAutoClear,
+  transitionToClearedUndo,
+  writeAutoClearPreference,
+  type PostEvalClearState,
+} from '../utils/postEvalClear';
+import { PostEvalClearPopup } from './PostEvalClearPopup';
 
 const THREADS_STORAGE_KEY = 'quillit_converse_threads_v1';
 const RECENT_OPENINGS_STORAGE_KEY = 'quillit_converse_recent_openings_v1';
@@ -228,6 +241,18 @@ export function ConverseStudio({
   const [savedThreads, setSavedThreads] = useState<SavedConversationThread[]>(() =>
     loadSavedThreads()
   );
+  const [clearPopupState, setClearPopupState] = useState<PostEvalClearState>(() =>
+    createIdlePostEvalClearState('chat', readAutoClearPreference())
+  );
+  const [lastEvaluatedUserTurns, setLastEvaluatedUserTurns] = useState('');
+  const lastClearedChatRef = useRef<{
+    threadId: string | null;
+    messages: ConversationMessage[];
+    replySparks: string[];
+    draftInput: string;
+    elapsedSeconds: number;
+    expandedRecasts: Record<string, boolean>;
+  } | null>(null);
 
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
   const [chatError, setChatError] = useState<string | null>(null);
@@ -478,6 +503,7 @@ export function ConverseStudio({
     setPromotedWords([]);
     setEditingOpener(false);
     setOpenerDraft('');
+    setClearPopupState((prev) => dismissPostEvalClear(prev));
     resetTurnTimingClock();
     void fetchFreshOpening(scenario);
   }
@@ -854,6 +880,100 @@ export function ConverseStudio({
     setLoggedSuccess(true);
   }
 
+  function executeClearChatForFreshSession() {
+    if (!activeScenario) return;
+    lastClearedChatRef.current = {
+      threadId: activeThreadId,
+      messages,
+      replySparks,
+      draftInput,
+      elapsedSeconds,
+      expandedRecasts,
+    };
+
+    const nextThreadId = `chat-${Date.now()}-${Math.random()
+      .toString(36)
+      .slice(2, 6)}`;
+    openingSeedRef.current += 1;
+    const recentMap = loadRecentOpenings();
+    const avoidOpenings = recentMap[activeScenario.id] ?? [];
+    const freshLocal = pickFreshOpeningLine({
+      scenario: activeScenario,
+      studentProfile,
+      avoidOpenings,
+      seedIndex: openingSeedRef.current,
+    });
+    recordRecentOpening(activeScenario.id, freshLocal.openingLine);
+    const openingMsg: ConversationMessage = {
+      id: `msg-open-${Date.now()}`,
+      role: 'partner',
+      text: freshLocal.openingLine,
+      timestamp: formatNowTime(),
+      createdAtMs: Date.now(),
+      modelUsed: 'rotated-opener',
+    };
+
+    setActiveThreadId(nextThreadId);
+    setMessages([openingMsg]);
+    setReplySparks(freshLocal.initialSparks);
+    setDraftInput('');
+    setElapsedSeconds(0);
+    setExpandedRecasts({});
+    setChatError(null);
+    setEditingOpener(false);
+    setOpenerDraft('');
+    setShowSparks(false);
+    setShowTargetWords(false);
+    resetTurnTimingClock();
+  }
+
+  function handleRestoreClearedChat() {
+    const snap = lastClearedChatRef.current;
+    if (!snap) {
+      setClearPopupState((prev) => dismissPostEvalClear(prev));
+      return;
+    }
+    setActiveThreadId(snap.threadId);
+    setMessages(snap.messages);
+    setReplySparks(snap.replySparks);
+    setDraftInput(snap.draftInput);
+    setElapsedSeconds(snap.elapsedSeconds);
+    setExpandedRecasts(snap.expandedRecasts);
+    lastClearedChatRef.current = null;
+    setClearPopupState((prev) => dismissPostEvalClear(prev));
+  }
+
+  const executeClearChatRef = useRef(executeClearChatForFreshSession);
+  executeClearChatRef.current = executeClearChatForFreshSession;
+
+  useEffect(() => {
+    if (clearPopupState.phase === 'idle' || clearPopupState.paused) return;
+    if (
+      clearPopupState.phase === 'countdown' &&
+      !clearPopupState.autoClearEnabled
+    ) {
+      return;
+    }
+    const timer = window.setInterval(() => {
+      setClearPopupState((prev) => {
+        const { nextState, shouldExecuteClear, shouldExpireUndo } =
+          tickPostEvalClear(prev, 100);
+        if (shouldExecuteClear) {
+          window.setTimeout(() => executeClearChatRef.current(), 0);
+        }
+        if (shouldExpireUndo) {
+          lastClearedChatRef.current = null;
+        }
+        return nextState;
+      });
+    }, 100);
+    return () => window.clearInterval(timer);
+  }, [
+    clearPopupState.phase,
+    clearPopupState.paused,
+    clearPopupState.autoClearEnabled,
+  ]);
+
   async function handleFinishAndEvaluate() {
     if (
       !activeScenario ||
@@ -866,6 +986,7 @@ export function ConverseStudio({
     }
 
     setChatError(null);
+    setClearPopupState((prev) => dismissPostEvalClear(prev));
     const { userTurnsText, dialogueTranscript } = buildConversationTranscript(
       messages,
       activeScenario
@@ -909,7 +1030,9 @@ export function ConverseStudio({
       }
 
       setEvaluation(data);
+      setLastEvaluatedUserTurns(userTurnsText);
       persistConversationSession(data, userTurnsText, dialogueTranscript);
+      setClearPopupState((prev) => startPostEvalClearPrompt(prev));
     } catch {
       // Transparent offline benchmark fallback only if API is unreachable
       const offlineIssues = runOfflineProofread(userTurnsText);
@@ -954,7 +1077,9 @@ export function ConverseStudio({
         conversationBenchmark: offlineBench.benchmark,
       };
       setEvaluation(fallbackPayload);
+      setLastEvaluatedUserTurns(userTurnsText);
       persistConversationSession(fallbackPayload, userTurnsText, dialogueTranscript);
+      setClearPopupState((prev) => startPostEvalClearPrompt(prev));
     } finally {
       setEvaluating(false);
     }
@@ -1781,7 +1906,7 @@ export function ConverseStudio({
                       flowVerdict: evaluation.flowVerdict,
                       internationalMetrics: deriveInternationalMetrics({
                         scores: evaluation.scores,
-                        content: userTurnsText,
+                        content: userTurnsText || lastEvaluatedUserTurns,
                         internationalMetrics: evaluation.internationalMetrics,
                       }),
                       feedbackImplemented: evaluation.feedbackImplemented,
@@ -1826,6 +1951,32 @@ export function ConverseStudio({
           </aside>
         )}
       </div>
+
+      <PostEvalClearPopup
+        state={clearPopupState}
+        onClearNow={() => {
+          executeClearChatForFreshSession();
+          setClearPopupState((prev) => transitionToClearedUndo(prev));
+        }}
+        onKeep={() =>
+          setClearPopupState((prev) => dismissPostEvalClear(prev))
+        }
+        onRestore={handleRestoreClearedChat}
+        onToggleAutoClear={() =>
+          setClearPopupState((prev) => {
+            const next = togglePostEvalAutoClear(prev);
+            writeAutoClearPreference(next.autoClearEnabled);
+            return next;
+          })
+        }
+        onPauseChange={(paused) =>
+          setClearPopupState((prev) => setPostEvalClearPaused(prev, paused))
+        }
+        onDismissUndo={() => {
+          lastClearedChatRef.current = null;
+          setClearPopupState((prev) => dismissPostEvalClear(prev));
+        }}
+      />
     </section>
   );
 }
