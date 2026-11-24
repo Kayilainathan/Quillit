@@ -1,7 +1,7 @@
 /* ==========================================================================
    Quillit v3.1 Design Tokens — Quiet Luxury Literary Stationery (Light + Dark)
-   Cotton Rag Paper Light (#FAF8F4 + Deep Forest Ink #1F4E46)
-   Nocturne Obsidian Dark (#0E0E0D + Muted Sage Ink #6FB3A4)
+   Cotton Rag Paper Light (#FAF8F4 + Warm Carbon Ink #141413)
+   Nocturne Obsidian Dark (#0E0E0D + Warm Ivory Ink #F2F0EB)
    Zero neon glows, zero purple gradients, strict WCAG AA contrast.
    ========================================================================== */
 
@@ -32,12 +32,12 @@
   --border-default: rgba(20, 20, 19, 0.14);
   --border-strong: rgba(20, 20, 19, 0.28);
 
-  /* Accent Preset — Deep Forest Ink */
-  --accent-primary: #1F4E46;
+  /* Accent Preset — Original Monochrome Editorial Carbon Ink */
+  --accent-primary: #141413;
   --accent: var(--accent-primary);
-  --accent-hover: #173B35;
-  --accent-soft: rgba(31, 78, 70, 0.10);
-  --focus-ring: rgba(31, 78, 70, 0.24);
+  --accent-hover: #2C2B29;
+  --accent-soft: rgba(20, 20, 19, 0.08);
+  --focus-ring: rgba(20, 20, 19, 0.24);
 
   /* Muted Semantic Status Tokens (10% soft fills, never neon) */
   --status-success: #256D4E;
@@ -58,19 +58,19 @@
   --status-info-soft: rgba(34, 84, 138, 0.10);
   --status-info-border: rgba(34, 84, 138, 0.24);
 
-  /* Chart & Matrix Palette */
-  --chart-primary: #1F4E46;
-  --chart-primary-soft: rgba(31, 78, 70, 0.10);
-  --chart-secondary: #256D4E;
-  --chart-secondary-soft: rgba(37, 109, 78, 0.12);
+  /* Chart & Matrix Palette — Editorial Graphite Ink Ramp */
+  --chart-primary: #141413;
+  --chart-primary-soft: rgba(20, 20, 19, 0.08);
+  --chart-secondary: #52514D;
+  --chart-secondary-soft: rgba(82, 81, 77, 0.12);
   --chart-tertiary: #9A5F16;
   --chart-grid: rgba(20, 20, 19, 0.09);
   --chart-empty: #F2EFE9;
   --chart-empty-border: rgba(20, 20, 19, 0.10);
-  --chart-ramp-1: #C8DDD2;
-  --chart-ramp-2: #8FBBA4;
-  --chart-ramp-3: #4E8B6F;
-  --chart-ramp-4: #1F4E46;
+  --chart-ramp-1: #E5E1D8;
+  --chart-ramp-2: #B8B3A7;
+  --chart-ramp-3: #5C5953;
+  --chart-ramp-4: #141413;
   --chart-cell-ink-low: #141413;
   --chart-cell-ink-high: #FAF8F4;
 
@@ -124,12 +124,12 @@
   --border-default: rgba(255, 255, 255, 0.13);
   --border-strong: rgba(255, 255, 255, 0.26);
 
-  /* Accent Preset — Muted Sage Ink */
-  --accent-primary: #6FB3A4;
+  /* Accent Preset — Original Monochrome Editorial Ivory Ink */
+  --accent-primary: #F2F0EB;
   --accent: var(--accent-primary);
-  --accent-hover: #83C4B6;
-  --accent-soft: rgba(111, 179, 164, 0.14);
-  --focus-ring: rgba(111, 179, 164, 0.30);
+  --accent-hover: #FFFFFF;
+  --accent-soft: rgba(242, 240, 235, 0.12);
+  --focus-ring: rgba(242, 240, 235, 0.30);
 
   /* Muted Semantic Status Tokens */
   --status-success: #5EB58C;
@@ -150,19 +150,19 @@
   --status-info-soft: rgba(127, 168, 217, 0.12);
   --status-info-border: rgba(127, 168, 217, 0.26);
 
-  /* Chart & Matrix Palette */
-  --chart-primary: #6FB3A4;
-  --chart-primary-soft: rgba(111, 179, 164, 0.14);
-  --chart-secondary: #5EB58C;
-  --chart-secondary-soft: rgba(94, 181, 140, 0.14);
+  /* Chart & Matrix Palette — Nocturne Ivory Ramp */
+  --chart-primary: #F2F0EB;
+  --chart-primary-soft: rgba(242, 240, 235, 0.12);
+  --chart-secondary: #A4A29B;
+  --chart-secondary-soft: rgba(164, 162, 155, 0.14);
   --chart-tertiary: #E0A44B;
   --chart-grid: rgba(255, 255, 255, 0.08);
   --chart-empty: #1A1A18;
   --chart-empty-border: rgba(255, 255, 255, 0.08);
-  --chart-ramp-1: #1E352F;
-  --chart-ramp-2: #2D554B;
-  --chart-ramp-3: #4A877A;
-  --chart-ramp-4: #6FB3A4;
+  --chart-ramp-1: #262522;
+  --chart-ramp-2: #4D4B45;
+  --chart-ramp-3: #99958C;
+  --chart-ramp-4: #F2F0EB;
   --chart-cell-ink-low: #F2F0EB;
   --chart-cell-ink-high: #0E0E0D;
 

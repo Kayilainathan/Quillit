@@ -384,7 +384,7 @@ export function CalendarView({
   return (
     <div
       data-testid="writing-calendar-view"
-      className="max-w-6xl mx-auto px-4 sm:px-6 py-8 sm:py-10 space-y-6"
+      className="editorial-enter max-w-6xl mx-auto px-3 sm:px-6 py-5 sm:py-9 space-y-5 sm:space-y-6"
     >
       {/* Editorial Header */}
       <header className="flex flex-wrap items-end justify-between gap-4">

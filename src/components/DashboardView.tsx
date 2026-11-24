@@ -223,7 +223,7 @@ export function DashboardView({
     : null;
 
   return (
-    <div className="max-w-6xl mx-auto px-4 sm:px-6 py-8 space-y-8">
+    <div className="editorial-enter max-w-6xl mx-auto px-3 sm:px-6 py-5 sm:py-8 space-y-6 sm:space-y-8">
       <div className="flex flex-wrap items-end justify-between gap-4">
         <div>
           <h1 className="font-display text-2xl sm:text-3xl font-medium text-ink-primary">

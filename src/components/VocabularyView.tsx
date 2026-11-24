@@ -595,7 +595,7 @@ export function VocabularyView({
           {/* Interactive AI Category Filter Bar */}
           <nav
             aria-label="Vocabulary categories"
-            className="flex flex-wrap items-center gap-1.5 border-b border-border-subtle pb-3"
+            className="flex flex-nowrap sm:flex-wrap items-center gap-1.5 overflow-x-auto scrollbar-none scroll-smooth-touch border-b border-border-subtle pb-3"
           >
             <button
               type="button"

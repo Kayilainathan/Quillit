@@ -308,7 +308,7 @@ export function VaultSettingsView({
     : null;
 
   return (
-    <div className="max-w-4xl mx-auto px-4 sm:px-6 py-8 space-y-6">
+    <div className="editorial-enter max-w-4xl mx-auto px-3 sm:px-6 py-5 sm:py-8 space-y-5 sm:space-y-6">
       <div>
         <h1 className="font-display text-2xl sm:text-3xl font-medium tracking-tight text-ink-primary">
           Settings, Profile & Sync
@@ -457,7 +457,7 @@ export function VaultSettingsView({
               setCoachSavedNotice(false);
             }}
             placeholder='e.g., "Focus on crisp technical explanations for interviews. Flag passive voice and filler openers immediately."'
-            className="input-tactile w-full px-3.5 py-2.5 text-xs leading-relaxed resize-y"
+            className="input-tactile w-full px-3.5 py-2.5 text-[16px] sm:text-xs leading-relaxed resize-y"
           />
           <div className="flex items-center justify-between gap-3">
             <span className="text-[11px] text-ink-muted">
@@ -597,7 +597,7 @@ export function VaultSettingsView({
             >
               <span
                 className="vault-latch-track"
-                data-locked={vaultLatchEnabled ? 'true' : 'false'}
+                data-latched={vaultLatchEnabled ? 'true' : 'false'}
                 aria-hidden="true"
               >
                 <span className="vault-latch-thumb" />

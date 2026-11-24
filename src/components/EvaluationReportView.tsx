@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ArrowRight,
   BookOpen,
@@ -130,9 +130,7 @@ export function EvaluationLoadingCard({
 
       {/* Tactile ink progress rail */}
       <div className="space-y-2.5">
-        <div className="h-1 w-full rounded-full bg-border-subtle overflow-hidden">
-          <div className="h-full w-2/3 rounded-full bg-accent animate-pulse" />
-        </div>
+        <div className="h-1 w-full rounded-full bg-border-subtle ink-progress-shimmer" />
         <p className="text-xs text-ink-secondary leading-relaxed">
           {LOADING_PHASES[phaseIdx]}
         </p>
@@ -207,6 +205,13 @@ export function EvaluationReportView({
   const [showDraftInspector, setShowDraftInspector] = useState(false);
   const [diffMode, setDiffMode] = useState<'draft' | 'after'>('draft');
   const [showPastCapsuleDraft, setShowPastCapsuleDraft] = useState(false);
+  const draftPreviewRef = useRef<HTMLParagraphElement | null>(null);
+
+  useEffect(() => {
+    if (!showDraftInspector || !activeQuote || diffMode !== 'draft') return;
+    const mark = draftPreviewRef.current?.querySelector('mark');
+    mark?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  }, [showDraftInspector, activeQuote, diffMode]);
 
   const totalScore = computeTotalScore(report.scores);
   const percentage = computePercentage(totalScore);
@@ -630,7 +635,7 @@ export function EvaluationReportView({
         <section
           aria-label="Draft quote inspector"
           data-testid="draft-quote-inspector"
-          className="p-3.5 rounded-md border border-border-default bg-subtle/50 space-y-2.5"
+          className="drawer-reveal p-3.5 rounded-md border border-border-default bg-subtle/50 space-y-2.5"
         >
           <div className="flex items-center justify-between gap-2">
             <span className="text-[11px] font-medium text-ink-primary">
@@ -659,7 +664,10 @@ export function EvaluationReportView({
               </button>
             </div>
           </div>
-          <p className="text-xs text-ink-secondary leading-relaxed whitespace-pre-wrap max-h-44 overflow-y-auto">
+          <p
+            ref={draftPreviewRef}
+            className="text-xs text-ink-secondary leading-relaxed whitespace-pre-wrap max-h-44 overflow-y-auto scroll-smooth-touch"
+          >
             {diffMode === 'after'
               ? afterPreviewText
               : renderHighlightedDraft(draftContent, activeQuote)}

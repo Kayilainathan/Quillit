@@ -270,8 +270,8 @@ export function EntryDesk({
       </div>
 
       {/* Centered Single-Card Tactile Entry */}
-      <main className="w-full max-w-[420px] mx-auto my-8 sm:my-12">
-        <div className="card-surface p-6 sm:p-8 space-y-6">
+      <main className="w-full max-w-[420px] mx-auto my-6 sm:my-12">
+        <div className="card-surface editorial-enter p-5 sm:p-8 space-y-5 sm:space-y-6">
           <div className="space-y-1.5 text-center">
             <h1 className="font-display text-2xl sm:text-[26px] font-medium tracking-tight text-ink-primary">
               Your writing desk
@@ -341,7 +341,7 @@ export function EntryDesk({
 
           {/* TAB 1: CLOUD ACCOUNT */}
           {activeTab === 'cloud' && (
-            <div className="space-y-4">
+            <div key="tab-cloud" className="drawer-reveal space-y-4">
               <button
                 type="button"
                 data-testid="entry-google-signin"
@@ -392,7 +392,7 @@ export function EntryDesk({
                       onChange={(e) => setEmail(e.target.value)}
                       autoComplete="email"
                       placeholder="you@university.edu"
-                      className="input-tactile w-full pl-9 pr-3 py-2 text-xs"
+                      className="input-tactile w-full pl-9 pr-3 py-2 text-[16px] sm:text-xs"
                     />
                   </div>
                 </div>
@@ -436,7 +436,7 @@ export function EntryDesk({
                             : 'current-password'
                         }
                         placeholder="••••••••"
-                        className="input-tactile w-full pl-9 pr-3 py-2 text-xs"
+                        className="input-tactile w-full pl-9 pr-3 py-2 text-[16px] sm:text-xs"
                       />
                     </div>
                   </div>
@@ -499,7 +499,7 @@ export function EntryDesk({
 
           {/* TAB 2: LOCAL VAULT (Zero-Friction Instant IndexedDB Desk) */}
           {activeTab === 'local' && (
-            <div className="space-y-4">
+            <div key="tab-local" className="drawer-reveal space-y-4">
               <div className="p-4 rounded-lg border border-border-subtle bg-subtle/60 space-y-2">
                 <div className="flex items-center justify-between gap-2 text-xs">
                   <span className="font-medium text-ink-primary">

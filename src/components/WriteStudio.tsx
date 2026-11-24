@@ -297,7 +297,9 @@ export function WriteStudio({
     COMPRESSION_ROUNDS[0].durationSec
   );
   const [sprintRunning, setSprintRunning] = useState(false);
+  const [sprintAutoPaused, setSprintAutoPaused] = useState(false);
   const [showPrevRoundsDrawer, setShowPrevRoundsDrawer] = useState(false);
+  const evalAsideRef = useRef<HTMLElement | null>(null);
 
   // Skeleton Reconstruction State
   const [skeletonPassage, setSkeletonPassage] = useState<SkeletonPassage>(() =>
@@ -454,12 +456,25 @@ export function WriteStudio({
   useEffect(() => {
     function handleVisibility() {
       if (document.hidden) {
-        setSprintRunning(false);
+        setSprintRunning((wasRunning) => {
+          if (wasRunning) setSprintAutoPaused(true);
+          return false;
+        });
       }
     }
     document.addEventListener('visibilitychange', handleVisibility);
     return () => document.removeEventListener('visibilitychange', handleVisibility);
   }, []);
+
+  // On mobile (<1024px), gently scroll to evaluation scorecard once complete
+  useEffect(() => {
+    if (!evaluation || evaluating) return;
+    if (typeof window !== 'undefined' && window.innerWidth < 1024) {
+      window.setTimeout(() => {
+        evalAsideRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      }, 120);
+    }
+  }, [evaluation, evaluating]);
 
   // 4/3/2 Compression Sprint Countdown Timer
   useEffect(() => {
@@ -1754,8 +1769,8 @@ export function WriteStudio({
     <div
       className={
         focusMode
-          ? 'min-h-screen bg-canvas px-4 py-6 sm:py-10'
-          : `${hasRightCoachingDrawer ? 'max-w-6xl' : 'max-w-4xl'} mx-auto px-4 sm:px-6 py-8 sm:py-10 space-y-5`
+          ? 'min-h-screen bg-canvas px-3 sm:px-4 py-4 sm:py-10'
+          : `${hasRightCoachingDrawer ? 'max-w-6xl' : 'max-w-4xl'} mx-auto px-3 sm:px-6 py-4 sm:py-9 space-y-3.5 sm:space-y-5`
       }
     >
       {/* Minimal Editorial Studio Header (fades quietly during continuous typing) */}
@@ -1789,7 +1804,7 @@ export function WriteStudio({
           )}
         </div>
 
-        <div className="flex flex-wrap items-center gap-2 shrink-0">
+        <div className="flex flex-nowrap sm:flex-wrap items-center gap-1.5 sm:gap-2 w-full sm:w-auto overflow-x-auto scrollbar-none scroll-smooth-touch pb-0.5 sm:pb-0">
           {!focusMode && (
             <button
               type="button"
@@ -1887,7 +1902,7 @@ export function WriteStudio({
         <section
           aria-label="Saved drafts"
           data-testid="saved-drafts-shelf"
-          className="card-surface p-4 sm:p-5 space-y-3"
+          className="card-surface drawer-reveal p-4 sm:p-5 space-y-3"
         >
           <div className="flex items-center justify-between gap-2">
             <div>
@@ -2102,13 +2117,13 @@ export function WriteStudio({
             {!focusMode && !activeLinkedSlot && (
               <div
                 data-faded={chromeFaded ? 'true' : 'false'}
-                className="vanishing-chrome px-5 py-3 border-b border-border-subtle bg-subtle/55 space-y-2.5"
+                className="vanishing-chrome px-3 sm:px-5 py-2.5 sm:py-3 border-b border-border-subtle bg-subtle/55 space-y-2"
               >
-                <div className="flex flex-wrap items-center justify-between gap-2.5">
+                <div className="flex flex-col sm:flex-row sm:flex-wrap sm:items-center justify-between gap-2 min-w-0">
                   <div
                     role="tablist"
                     aria-label="Writing practice mode"
-                    className="segmented-track flex flex-wrap items-center gap-0.5"
+                    className="segmented-track flex flex-nowrap sm:flex-wrap items-center gap-0.5 overflow-x-auto scrollbar-none scroll-smooth-touch w-full sm:w-auto min-w-0"
                   >
                     {(Object.keys(MODE_LABELS) as WritingMode[]).map((m) => (
                       <button
@@ -2143,7 +2158,7 @@ export function WriteStudio({
                     ))}
                   </div>
 
-                  <div className="flex flex-wrap items-center gap-2">
+                  <div className="grid grid-cols-2 sm:flex sm:flex-wrap items-center gap-2 w-full sm:w-auto min-w-0">
                     <label htmlFor="audience-select" className="sr-only">
                       Target audience
                     </label>
@@ -2155,7 +2170,7 @@ export function WriteStudio({
                       onChange={(e) =>
                         setAudience(e.target.value as AudienceOption)
                       }
-                      className="input-tactile px-2 py-1 text-xs font-medium"
+                      className="input-tactile w-full sm:w-auto min-w-0 px-2 py-1 text-xs font-medium truncate"
                     >
                       {AUDIENCE_OPTIONS.map((aud) => (
                         <option key={aud} value={aud}>
@@ -2172,7 +2187,7 @@ export function WriteStudio({
                       value={tone}
                       title="Select target writing tone"
                       onChange={(e) => setTone(e.target.value as ToneSetting)}
-                      className="input-tactile px-2 py-1 text-xs font-medium"
+                      className="input-tactile w-full sm:w-auto min-w-0 px-2 py-1 text-xs font-medium truncate"
                     >
                       {Object.entries(TONE_LABELS).map(([val, label]) => (
                         <option key={val} value={val}>
@@ -2184,11 +2199,11 @@ export function WriteStudio({
                 </div>
 
                 {/* Practice Mechanic Selector + Constraint Chip + 3-Min Flow Toggle */}
-                <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-border-subtle/70">
+                <div className="flex flex-col sm:flex-row sm:flex-wrap sm:items-center justify-between gap-2 pt-2 border-t border-border-subtle/70 min-w-0">
                   <div
                     role="tablist"
                     aria-label="10-minute practice mechanic"
-                    className="segmented-track inline-flex flex-wrap items-center gap-0.5"
+                    className="segmented-track flex sm:inline-flex flex-nowrap sm:flex-wrap items-center gap-0.5 overflow-x-auto scrollbar-none scroll-smooth-touch w-full sm:w-auto min-w-0"
                   >
                     {DRILL_OPTIONS.map((opt) => (
                       <button
@@ -2274,7 +2289,7 @@ export function WriteStudio({
                 {showConstraintPicker && (
                   <div
                     data-testid="constraint-picker-drawer"
-                    className="pt-2.5 border-t border-border-subtle space-y-2"
+                    className="drawer-reveal pt-2.5 border-t border-border-subtle space-y-2"
                   >
                     <div className="flex items-center justify-between text-[11px]">
                       <span className="font-medium text-ink-primary">
@@ -2497,6 +2512,14 @@ export function WriteStudio({
                   </div>
 
                   <div className="flex items-center gap-2">
+                    {sprintAutoPaused && !sprintRunning && (
+                      <span
+                        data-testid="sprint-paused-pill"
+                        className="px-1.5 py-0.5 rounded-sm border border-border-default bg-surface text-[10px] font-mono-tabular text-ink-secondary"
+                      >
+                        Paused
+                      </span>
+                    )}
                     <span
                       data-testid="sprint-timer-clock"
                       className="font-mono-tabular text-sm font-semibold text-ink-primary"
@@ -2505,7 +2528,10 @@ export function WriteStudio({
                     </span>
                     <button
                       type="button"
-                      onClick={() => setSprintRunning((r) => !r)}
+                      onClick={() => {
+                        setSprintAutoPaused(false);
+                        setSprintRunning((r) => !r);
+                      }}
                       aria-label={sprintRunning ? 'Pause timer' : 'Start timer'}
                       className="btn-secondary p-1.5"
                     >
@@ -2519,6 +2545,7 @@ export function WriteStudio({
                       type="button"
                       onClick={() => {
                         setSprintRunning(false);
+                        setSprintAutoPaused(false);
                         setSprintSecondsLeft(currentSprintSpec.durationSec);
                       }}
                       aria-label="Reset round timer"
@@ -2580,8 +2607,9 @@ export function WriteStudio({
             {/* 2. SKELETON RECONSTRUCTION STUDY / CLUE RAIL */}
             {activeDrill === 'skeleton' && !focusMode && (
               <div
+                key={`skeleton-${skeletonPhase}`}
                 data-testid="skeleton-drill-panel"
-                className="px-5 py-4 border-b border-border-subtle bg-subtle/45 space-y-3"
+                className="drawer-reveal px-4 sm:px-5 py-3.5 sm:py-4 border-b border-border-subtle bg-subtle/45 space-y-3"
               >
                 {skeletonPhase === 'study' ? (
                   <>
@@ -2720,7 +2748,7 @@ export function WriteStudio({
             )}
 
             {/* Manuscript Body */}
-            <div className="p-5 sm:p-8 space-y-5">
+            <div className="p-3.5 sm:p-8 space-y-4 sm:space-y-5">
               {/* Quiet Random Topic Starter Hint */}
               {!activeLinkedSlot && !focusMode && suggestedTopicMeta && (
                 <div
@@ -2877,7 +2905,7 @@ export function WriteStudio({
                           setSavedSuccess(false);
                         }}
                         placeholder="Explain it with a kitchen or playground analogy. Zero jargon..."
-                        className="w-full bg-transparent text-sm leading-[1.8] text-ink-primary placeholder:text-ink-muted focus:outline-none resize-y"
+                        className="w-full bg-transparent text-[16px] sm:text-sm leading-[1.8] text-ink-primary placeholder:text-ink-muted focus:outline-none resize-y"
                       />
                       <div
                         data-testid="room-a-jargon-status"
@@ -2922,7 +2950,7 @@ export function WriteStudio({
                           setSavedSuccess(false);
                         }}
                         placeholder="State the failure mode, trade-off, and concrete fix sharply..."
-                        className="w-full bg-transparent text-sm leading-[1.8] text-ink-primary placeholder:text-ink-muted focus:outline-none resize-y"
+                        className="w-full bg-transparent text-[16px] sm:text-sm leading-[1.8] text-ink-primary placeholder:text-ink-muted focus:outline-none resize-y"
                       />
                       <div className="pt-2 border-t border-border-subtle text-[11px] font-mono-tabular text-ink-muted">
                         Target: sharp engineering register
@@ -2997,7 +3025,7 @@ export function WriteStudio({
                                     ? 'Begin with a concrete image, sound, or turning point...'
                                     : 'Begin writing freely. Your words stay private on this device...'
                     }
-                    className="w-full max-w-[66ch] bg-transparent text-[15px] sm:text-base leading-[1.85] text-ink-primary placeholder:text-ink-muted resize-y focus:outline-none"
+                    className="w-full max-w-[66ch] bg-transparent text-[16px] sm:text-base leading-[1.82] sm:leading-[1.85] text-ink-primary placeholder:text-ink-muted resize-y focus:outline-none"
                   />
                 </div>
               )}
@@ -3275,7 +3303,7 @@ export function WriteStudio({
 
         {/* Right Column Coaching Drawer (Single-Pass Evaluation, Auto-Logged) */}
         {hasRightCoachingDrawer && (
-          <aside className="lg:col-span-5 space-y-5">
+          <aside ref={evalAsideRef} className="lg:col-span-5 space-y-5">
             {evaluating ? (
               <EvaluationLoadingCard
                 wordCount={diagnostics.wordCount}
@@ -3285,7 +3313,7 @@ export function WriteStudio({
             ) : evaluation && evalIntl ? (
               <div
                 data-testid="evaluation-result-card"
-                className="card-surface p-5 space-y-4"
+                className="card-surface editorial-enter p-4 sm:p-5 space-y-4"
               >
                 {liveAppliedNotice && (
                   <div className="p-2.5 rounded-md border border-status-success-border bg-status-success-soft text-xs text-status-success">

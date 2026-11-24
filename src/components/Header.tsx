@@ -118,7 +118,7 @@ export function Header({
   return (
     <>
       <header className="sticky top-0 z-30 border-b border-border-subtle bg-canvas/92 backdrop-blur-md">
-        <div className="max-w-6xl mx-auto px-4 sm:px-6 h-14 flex items-center justify-between gap-4 sm:gap-6">
+        <div className="max-w-6xl mx-auto px-3 sm:px-6 h-12 sm:h-14 flex items-center justify-between gap-2.5 sm:gap-6">
           {/* Brand */}
           <button
             type="button"
@@ -207,7 +207,7 @@ export function Header({
                   {isActive && (
                     <span
                       aria-hidden="true"
-                      className="absolute inset-x-3 -bottom-[15px] h-[2px] rounded-full bg-accent"
+                      className="tab-indicator-slide absolute inset-x-3 -bottom-[15px] h-[2px] rounded-full bg-accent"
                     />
                   )}
                 </button>
@@ -441,7 +441,7 @@ export function Header({
               </button>
             )}
 
-            {/* Settings Gear */}
+            {/* Settings Gear (Desktop only; mobile has Settings in the nav strip) */}
             <button
               type="button"
               data-testid="header-settings-button"
@@ -449,7 +449,7 @@ export function Header({
               aria-label="Coach & Vault Settings"
               aria-current={activeView === 'vault' ? 'page' : undefined}
               title="Settings & Custom Coach"
-              className={`inline-flex items-center justify-center w-8 h-8 p-0 shrink-0 ${
+              className={`hidden md:inline-flex items-center justify-center w-8 h-8 p-0 shrink-0 ${
                 activeView === 'vault' ? 'btn-primary' : 'btn-secondary'
               }`}
             >
@@ -470,11 +470,11 @@ export function Header({
                   ? 'Vault Latch armed — click to lock desk'
                   : 'Lock desk & return to Entry'
               }
-              className="btn-secondary inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium whitespace-nowrap shrink-0"
+              className="btn-secondary inline-flex items-center gap-1.5 px-2 sm:px-2.5 py-1.5 text-xs font-medium whitespace-nowrap shrink-0"
             >
               <span
                 className="vault-latch-track"
-                data-locked={vaultLatchEnabled ? 'true' : 'false'}
+                data-latched={vaultLatchEnabled ? 'true' : 'false'}
                 aria-hidden="true"
               >
                 <span className="vault-latch-thumb" />
@@ -507,10 +507,10 @@ export function Header({
           </div>
         )}
 
-        {/* Compact mobile navigation row */}
+        {/* Compact minimal mobile navigation row */}
         <nav
           aria-label="Mobile navigation"
-          className="flex md:hidden items-center gap-1 overflow-x-auto px-3 py-1.5 border-t border-border-subtle"
+          className="flex md:hidden items-center gap-1 overflow-x-auto scrollbar-none scroll-smooth-touch snap-x px-3 py-1.5 border-t border-border-subtle"
         >
           {[...PRIMARY_NAV_ITEMS, { id: 'vault' as AppView, label: 'Settings' }].map(
             (item) => {
@@ -530,9 +530,9 @@ export function Header({
                   type="button"
                   onClick={() => onNavigate(item.id)}
                   aria-current={isActive ? 'page' : undefined}
-                  className={`inline-flex items-center gap-1.5 px-3 py-1.5 min-h-[36px] text-xs font-medium whitespace-nowrap shrink-0 rounded-md transition-colors ${
+                  className={`snap-start inline-flex items-center gap-1.5 px-3 py-1.5 min-h-[34px] text-xs font-medium whitespace-nowrap shrink-0 rounded-md transition-all duration-150 ${
                     isActive
-                      ? 'bg-accent text-ink-inverse'
+                      ? 'bg-accent text-ink-inverse shadow-xs'
                       : 'text-ink-secondary hover:text-ink-primary hover:bg-subtle'
                   }`}
                 >
