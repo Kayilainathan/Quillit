@@ -2,7 +2,6 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ArrowRight,
   BookmarkPlus,
-  BookOpen,
   CalendarClock,
   Check,
   CheckCircle2,
@@ -11,16 +10,22 @@ import {
   Clock,
   Dices,
   ExternalLink,
+  EyeOff,
   FileText,
+  Flame,
+  History,
+  Layers,
   Lock,
   Maximize2,
   Minimize2,
   Moon,
-  PenLine,
-  Plus,
+  Pause,
+  Play,
   RefreshCw,
+  RotateCcw,
   Save,
   Shuffle,
+  SlidersHorizontal,
   Sparkles,
   Sun,
   Trash2,
@@ -28,8 +33,14 @@ import {
   X,
 } from 'lucide-react';
 import type {
+  AudienceOption,
   CalendarSlot,
+  CalqueFix,
   CoachHighlightPoint,
+  CoachPresetId,
+  DrillMeta,
+  DrillType,
+  DrillVerdict,
   EvaluationRoutingMeta,
   FeedbackImplementationDetail,
   FeedbackImplementedStatus,
@@ -80,6 +91,53 @@ import {
   EvaluationLoadingCard,
   EvaluationReportView,
 } from './EvaluationReportView';
+import { computeProseDiagnostics } from '../utils/proseDiagnostics';
+import {
+  COMPRESSION_ROUNDS,
+  computeCompressionMetrics,
+  countSprintWords,
+  formatCountdownMMSS,
+} from '../utils/compressionSprint';
+import {
+  compareSkeletonReconstruction,
+  parseSkeletonClues,
+  pickOfflineSkeletonPassage,
+  type SkeletonPassage,
+} from '../utils/skeletonDrill';
+import {
+  checkRoomAJargon,
+  combineThreeRoomsForEvaluation,
+  evaluateRegisterShift,
+} from '../utils/audienceLadder';
+import {
+  CONSTRAINT_CHALLENGES,
+  type ConstraintChallenge,
+} from '../utils/constraintChallenges';
+import {
+  DEFAULT_FLOW_SPRINT_SECONDS,
+  shouldBlockFlowBeforeInput,
+  shouldBlockFlowKeydown,
+} from '../utils/noBackspaceGuard';
+import {
+  computeTimeCapsuleDelta,
+  findTimeCapsuleCandidate,
+} from '../utils/timeCapsule';
+import { playTactileClick } from '../utils/tactileSound';
+
+const AUDIENCE_OPTIONS: AudienceOption[] = [
+  'Interviewer',
+  'Hiring Manager',
+  'Professor',
+  'LinkedIn Reader',
+  'Friend',
+];
+
+const DRILL_OPTIONS: Array<{ id: DrillType; label: string; duration: string }> = [
+  { id: 'standard', label: 'Standard', duration: '10m' },
+  { id: 'compression-432', label: '4/3/2 Sprint', duration: '6m' },
+  { id: 'skeleton', label: 'Skeleton', duration: '8m' },
+  { id: 'three-rooms', label: '3 Rooms', duration: '10m' },
+];
 
 interface EvaluationPayload {
   evaluationStatus?: 'completed' | 'queued_for_reset';
@@ -108,6 +166,12 @@ interface EvaluationPayload {
   masteredWordsUsed?: string[];
   grammarFixes: GrammarFix[];
   vocabUpgrades: VocabSuggestion[];
+  // v3.1 fields
+  spokenReadinessScore?: number;
+  signalNoiseRatio?: number;
+  audienceReaction?: string;
+  calqueFixes?: CalqueFix[];
+  drillVerdict?: DrillVerdict;
 }
 
 interface WriteStudioProps {
@@ -121,6 +185,9 @@ interface WriteStudioProps {
   calendarSlots: CalendarSlot[];
   studentProfile?: StudentProfile;
   coachContext: CoachPerformanceContext;
+  customCoachPrompt?: string;
+  coachPresets?: CoachPresetId[];
+  tactileSoundEnabled?: boolean;
   autoReloadSchedule: boolean;
   refreshingSchedule: boolean;
   scheduleError: string | null;
@@ -139,6 +206,8 @@ interface WriteStudioProps {
   initialTone: ToneSetting;
   initialTopic: string;
   initialDaySlot: string;
+  initialDrillType?: DrillType;
+  initialTimeCapsuleOrigin?: WritingSession | null;
   linkedCalendarSlotId?: string;
   onSaveSession: (
     session: WritingSession,
@@ -169,6 +238,9 @@ export function WriteStudio({
   calendarSlots,
   studentProfile,
   coachContext,
+  customCoachPrompt,
+  coachPresets,
+  tactileSoundEnabled = false,
   pendingEvalSessionsCount = 0,
   dailyWordGoal,
   liveOfflineCheckEnabled = true,
@@ -178,6 +250,8 @@ export function WriteStudio({
   initialTone,
   initialTopic,
   initialDaySlot,
+  initialDrillType = 'standard',
+  initialTimeCapsuleOrigin = null,
   linkedCalendarSlotId,
   onSaveSession,
   onSaveDraft,
@@ -190,7 +264,10 @@ export function WriteStudio({
 }: WriteStudioProps) {
   const [mode, setMode] = useState<WritingMode>(initialMode);
   const [tone, setTone] = useState<ToneSetting>(initialTone);
-  const [topic, setTopic] = useState(initialTopic);
+  const [audience, setAudience] = useState<AudienceOption>('Interviewer');
+  const [topic, setTopic] = useState(
+    initialTimeCapsuleOrigin?.topicDescription || initialTopic
+  );
   const [daySlot, setDaySlot] = useState(initialDaySlot);
   const [activeSlotId, setActiveSlotId] = useState<string | undefined>(
     linkedCalendarSlotId
@@ -200,6 +277,71 @@ export function WriteStudio({
   const [activeDraftId, setActiveDraftId] = useState<string | null>(null);
   const [draftSavedLabel, setDraftSavedLabel] = useState<string | null>(null);
   const [showDraftsShelf, setShowDraftsShelf] = useState(false);
+
+  // v3.1 Practice Mechanics State
+  const [activeDrill, setActiveDrill] = useState<DrillType>(
+    initialTimeCapsuleOrigin ? 'time-capsule' : initialDrillType
+  );
+  const [activeConstraint, setActiveConstraint] =
+    useState<ConstraintChallenge | null>(null);
+  const [showConstraintPicker, setShowConstraintPicker] = useState(false);
+
+  // 4/3/2 Compression Sprint State
+  const [sprintRoundIdx, setSprintRoundIdx] = useState<0 | 1 | 2>(0);
+  const [sprintRounds, setSprintRounds] = useState<[string, string, string]>([
+    '',
+    '',
+    '',
+  ]);
+  const [sprintSecondsLeft, setSprintSecondsLeft] = useState<number>(
+    COMPRESSION_ROUNDS[0].durationSec
+  );
+  const [sprintRunning, setSprintRunning] = useState(false);
+  const [showPrevRoundsDrawer, setShowPrevRoundsDrawer] = useState(false);
+
+  // Skeleton Reconstruction State
+  const [skeletonPassage, setSkeletonPassage] = useState<SkeletonPassage>(() =>
+    pickOfflineSkeletonPassage(initialMode)
+  );
+  const [skeletonPhase, setSkeletonPhase] = useState<'study' | 'reconstruct'>(
+    'study'
+  );
+  const [skeletonCluesInput, setSkeletonCluesInput] = useState('');
+  const [skeletonLoading, setSkeletonLoading] = useState(false);
+  const [seenSkeletonIds, setSeenSkeletonIds] = useState<string[]>([]);
+
+  // 3 Rooms Audience Ladder State
+  const [roomAText, setRoomAText] = useState('');
+  const [roomBText, setRoomBText] = useState('');
+  const [mobileRoomTab, setMobileRoomTab] = useState<'roomA' | 'roomB'>('roomA');
+
+  // Time Capsule Origin Session State
+  const [timeCapsuleOrigin, setTimeCapsuleOrigin] =
+    useState<WritingSession | null>(initialTimeCapsuleOrigin);
+
+  // 3-Minute "No-Backspace" Flow Sprint State
+  const [flowLockActive, setFlowLockActive] = useState(false);
+  const [flowSecondsLeft, setFlowSecondsLeft] = useState<number>(
+    DEFAULT_FLOW_SPRINT_SECONDS
+  );
+  const [flowShakeTick, setFlowShakeTick] = useState(0);
+  const [flowHintVisible, setFlowHintVisible] = useState(false);
+  const flowHintTimerRef = useRef<number | null>(null);
+  const flowLockUsedInDraftRef = useRef(false);
+
+  // 2-Second Vanishing Desk (fades non-essential chrome during continuous typing)
+  const [chromeFaded, setChromeFaded] = useState(false);
+  const typingFadeTimerRef = useRef<number | null>(null);
+
+  // Revise & Lift (Pass 2) State
+  const [revisionContext, setRevisionContext] = useState<{
+    pass1SessionId: string;
+    pass1Score: number;
+    focusItems: string[];
+  } | null>(null);
+  const [lastRevisionDelta, setLastRevisionDelta] = useState<number | undefined>(
+    undefined
+  );
 
   const [preLoadSnapshot, setPreLoadSnapshot] = useState<{
     mode: WritingMode;
@@ -221,7 +363,7 @@ export function WriteStudio({
       : null
   );
 
-  // Non-repeating 52-week curriculum randomizer (smart dismiss tracks post-click writing)
+  // Non-repeating 52-week curriculum randomizer
   const lastDrawnCurriculumIdRef = useRef<string | null>(null);
   const topicTimerRef = useRef<number | null>(null);
   const contentSnapshotAtTopicPickRef = useRef<string>('');
@@ -239,30 +381,27 @@ export function WriteStudio({
     isAi?: boolean;
   } | null>(null);
 
-  // Universal Pivot controls when a slot is loaded
   const [showPivotInput, setShowPivotInput] = useState(false);
   const [pivotFocus, setPivotFocus] = useState('');
   const [pivoting, setPivoting] = useState(false);
 
-  // Live instant offline proofreader drawer visibility
   const [showOfflinePanel, setShowOfflinePanel] = useState(true);
   const [showAllDueTasks, setShowAllDueTasks] = useState(false);
 
-  const [liveAppliedNotice, setLiveAppliedNotice] = useState<string | null>(
-    null
-  );
+  const [liveAppliedNotice, setLiveAppliedNotice] = useState<string | null>(null);
   const [showQuickAddVocab, setShowQuickAddVocab] = useState(false);
   const [quickVocabToast, setQuickVocabToast] = useState<string | null>(null);
   const quickVocabToastTimerRef = useRef<number | null>(null);
 
-  const [checkedAngles, setCheckedAngles] = useState<Record<string, boolean>>(
-    {}
-  );
+  const [checkedAngles, setCheckedAngles] = useState<Record<string, boolean>>({});
 
   const [evaluating, setEvaluating] = useState(false);
   const [evaluatingTierLabel, setEvaluatingTierLabel] =
     useState<string>('Hydrogen · Medium');
   const [evaluation, setEvaluation] = useState<EvaluationPayload | null>(null);
+  const [lastSubmittedDrillMeta, setLastSubmittedDrillMeta] = useState<
+    DrillMeta | undefined
+  >(undefined);
   const [savedSuccess, setSavedSuccess] = useState(false);
   const [autoTitledBanner, setAutoTitledBanner] = useState<string | null>(null);
   const [promotedVocabBanner, setPromotedVocabBanner] = useState<string[] | null>(
@@ -274,10 +413,12 @@ export function WriteStudio({
   const [resetCountdown, setResetCountdown] = useState<number>(0);
   const [initialResetTotal, setInitialResetTotal] = useState<number>(30);
 
+  // Sync latest topic ref
   useEffect(() => {
     latestTopicRef.current = topic;
   }, [topic]);
 
+  // Report evaluation progress to Header (PSR-08)
   useEffect(() => {
     onEvaluationStateChange?.({
       inProgress: evaluating,
@@ -285,23 +426,273 @@ export function WriteStudio({
     });
   }, [evaluating, evaluation, onEvaluationStateChange]);
 
-  // Crisp 80ms debounce for lightning-fast offline live spelling & basic grammar check
-  useEffect(() => {
-    const t = window.setTimeout(() => {
-      setDebouncedContent(content);
-    }, 80);
-    return () => window.clearTimeout(t);
-  }, [content]);
+  // 80ms debounce for live offline proofreader & prose diagnostics
+  const effectiveDraftText = useMemo(() => {
+    if (activeDrill === 'three-rooms') {
+      return `${roomAText.trim()}\n\n${roomBText.trim()}`.trim();
+    }
+    return content;
+  }, [activeDrill, content, roomAText, roomBText]);
 
   useEffect(() => {
+    const t = window.setTimeout(() => {
+      setDebouncedContent(effectiveDraftText);
+    }, 80);
+    return () => window.clearTimeout(t);
+  }, [effectiveDraftText]);
+
+  // Cleanup timers on unmount
+  useEffect(() => {
     return () => {
-      if (topicTimerRef.current !== null) {
-        window.clearTimeout(topicTimerRef.current);
-      }
+      if (topicTimerRef.current !== null) window.clearTimeout(topicTimerRef.current);
+      if (flowHintTimerRef.current !== null) window.clearTimeout(flowHintTimerRef.current);
+      if (typingFadeTimerRef.current !== null) window.clearTimeout(typingFadeTimerRef.current);
     };
   }, []);
 
-  const diagnostics = useMemo(() => analyzeDraftLocally(content), [content]);
+  // Auto-pause timers when browser tab is hidden (visibilitychange)
+  useEffect(() => {
+    function handleVisibility() {
+      if (document.hidden) {
+        setSprintRunning(false);
+      }
+    }
+    document.addEventListener('visibilitychange', handleVisibility);
+    return () => document.removeEventListener('visibilitychange', handleVisibility);
+  }, []);
+
+  // 4/3/2 Compression Sprint Countdown Timer
+  useEffect(() => {
+    if (!sprintRunning || activeDrill !== 'compression-432') return;
+    if (sprintSecondsLeft <= 0) {
+      setSprintRunning(false);
+      return;
+    }
+    const timer = window.setInterval(() => {
+      setSprintSecondsLeft((prev) => {
+        if (prev <= 1) {
+          setSprintRunning(false);
+          return 0;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, [sprintRunning, activeDrill, sprintSecondsLeft]);
+
+  // 3-Minute No-Backspace Flow Sprint Countdown Timer (auto-pauses when tab hidden)
+  useEffect(() => {
+    if (!flowLockActive) return;
+    if (flowSecondsLeft <= 0) {
+      setFlowLockActive(false);
+      setFlowHintVisible(false);
+      return;
+    }
+    const timer = window.setInterval(() => {
+      if (document.hidden) return;
+      setFlowSecondsLeft((prev) => {
+        if (prev <= 1) {
+          setFlowLockActive(false);
+          setFlowHintVisible(false);
+          return 0;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, [flowLockActive, flowSecondsLeft]);
+
+  // Restore vanishing chrome on pointer move or Escape
+  useEffect(() => {
+    if (!chromeFaded) return;
+    const restore = () => setChromeFaded(false);
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setChromeFaded(false);
+    };
+    window.addEventListener('pointermove', restore, { passive: true });
+    window.addEventListener('keydown', onKey);
+    return () => {
+      window.removeEventListener('pointermove', restore);
+      window.removeEventListener('keydown', onKey);
+    };
+  }, [chromeFaded]);
+
+  function scheduleVanishingDesk() {
+    if (typingFadeTimerRef.current !== null) {
+      window.clearTimeout(typingFadeTimerRef.current);
+    }
+    typingFadeTimerRef.current = window.setTimeout(() => {
+      if (effectiveDraftText.trim().length >= 30 && !evaluating) {
+        setChromeFaded(true);
+      }
+    }, 2000);
+  }
+
+  function triggerFlowBlockFeedback() {
+    setFlowShakeTick((t) => t + 1);
+    setFlowHintVisible(true);
+    if (flowHintTimerRef.current !== null) {
+      window.clearTimeout(flowHintTimerRef.current);
+    }
+    flowHintTimerRef.current = window.setTimeout(() => {
+      setFlowHintVisible(false);
+    }, 2200);
+  }
+
+  function handleToggleFlowSprint() {
+    playTactileClick(tactileSoundEnabled);
+    if (flowLockActive) {
+      setFlowLockActive(false);
+      setFlowHintVisible(false);
+      return;
+    }
+    flowLockUsedInDraftRef.current = true;
+    setFlowSecondsLeft(DEFAULT_FLOW_SPRINT_SECONDS);
+    setFlowLockActive(true);
+    setFlowHintVisible(false);
+    window.setTimeout(() => document.getElementById('writing-editor')?.focus(), 40);
+  }
+
+  function handleSelectDrill(nextDrill: DrillType) {
+    playTactileClick(tactileSoundEnabled);
+    setActiveDrill(nextDrill);
+    setErrorMessage(null);
+    setEvaluation(null);
+    setSavedSuccess(false);
+    setRevisionContext(null);
+
+    if (nextDrill === 'compression-432') {
+      setSprintRoundIdx(0);
+      setSprintRounds(['', '', '']);
+      setSprintSecondsLeft(COMPRESSION_ROUNDS[0].durationSec);
+      setSprintRunning(false);
+      setShowPrevRoundsDrawer(false);
+    } else if (nextDrill === 'skeleton') {
+      setSkeletonPhase('study');
+      const picked = pickOfflineSkeletonPassage(mode, seenSkeletonIds);
+      setSkeletonPassage(picked);
+      setSkeletonCluesInput(picked.signatureMoves.join(', '));
+      setTopic(`Skeleton: ${picked.title}`);
+    } else if (nextDrill === 'three-rooms') {
+      if (!topic.trim()) {
+        setTopic('Explain PID feedback loops in two contrasting registers');
+      }
+    }
+  }
+
+  async function handleNextSkeletonPassage() {
+    playTactileClick(tactileSoundEnabled);
+    setSkeletonLoading(true);
+    const nextSeen = Array.from(new Set([...seenSkeletonIds, skeletonPassage.id]));
+    setSeenSkeletonIds(nextSeen);
+    try {
+      const res = await fetch(getApiUrl('/api/skeleton-passage'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          mode,
+          focusTheme: topic.trim() || undefined,
+          excludeIds: nextSeen,
+          studentProfile,
+        }),
+      });
+      const data = await safeParseJsonResponse<{
+        passage?: Partial<SkeletonPassage> & { passage?: string };
+      }>(res);
+      const rawPassage = data?.passage;
+      const resolvedText = rawPassage?.text || rawPassage?.passage;
+      if (res.ok && rawPassage && resolvedText) {
+        const normalized: SkeletonPassage = {
+          id: rawPassage.id || `skel-ai-${Date.now()}`,
+          title: rawPassage.title || 'High-Craft Passage',
+          domain: rawPassage.domain || 'technical',
+          mode: rawPassage.mode || mode,
+          text: resolvedText,
+          wordCount:
+            rawPassage.wordCount || resolvedText.trim().split(/\s+/).filter(Boolean).length,
+          signatureMoves: Array.isArray(rawPassage.signatureMoves)
+            ? rawPassage.signatureMoves
+            : [],
+        };
+        setSkeletonPassage(normalized);
+        setSkeletonCluesInput(normalized.signatureMoves.join(', '));
+        setTopic(`Skeleton: ${normalized.title}`);
+        setSkeletonPhase('study');
+        return;
+      }
+    } catch {
+      // Offline bank fallback below
+    } finally {
+      setSkeletonLoading(false);
+    }
+    const localPick = pickOfflineSkeletonPassage(mode, nextSeen);
+    setSkeletonPassage(localPick);
+    setSkeletonCluesInput(localPick.signatureMoves.join(', '));
+    setTopic(`Skeleton: ${localPick.title}`);
+    setSkeletonPhase('study');
+  }
+
+  function handleAdvanceCompressionRound() {
+    playTactileClick(tactileSoundEnabled);
+    const updated: [string, string, string] = [...sprintRounds] as [
+      string,
+      string,
+      string,
+    ];
+    updated[sprintRoundIdx] = content.trim();
+    setSprintRounds(updated);
+
+    if (sprintRoundIdx < 2) {
+      const nextIdx = (sprintRoundIdx + 1) as 1 | 2;
+      setSprintRoundIdx(nextIdx);
+      setContent(updated[nextIdx] || '');
+      setSprintSecondsLeft(COMPRESSION_ROUNDS[nextIdx].durationSec);
+      setSprintRunning(false);
+      window.setTimeout(
+        () => document.getElementById('writing-editor')?.focus(),
+        40
+      );
+    }
+  }
+
+  const diagnostics = useMemo(
+    () => analyzeDraftLocally(effectiveDraftText),
+    [effectiveDraftText]
+  );
+
+  // Live Zero-Quota Prose Diagnostics (Sentence Rhythm Strip + Signal/Noise + Calques)
+  const liveProseDiagnostics = useMemo(
+    () => computeProseDiagnostics(debouncedContent),
+    [debouncedContent]
+  );
+
+  // Live Deterministic Constraint Evaluation
+  const constraintResult = useMemo(
+    () => (activeConstraint ? activeConstraint.check(debouncedContent) : null),
+    [activeConstraint, debouncedContent]
+  );
+
+  // Room A Jargon Detector (for 3 Rooms)
+  const roomAJargonCheck = useMemo(
+    () => (activeDrill === 'three-rooms' ? checkRoomAJargon(roomAText) : null),
+    [activeDrill, roomAText]
+  );
+
+  const roomAWordCount = useMemo(
+    () => analyzeDraftLocally(roomAText).wordCount,
+    [roomAText]
+  );
+  const roomBWordCount = useMemo(
+    () => analyzeDraftLocally(roomBText).wordCount,
+    [roomBText]
+  );
+
+  // Eligible Time Capsule candidate from user history
+  const timeCapsuleCandidate = useMemo(
+    () => findTimeCapsuleCandidate(sessions, todayISO),
+    [sessions, todayISO]
+  );
+
   const effectiveDailyWordGoal =
     dailyWordGoal || studentProfile?.targetWordGoal || 250;
   const dailyInkProgress = useMemo(
@@ -369,12 +760,58 @@ export function WriteStudio({
     }
   }, [todayISO]);
 
+  function handleLaunchTimeCapsuleFromStudio() {
+    if (!timeCapsuleCandidate) return;
+    playTactileClick(tactileSoundEnabled);
+    setTimeCapsuleOrigin(timeCapsuleCandidate.session);
+    setActiveDrill('time-capsule');
+    setMode(timeCapsuleCandidate.session.mode);
+    setTone(timeCapsuleCandidate.session.tone);
+    setTopic(timeCapsuleCandidate.session.topicDescription);
+    setContent('');
+    setEvaluation(null);
+    setSavedSuccess(false);
+    setRevisionContext(null);
+  }
+
+  function handleStartRevisionPass() {
+    if (!evaluation) return;
+    playTactileClick(tactileSoundEnabled);
+    const pass1Id =
+      activeLoggedSessionIdRef.current || `SESSION_${todayISO.replace(/-/g, '')}`;
+    const pass1Score = computeTotalScore(evaluation.scores);
+    const focusItems: string[] = [];
+
+    for (const rw of evaluation.pinpointedRewrites ?? []) {
+      if (focusItems.length < 3 && rw.rule) {
+        focusItems.push(rw.rule);
+      }
+    }
+    for (const fix of evaluation.grammarFixes ?? []) {
+      if (focusItems.length < 3 && fix.rule) {
+        focusItems.push(`${fix.original} → ${fix.corrected} (${fix.rule})`);
+      }
+    }
+    if (focusItems.length === 0 && evaluation.strictImprovements) {
+      focusItems.push(evaluation.strictImprovements);
+    }
+
+    setRevisionContext({
+      pass1SessionId: pass1Id,
+      pass1Score,
+      focusItems: focusItems.slice(0, 3),
+    });
+    // Reset activeLoggedSessionIdRef so Pass 2 logs as its own tracked revision session
+    activeLoggedSessionIdRef.current = null;
+    setSavedSuccess(false);
+    window.setTimeout(() => document.getElementById('writing-editor')?.focus(), 50);
+  }
+
   function handleSuggestRandomTopic() {
     if (suggestingTopic || askingAiTopic) return;
     setErrorMessage(null);
     setSuggestingTopic(true);
 
-    // Snapshot the body and original non-random topic BEFORE loading a random spark
     const isReplacingExistingRandom =
       suggestedTopicMeta !== null &&
       loadedRandomTopicRef.current !== null &&
@@ -486,7 +923,6 @@ export function WriteStudio({
         isAi: true,
       });
     } catch {
-      // Seamless fallback to next unused 52-week curriculum topic offline/static
       const draw = drawNextCurriculumRandomTopic({
         usedCurriculumIds,
         usedTopicTitles: existingTopics,
@@ -529,7 +965,7 @@ export function WriteStudio({
   function handleSaveDraftClick() {
     if (!onSaveDraft) return;
     setErrorMessage(null);
-    if (!topic.trim() && !content.trim()) {
+    if (!topic.trim() && !effectiveDraftText.trim()) {
       setErrorMessage('Write a title or a few words before saving a draft.');
       return;
     }
@@ -555,7 +991,7 @@ export function WriteStudio({
       promptCategory: MODE_LABELS[mode],
       tone,
       topicDescription: effectiveTopic,
-      content,
+      content: effectiveDraftText,
       wordCount: diagnostics.wordCount,
       scores: baselineScores,
       totalScore: 0,
@@ -568,6 +1004,8 @@ export function WriteStudio({
       strictImprovements: '',
       grammarFixes: [],
       vocabUpgrades: [],
+      audience,
+      drillType: activeDrill,
       status: 'Draft',
       createdAt: nowISO,
     };
@@ -590,6 +1028,8 @@ export function WriteStudio({
     setTopic(draft.topicDescription);
     setDaySlot(draft.daySlot || 'Draft');
     setContent(draft.content);
+    if (draft.audience) setAudience(draft.audience);
+    if (draft.drillType) setActiveDrill(draft.drillType);
     setSuggestedTopicMeta(null);
     loadedRandomTopicRef.current = null;
     setEvaluation(null);
@@ -601,13 +1041,23 @@ export function WriteStudio({
   }
 
   function handleApplySingleOfflineFix(issue: OfflineProofIssue) {
-    setContent((prev) => applyOfflineIssue(prev, issue));
+    if (activeDrill === 'three-rooms') {
+      if (roomAText.includes(issue.original)) {
+        setRoomAText((prev) => applyOfflineIssue(prev, issue));
+      } else {
+        setRoomBText((prev) => applyOfflineIssue(prev, issue));
+      }
+    } else {
+      setContent((prev) => applyOfflineIssue(prev, issue));
+    }
     setDraftSavedLabel(null);
   }
 
   function handleApplyAllOfflineFixes() {
     if (offlineIssues.length === 0) return;
-    setContent((prev) => applyAllOfflineIssues(prev, offlineIssues));
+    if (activeDrill !== 'three-rooms') {
+      setContent((prev) => applyAllOfflineIssues(prev, offlineIssues));
+    }
     setDraftSavedLabel(null);
   }
 
@@ -644,7 +1094,7 @@ export function WriteStudio({
       evaluation?.evaluationStatus === 'queued_for_reset' &&
       resetCountdown === 0 &&
       !evaluating &&
-      content.trim().length >= 20
+      effectiveDraftText.trim().length >= 20
     ) {
       void handleEvaluateDraft(true);
     }
@@ -667,6 +1117,9 @@ export function WriteStudio({
     setTopic(slot.topic);
     setDaySlot(`${slot.dayOfWeek} · ${slot.slotLabel}`);
     setActiveSlotId(slot.id);
+    if (slot.recommendedDrill) {
+      setActiveDrill(slot.recommendedDrill);
+    }
     setCheckedAngles({});
     setShowPivotInput(false);
     setErrorMessage(null);
@@ -735,6 +1188,18 @@ export function WriteStudio({
   function applyTextReplacement(original: string, replacement: string) {
     const cleanRep = replacement.trim();
     if (!original) return;
+    if (activeDrill === 'three-rooms') {
+      if (roomAText.includes(original)) {
+        setRoomAText((prev) => prev.replace(original, cleanRep));
+        setLiveAppliedNotice('Applied suggested revision to Room A.');
+        return;
+      }
+      if (roomBText.includes(original)) {
+        setRoomBText((prev) => prev.replace(original, cleanRep));
+        setLiveAppliedNotice('Applied suggested revision to Room B.');
+        return;
+      }
+    }
     if (content.includes(original)) {
       setContent((prev) => prev.replace(original, cleanRep));
       setErrorMessage(null);
@@ -782,22 +1247,203 @@ export function WriteStudio({
     setSavedVocabKeys((prev) => new Set(prev).add(key));
   }
 
+  function buildCurrentDrillContextAndMeta(submittedText: string): {
+    drillContext: Record<string, unknown>;
+    drillMeta: DrillMeta;
+    localDrillVerdict?: DrillVerdict;
+  } {
+    const baseMeta: DrillMeta = {
+      drillType: activeDrill,
+      audience,
+      flowSprintUsed: flowLockUsedInDraftRef.current || undefined,
+      constraintId: activeConstraint?.id,
+      constraintLabel: activeConstraint?.shortLabel,
+      constraintViolations: constraintResult?.violationCount,
+    };
+
+    if (activeDrill === 'compression-432') {
+      const roundsSnapshot: [string, string, string] = [...sprintRounds] as [
+        string,
+        string,
+        string,
+      ];
+      roundsSnapshot[sprintRoundIdx] = submittedText;
+      const wordCounts: [number, number, number] = [
+        countSprintWords(roundsSnapshot[0]),
+        countSprintWords(roundsSnapshot[1]),
+        countSprintWords(roundsSnapshot[2]),
+      ];
+      const summary = computeCompressionMetrics(wordCounts);
+      const drillMeta: DrillMeta = {
+        ...baseMeta,
+        compressionWordCounts: wordCounts,
+        compressionRatio: summary.compressionRatioPct,
+      };
+      return {
+        drillContext: {
+          drillType: 'compression-432',
+          drillPayload: {
+            rounds: roundsSnapshot,
+            roundWordCounts: wordCounts,
+            constraintLabel: activeConstraint?.shortLabel,
+            constraintPassed: constraintResult?.passed,
+            noBackspaceUsed: flowLockUsedInDraftRef.current,
+          },
+        },
+        drillMeta,
+        localDrillVerdict: {
+          headline: `4/3/2 Compression · ${summary.summaryLabel}`,
+          badge: `${summary.compressionRatioPct}% tighter`,
+          compressionRatio: summary.compressionRatioPct,
+          summary: summary.hitTargetCurve
+            ? 'All three compression rounds stepped down cleanly. Review your sharpest version below.'
+            : 'Compression sprint logged. Complete all 3 rounds stepping down word count to sharpen density.',
+        },
+      };
+    }
+
+    if (activeDrill === 'skeleton') {
+      const clues = parseSkeletonClues(skeletonCluesInput);
+      const diff = compareSkeletonReconstruction(
+        skeletonPassage.text,
+        submittedText
+      );
+      const drillMeta: DrillMeta = {
+        ...baseMeta,
+        skeletonPassageId: skeletonPassage.id,
+        skeletonTitle: skeletonPassage.title,
+        skeletonOriginalText: skeletonPassage.text,
+        skeletonClues: clues,
+      };
+      return {
+        drillContext: {
+          drillType: 'skeleton',
+          drillPayload: {
+            masterPassage: skeletonPassage.text,
+            skeletonTitle: skeletonPassage.title,
+            skeletonClues: clues,
+            constraintLabel: activeConstraint?.shortLabel,
+            constraintPassed: constraintResult?.passed,
+          },
+        },
+        drillMeta,
+        localDrillVerdict: {
+          headline: 'Skeleton Reconstruction Complete',
+          badge: `${diff.originalityPct}% fresh wording`,
+          skeletonAlignmentNote: diff.cadenceNote,
+          summary: diff.cadenceNote,
+        },
+      };
+    }
+
+    if (activeDrill === 'three-rooms') {
+      const ladder = evaluateRegisterShift(roomAText, roomBText);
+      const drillMeta: DrillMeta = {
+        ...baseMeta,
+        roomsJargonCount: ladder.roomAJargonCount,
+        roomAText: roomAText.trim(),
+        roomBText: roomBText.trim(),
+      };
+      return {
+        drillContext: {
+          drillType: 'three-rooms',
+          drillPayload: {
+            roomA: roomAText.trim(),
+            roomB: roomBText.trim(),
+            constraintLabel: activeConstraint?.shortLabel,
+            constraintPassed: constraintResult?.passed,
+          },
+        },
+        drillMeta,
+        localDrillVerdict: {
+          headline: 'Audience Ladder · Register Shift',
+          badge: `${ladder.lexicalShiftPct}% shift`,
+          registerShiftScore: ladder.lexicalShiftPct,
+          summary: ladder.summary,
+        },
+      };
+    }
+
+    if (activeDrill === 'time-capsule' && timeCapsuleOrigin) {
+      const drillMeta: DrillMeta = {
+        ...baseMeta,
+        timeCapsuleOriginSessionId: timeCapsuleOrigin.id,
+        timeCapsuleOriginText: timeCapsuleOrigin.content,
+        timeCapsuleOriginScore: timeCapsuleOrigin.totalScore,
+        timeCapsuleOriginDate: timeCapsuleOrigin.date,
+      };
+      return {
+        drillContext: {
+          drillType: 'time-capsule',
+          drillPayload: {
+            pastDraft: timeCapsuleOrigin.content,
+            pastScore: timeCapsuleOrigin.totalScore,
+            pastDate: timeCapsuleOrigin.date,
+          },
+        },
+        drillMeta,
+      };
+    }
+
+    return {
+      drillContext: {
+        drillType: 'standard',
+        drillPayload: {
+          constraintLabel: activeConstraint?.shortLabel,
+          constraintPassed: constraintResult?.passed,
+          constraintViolations: constraintResult?.violationCount,
+          noBackspaceUsed: flowLockUsedInDraftRef.current,
+        },
+      },
+      drillMeta: baseMeta,
+    };
+  }
+
   function persistEvaluatedSession(
     evalPayload: EvaluationPayload,
     resolvedTopic: string,
     draftText: string,
-    stableSessionId: string
+    stableSessionId: string,
+    drillMeta: DrillMeta,
+    resolvedVerdict?: DrillVerdict
   ) {
     const isQueued = evalPayload.evaluationStatus === 'queued_for_reset';
     const totalScore = computeTotalScore(evalPayload.scores);
     const percentage = computePercentage(totalScore);
     const draftDiagnostics = analyzeDraftLocally(draftText);
+    const localProse = computeProseDiagnostics(draftText);
 
     const intl = deriveInternationalMetrics({
       scores: evalPayload.scores,
       content: draftText.trim(),
       internationalMetrics: evalPayload.internationalMetrics,
     });
+
+    const revisionDelta = revisionContext
+      ? totalScore - revisionContext.pass1Score
+      : undefined;
+    setLastRevisionDelta(revisionDelta);
+
+    let finalVerdict = evalPayload.drillVerdict ?? resolvedVerdict;
+    if (activeDrill === 'time-capsule' && timeCapsuleOrigin) {
+      const tcDelta = computeTimeCapsuleDelta(timeCapsuleOrigin, {
+        totalScore,
+        percentage,
+        wordCount: draftDiagnostics.wordCount,
+        spokenReadinessScore:
+          evalPayload.spokenReadinessScore ?? localProse.baselineSpokenReadiness,
+        signalNoiseRatio:
+          evalPayload.signalNoiseRatio ?? localProse.signalNoiseRatio,
+      });
+      if (!finalVerdict) {
+        finalVerdict = {
+          headline: tcDelta.headline,
+          badge: `${tcDelta.scoreDelta >= 0 ? '+' : ''}${tcDelta.scoreDelta} pts`,
+          timeCapsuleDelta: tcDelta.scoreDelta,
+          summary: `Compared blind against your ${timeCapsuleOrigin.date} draft (${timeCapsuleOrigin.totalScore}/60 → ${totalScore}/60).`,
+        };
+      }
+    }
 
     const sessionRecord: WritingSession = {
       id: stableSessionId,
@@ -827,6 +1473,23 @@ export function WriteStudio({
       grammarFixes: evalPayload.grammarFixes,
       vocabUpgrades: evalPayload.vocabUpgrades,
       routingMeta: evalPayload.routingMeta,
+      spokenReadinessScore:
+        evalPayload.spokenReadinessScore ?? localProse.baselineSpokenReadiness,
+      signalNoiseRatio:
+        evalPayload.signalNoiseRatio ?? localProse.signalNoiseRatio,
+      audienceReaction: evalPayload.audienceReaction,
+      audience,
+      calqueFixes:
+        evalPayload.calqueFixes && evalPayload.calqueFixes.length > 0
+          ? evalPayload.calqueFixes
+          : localProse.calqueFixes.length > 0
+            ? localProse.calqueFixes
+            : undefined,
+      drillType: activeDrill,
+      drillMeta,
+      drillVerdict: finalVerdict,
+      revisionOfSessionId: revisionContext?.pass1SessionId,
+      revisionDelta,
       status: 'Completed',
       evaluationPending: isQueued,
       modelUsed: evalPayload.modelUsed || 'gemini-4-hydrogen',
@@ -871,11 +1534,18 @@ export function WriteStudio({
   async function handleEvaluateDraft(isAutoRetry = false) {
     setErrorMessage(null);
     setLiveAppliedNotice(null);
-    const trimmedDraft = content.trim();
+    setChromeFaded(false);
 
-    if (trimmedDraft.length < 20) {
+    const submittedDraft =
+      activeDrill === 'three-rooms'
+        ? combineThreeRoomsForEvaluation(roomAText, roomBText)
+        : content.trim();
+
+    if (submittedDraft.trim().length < 20) {
       setErrorMessage(
-        'Write at least 20 characters before requesting an evaluation.'
+        activeDrill === 'three-rooms'
+          ? 'Write at least a couple of sentences across Room A and Room B before evaluating.'
+          : 'Write at least 20 characters before requesting an evaluation.'
       );
       return;
     }
@@ -884,7 +1554,7 @@ export function WriteStudio({
     const fallbackTopic =
       topic.trim() ||
       activeLinkedSlot?.topic ||
-      inferSuitableTitle(trimmedDraft, mode);
+      inferSuitableTitle(submittedDraft, mode);
 
     if (!isAutoRetry) {
       autoTitledSessionRef.current = wasTopicBlank;
@@ -900,8 +1570,11 @@ export function WriteStudio({
         .toUpperCase()}`;
     activeLoggedSessionIdRef.current = stableSessionId;
 
-    // Preview the dynamic tier that the backend router will select for this draft
-    const draftDiag = analyzeDraftLocally(trimmedDraft);
+    const { drillContext, drillMeta, localDrillVerdict } =
+      buildCurrentDrillContextAndMeta(submittedDraft);
+    setLastSubmittedDrillMeta(drillMeta);
+
+    const draftDiag = analyzeDraftLocally(submittedDraft);
     const predictedRoute = selectDynamicEvaluationRoute({
       wordCount: draftDiag.wordCount,
       mode: MODE_LABELS[mode],
@@ -913,8 +1586,7 @@ export function WriteStudio({
     });
     setEvaluatingTierLabel(predictedRoute.primary.tierLabel);
 
-    // Single-pass atomic evaluation: show aesthetic progress card instead of flashing
-    // a provisional score that mutates seconds later.
+    // Single-pass atomic evaluation (PSR-01: zero provisional score jump)
     setEvaluating(true);
     try {
       const apiBase = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/$/, '');
@@ -922,7 +1594,7 @@ export function WriteStudio({
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          content: trimmedDraft,
+          content: submittedDraft,
           mode: MODE_LABELS[mode],
           tone: TONE_LABELS[tone],
           topic: wasTopicBlank ? '' : fallbackTopic,
@@ -933,6 +1605,11 @@ export function WriteStudio({
             (v) => v.betterAlternative
           ),
           studentProfile,
+          audience,
+          customCoachPrompt: customCoachPrompt || undefined,
+          coachPresets:
+            coachPresets && coachPresets.length > 0 ? coachPresets : undefined,
+          drillContext,
         }),
       });
       const contentType = res.headers.get('content-type') || '';
@@ -961,6 +1638,7 @@ export function WriteStudio({
 
       const finalEval: EvaluationPayload = {
         ...data,
+        drillVerdict: data.drillVerdict ?? localDrillVerdict,
         isProvisionalInstant: false,
       };
       setEvaluation(finalEval);
@@ -968,8 +1646,10 @@ export function WriteStudio({
       persistEvaluatedSession(
         finalEval,
         finalTopic,
-        trimmedDraft,
-        stableSessionId
+        submittedDraft,
+        stableSessionId,
+        drillMeta,
+        finalEval.drillVerdict
       );
 
       if (data.evaluationStatus === 'queued_for_reset') {
@@ -980,25 +1660,35 @@ export function WriteStudio({
         setResetCountdown(0);
       }
     } catch {
-      // Transparent single-pass offline/static-host fallback (never mutates later)
-      const currentOfflineIssues = runOfflineProofread(trimmedDraft);
+      const currentOfflineIssues = runOfflineProofread(submittedDraft);
       const offlineEval = buildInstantLocalEvaluation(
-        trimmedDraft,
+        submittedDraft,
         mode,
         tone,
         currentOfflineIssues,
         fallbackTopic
       );
+      const localProse = computeProseDiagnostics(submittedDraft);
+      const mergedOffline: EvaluationPayload = {
+        ...offlineEval,
+        spokenReadinessScore: localProse.baselineSpokenReadiness,
+        signalNoiseRatio: localProse.signalNoiseRatio,
+        audienceReaction: `As a ${audience.toLowerCase()}, the main idea comes across — tighten filler transitions and test reading it aloud once.`,
+        calqueFixes: localProse.calqueFixes,
+        drillVerdict: localDrillVerdict,
+      };
       if (wasTopicBlank) {
         setTopic(fallbackTopic);
         setAutoTitledBanner(fallbackTopic);
       }
-      setEvaluation(offlineEval);
+      setEvaluation(mergedOffline);
       persistEvaluatedSession(
-        offlineEval,
+        mergedOffline,
         fallbackTopic,
-        trimmedDraft,
-        stableSessionId
+        submittedDraft,
+        stableSessionId,
+        drillMeta,
+        localDrillVerdict
       );
       setResetCountdown(0);
     } finally {
@@ -1009,7 +1699,7 @@ export function WriteStudio({
   const evalIntl = evaluation
     ? deriveInternationalMetrics({
         scores: evaluation.scores,
-        content,
+        content: effectiveDraftText,
         internationalMetrics: evaluation.internationalMetrics,
       })
     : null;
@@ -1054,6 +1744,12 @@ export function WriteStudio({
         )
       : 50;
 
+  const currentSprintSpec = COMPRESSION_ROUNDS[sprintRoundIdx];
+  const parsedSkeletonClues = useMemo(
+    () => parseSkeletonClues(skeletonCluesInput),
+    [skeletonCluesInput]
+  );
+
   return (
     <div
       className={
@@ -1062,9 +1758,10 @@ export function WriteStudio({
           : `${hasRightCoachingDrawer ? 'max-w-6xl' : 'max-w-4xl'} mx-auto px-4 sm:px-6 py-8 sm:py-10 space-y-5`
       }
     >
-      {/* Minimal Editorial Studio Header */}
+      {/* Minimal Editorial Studio Header (fades quietly during continuous typing) */}
       <div
-        className={`flex flex-wrap items-end justify-between gap-4 ${
+        data-faded={chromeFaded ? 'true' : 'false'}
+        className={`vanishing-chrome flex flex-wrap items-end justify-between gap-4 ${
           focusMode ? 'max-w-3xl mx-auto mb-8' : ''
         }`}
       >
@@ -1111,9 +1808,7 @@ export function WriteStudio({
                 <Dices className="w-3.5 h-3.5 text-ink-secondary" aria-hidden="true" />
               )}
               <span>
-                {suggestingTopic
-                  ? 'Picking a topic...'
-                  : 'Want a random topic?'}
+                {suggestingTopic ? 'Picking...' : 'Random Topic'}
               </span>
             </button>
           )}
@@ -1278,12 +1973,13 @@ export function WriteStudio({
         </section>
       )}
 
-      {/* Whisper-Quiet Today / Unfinished Scheduled Task Strip (shown only when a task is due) */}
+      {/* Whisper-Quiet Today / Open Scheduled Task Strip */}
       {!focusMode && visibleWriteTasks.length > 0 && (
         <section
           aria-label="Scheduled writing task due today"
           data-testid="minimal-today-strip"
-          className="card-surface overflow-hidden"
+          data-faded={chromeFaded ? 'true' : 'false'}
+          className="vanishing-chrome card-surface overflow-hidden"
         >
           {(showAllDueTasks ? visibleWriteTasks : visibleWriteTasks.slice(0, 1)).map(
             (slot, index) => {
@@ -1308,14 +2004,14 @@ export function WriteStudio({
                             ? 'text-status-success'
                             : isDueToday
                               ? 'text-status-info'
-                              : 'text-status-warning'
+                              : 'text-ink-secondary'
                         }`}
                       >
                         {slot.completed
                           ? 'Completed'
                           : isDueToday
-                            ? 'Today'
-                            : `Unfinished · ${slot.scheduledDate}`}
+                            ? 'Today · 10 min'
+                            : `Still open — 10 min · ${slot.scheduledDate}`}
                       </span>
                       <span className="text-ink-muted" aria-hidden="true">
                         ·
@@ -1402,56 +2098,220 @@ export function WriteStudio({
           }
         >
           <div className="card-surface overflow-hidden">
+            {/* Top Mode, Audience & Tone Ribbon */}
             {!focusMode && !activeLinkedSlot && (
-              <div className="px-5 py-3.5 border-b border-border-subtle bg-subtle/60 flex flex-wrap items-center justify-between gap-3">
-                <div
-                  role="tablist"
-                  aria-label="Writing practice mode"
-                  className="segmented-track flex flex-wrap items-center gap-1"
-                >
-                  {(Object.keys(MODE_LABELS) as WritingMode[]).map((m) => (
-                    <button
-                      key={m}
-                      type="button"
-                      role="tab"
-                      aria-selected={mode === m}
-                      data-active={mode === m ? 'true' : 'false'}
-                      onClick={() => {
-                        setMode(m);
-                        if (m === 'friend') setTone('conversational');
-                        else if (m === 'email') setTone('formal-executive');
-                        else if (m === 'technical') setTone('academic-technical');
-                        else if (m === 'linkedin') setTone('professional-warm');
-                        else if (m === 'creative') setTone('narrative-vivid');
-                      }}
-                      className="segmented-item px-2.5 py-1.5 text-xs whitespace-nowrap"
+              <div
+                data-faded={chromeFaded ? 'true' : 'false'}
+                className="vanishing-chrome px-5 py-3 border-b border-border-subtle bg-subtle/55 space-y-2.5"
+              >
+                <div className="flex flex-wrap items-center justify-between gap-2.5">
+                  <div
+                    role="tablist"
+                    aria-label="Writing practice mode"
+                    className="segmented-track flex flex-wrap items-center gap-0.5"
+                  >
+                    {(Object.keys(MODE_LABELS) as WritingMode[]).map((m) => (
+                      <button
+                        key={m}
+                        type="button"
+                        role="tab"
+                        aria-selected={mode === m}
+                        data-active={mode === m ? 'true' : 'false'}
+                        onClick={() => {
+                          setMode(m);
+                          if (m === 'friend') {
+                            setTone('conversational');
+                            setAudience('Friend');
+                          } else if (m === 'email') {
+                            setTone('formal-executive');
+                            setAudience('Hiring Manager');
+                          } else if (m === 'technical') {
+                            setTone('academic-technical');
+                            setAudience('Interviewer');
+                          } else if (m === 'linkedin') {
+                            setTone('professional-warm');
+                            setAudience('LinkedIn Reader');
+                          } else if (m === 'creative') {
+                            setTone('narrative-vivid');
+                            setAudience('Friend');
+                          }
+                        }}
+                        className="segmented-item px-2.5 py-1 text-xs whitespace-nowrap"
+                      >
+                        {MODE_LABELS[m]}
+                      </button>
+                    ))}
+                  </div>
+
+                  <div className="flex flex-wrap items-center gap-2">
+                    <label htmlFor="audience-select" className="sr-only">
+                      Target audience
+                    </label>
+                    <select
+                      id="audience-select"
+                      data-testid="audience-select"
+                      value={audience}
+                      title="Target reader for Audience Gut-Reaction"
+                      onChange={(e) =>
+                        setAudience(e.target.value as AudienceOption)
+                      }
+                      className="input-tactile px-2 py-1 text-xs font-medium"
                     >
-                      {MODE_LABELS[m]}
-                    </button>
-                  ))}
+                      {AUDIENCE_OPTIONS.map((aud) => (
+                        <option key={aud} value={aud}>
+                          For: {aud}
+                        </option>
+                      ))}
+                    </select>
+
+                    <label htmlFor="tone-select" className="sr-only">
+                      Target tone
+                    </label>
+                    <select
+                      id="tone-select"
+                      value={tone}
+                      title="Select target writing tone"
+                      onChange={(e) => setTone(e.target.value as ToneSetting)}
+                      className="input-tactile px-2 py-1 text-xs font-medium"
+                    >
+                      {Object.entries(TONE_LABELS).map(([val, label]) => (
+                        <option key={val} value={val}>
+                          {label}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
                 </div>
 
-                <div className="flex items-center gap-2">
-                  <label
-                    htmlFor="tone-select"
-                    className="inline-flex items-center gap-1 text-xs text-ink-muted whitespace-nowrap"
+                {/* Practice Mechanic Selector + Constraint Chip + 3-Min Flow Toggle */}
+                <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-border-subtle/70">
+                  <div
+                    role="tablist"
+                    aria-label="10-minute practice mechanic"
+                    className="segmented-track inline-flex flex-wrap items-center gap-0.5"
                   >
-                    <span>Tone</span>
-                  </label>
-                  <select
-                    id="tone-select"
-                    value={tone}
-                    title="Select target writing tone"
-                    onChange={(e) => setTone(e.target.value as ToneSetting)}
-                    className="input-tactile px-2.5 py-1.5 text-xs font-medium"
-                  >
-                    {Object.entries(TONE_LABELS).map(([val, label]) => (
-                      <option key={val} value={val}>
-                        {label}
-                      </option>
+                    {DRILL_OPTIONS.map((opt) => (
+                      <button
+                        key={opt.id}
+                        type="button"
+                        role="tab"
+                        data-testid={`drill-tab-${opt.id}`}
+                        aria-selected={activeDrill === opt.id}
+                        data-active={activeDrill === opt.id ? 'true' : 'false'}
+                        onClick={() => handleSelectDrill(opt.id)}
+                        className="segmented-item inline-flex items-center gap-1 px-2.5 py-1 text-[11px] font-medium whitespace-nowrap"
+                      >
+                        <span>{opt.label}</span>
+                        <span className="font-mono-tabular text-[10px] opacity-65">
+                          {opt.duration}
+                        </span>
+                      </button>
                     ))}
-                  </select>
+                    {timeCapsuleCandidate && (
+                      <button
+                        type="button"
+                        role="tab"
+                        data-testid="drill-tab-time-capsule"
+                        aria-selected={activeDrill === 'time-capsule'}
+                        data-active={
+                          activeDrill === 'time-capsule' ? 'true' : 'false'
+                        }
+                        onClick={handleLaunchTimeCapsuleFromStudio}
+                        className="segmented-item inline-flex items-center gap-1 px-2.5 py-1 text-[11px] font-medium whitespace-nowrap"
+                      >
+                        <History className="w-3 h-3" aria-hidden="true" />
+                        <span>Time Capsule</span>
+                      </button>
+                    )}
+                  </div>
+
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    <button
+                      type="button"
+                      data-testid="constraint-picker-toggle"
+                      data-active={activeConstraint ? 'true' : 'false'}
+                      onClick={() => setShowConstraintPicker((v) => !v)}
+                      className="btn-chip inline-flex items-center gap-1 px-2.5 py-1 text-[11px] font-medium whitespace-nowrap"
+                    >
+                      <SlidersHorizontal className="w-3 h-3" aria-hidden="true" />
+                      <span>
+                        {activeConstraint
+                          ? activeConstraint.shortLabel
+                          : '+ Constraint'}
+                      </span>
+                    </button>
+                    {activeConstraint && (
+                      <button
+                        type="button"
+                        onClick={() => setActiveConstraint(null)}
+                        aria-label="Clear active constraint"
+                        className="btn-ghost p-1"
+                      >
+                        <X className="w-3 h-3" aria-hidden="true" />
+                      </button>
+                    )}
+
+                    <button
+                      type="button"
+                      data-testid="flow-sprint-toggle"
+                      data-active={flowLockActive ? 'true' : 'false'}
+                      aria-pressed={flowLockActive}
+                      onClick={handleToggleFlowSprint}
+                      title="3-Minute No-Backspace Flow Sprint: disables deleting so you draft forward without self-editing"
+                      className="btn-chip inline-flex items-center gap-1 px-2.5 py-1 text-[11px] font-medium whitespace-nowrap"
+                    >
+                      <Flame className="w-3 h-3" aria-hidden="true" />
+                      <span className="font-mono-tabular">
+                        {flowLockActive
+                          ? `Flow ${formatCountdownMMSS(flowSecondsLeft)}`
+                          : '3m Flow'}
+                      </span>
+                    </button>
+                  </div>
                 </div>
+
+                {/* Inline Constraint Challenge Picker */}
+                {showConstraintPicker && (
+                  <div
+                    data-testid="constraint-picker-drawer"
+                    className="pt-2.5 border-t border-border-subtle space-y-2"
+                  >
+                    <div className="flex items-center justify-between text-[11px]">
+                      <span className="font-medium text-ink-primary">
+                        Pick a Constraint Challenge (live deterministic verification)
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => setShowConstraintPicker(false)}
+                        className="btn-ghost p-0.5"
+                      >
+                        <X className="w-3 h-3" aria-hidden="true" />
+                      </button>
+                    </div>
+                    <div className="flex flex-wrap gap-1.5 max-h-32 overflow-y-auto">
+                      {CONSTRAINT_CHALLENGES.map((ch) => {
+                        const isSelected = activeConstraint?.id === ch.id;
+                        return (
+                          <button
+                            key={ch.id}
+                            type="button"
+                            data-testid={`constraint-option-${ch.id}`}
+                            data-active={isSelected ? 'true' : 'false'}
+                            title={ch.rule}
+                            onClick={() => {
+                              playTactileClick(tactileSoundEnabled);
+                              setActiveConstraint(isSelected ? null : ch);
+                              setShowConstraintPicker(false);
+                            }}
+                            className="btn-chip px-2.5 py-1 text-[11px] font-medium"
+                          >
+                            {ch.shortLabel}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
               </div>
             )}
 
@@ -1519,7 +2379,6 @@ export function WriteStudio({
                     </button>
                   </div>
 
-                  {/* Subtle bottom hairline progress bar toward scheduled word target */}
                   <div
                     aria-hidden="true"
                     className="absolute inset-x-0 bottom-0 h-[2px] bg-border-subtle overflow-hidden"
@@ -1550,76 +2409,319 @@ export function WriteStudio({
                     {activeLinkedSlot.feedbackReminder || coachContext.activeReminder}
                   </div>
 
-                {showPivotInput && (
-                  <div className="p-3 rounded-md border border-border-default bg-surface space-y-2">
-                    <div className="text-[11px] text-ink-secondary">
-                      {activeLinkedSlot.pivotRule ||
-                        'Swap to any familiar circuit, sensor, email scenario, or story while keeping the same tone.'}
+                  {showPivotInput && (
+                    <div className="p-3 rounded-md border border-border-default bg-surface space-y-2">
+                      <div className="text-[11px] text-ink-secondary">
+                        {activeLinkedSlot.pivotRule ||
+                          'Swap to any familiar circuit, sensor, email scenario, or story while keeping the same tone.'}
+                      </div>
+                      <div className="flex flex-wrap gap-2">
+                        <input
+                          type="text"
+                          value={pivotFocus}
+                          onChange={(e) => setPivotFocus(e.target.value)}
+                          placeholder="e.g., Ultrasonic tank level sensor / Capstone PCB status email..."
+                          aria-label="Universal Pivot custom focus"
+                          className="input-tactile flex-1 min-w-[200px] px-3 py-1.5 text-xs"
+                        />
+                        <button
+                          type="button"
+                          disabled={pivoting || pivotFocus.trim().length < 3}
+                          onClick={handleUniversalPivot}
+                          className="btn-primary px-3 py-1.5 text-xs font-medium"
+                        >
+                          {pivoting ? 'Pivoting...' : 'Apply Pivot'}
+                        </button>
+                      </div>
                     </div>
-                    <div className="flex flex-wrap gap-2">
+                  )}
+
+                  {activeLinkedSlot.suggestions &&
+                    activeLinkedSlot.suggestions.length > 0 && (
+                      <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 pt-1">
+                        {activeLinkedSlot.suggestions.map((angle, idx) => {
+                          const key = `${activeLinkedSlot.id}-${idx}`;
+                          const done = Boolean(checkedAngles[key]);
+                          return (
+                            <button
+                              key={key}
+                              type="button"
+                              onClick={() =>
+                                setCheckedAngles((prev) => ({
+                                  ...prev,
+                                  [key]: !done,
+                                }))
+                              }
+                              className={`text-left p-2 rounded-sm border text-[11px] leading-snug flex items-start gap-1.5 transition-colors cursor-pointer ${
+                                done
+                                  ? 'border-status-success-border bg-status-success-soft text-status-success line-through'
+                                  : 'border-border-subtle bg-surface text-ink-secondary hover:border-border-strong'
+                              }`}
+                            >
+                              <Check
+                                className={`w-3.5 h-3.5 shrink-0 mt-0.5 ${
+                                  done ? 'text-status-success' : 'text-ink-muted'
+                                }`}
+                                aria-hidden="true"
+                              />
+                              <span>{angle}</span>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    )}
+                </div>
+              </>
+            )}
+
+            {/* ======================================================= */}
+            {/* CONTEXTUAL DRILL SURFACES (Only active mechanic renders) */}
+            {/* ======================================================= */}
+
+            {/* 1. 4/3/2 COMPRESSION SPRINT BAR */}
+            {activeDrill === 'compression-432' && !focusMode && (
+              <div
+                data-testid="compression-sprint-panel"
+                className="px-5 py-3.5 border-b border-border-subtle bg-subtle/45 space-y-2.5"
+              >
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="flex items-center gap-2 text-xs">
+                    <span className="font-semibold text-ink-primary">
+                      {currentSprintSpec.label}
+                    </span>
+                    <span className="text-ink-muted">·</span>
+                    <span className="font-mono-tabular text-ink-secondary">
+                      Target {currentSprintSpec.minWords}–
+                      {currentSprintSpec.maxWords}w
+                    </span>
+                  </div>
+
+                  <div className="flex items-center gap-2">
+                    <span
+                      data-testid="sprint-timer-clock"
+                      className="font-mono-tabular text-sm font-semibold text-ink-primary"
+                    >
+                      {formatCountdownMMSS(sprintSecondsLeft)}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setSprintRunning((r) => !r)}
+                      aria-label={sprintRunning ? 'Pause timer' : 'Start timer'}
+                      className="btn-secondary p-1.5"
+                    >
+                      {sprintRunning ? (
+                        <Pause className="w-3 h-3" aria-hidden="true" />
+                      ) : (
+                        <Play className="w-3 h-3" aria-hidden="true" />
+                      )}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setSprintRunning(false);
+                        setSprintSecondsLeft(currentSprintSpec.durationSec);
+                      }}
+                      aria-label="Reset round timer"
+                      className="btn-ghost p-1.5"
+                    >
+                      <RotateCcw className="w-3 h-3" aria-hidden="true" />
+                    </button>
+                    {sprintRoundIdx < 2 && (
+                      <button
+                        type="button"
+                        data-testid="sprint-next-round-button"
+                        onClick={handleAdvanceCompressionRound}
+                        className="btn-primary inline-flex items-center gap-1 px-2.5 py-1 text-[11px] font-medium"
+                      >
+                        <span>Next Round</span>
+                        <ArrowRight className="w-3 h-3" aria-hidden="true" />
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                <div className="flex flex-wrap items-center justify-between gap-2 text-[11px]">
+                  <span className="text-ink-secondary">
+                    {currentSprintSpec.guidance}
+                  </span>
+                  {sprintRoundIdx > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => setShowPrevRoundsDrawer((v) => !v)}
+                      className="inline-link-tactile font-medium cursor-pointer whitespace-nowrap"
+                    >
+                      {showPrevRoundsDrawer
+                        ? 'Hide Earlier Rounds'
+                        : `Peek Round${sprintRoundIdx === 2 ? 's 1–2' : ' 1'}`}
+                    </button>
+                  )}
+                </div>
+
+                {showPrevRoundsDrawer && sprintRoundIdx > 0 && (
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-1.5 border-t border-border-subtle">
+                    {sprintRounds.slice(0, sprintRoundIdx).map((txt, idx) => (
+                      <div
+                        key={idx}
+                        className="p-2.5 rounded-sm bg-surface border border-border-subtle text-[11px] space-y-1"
+                      >
+                        <div className="font-mono-tabular font-semibold text-ink-muted">
+                          Round {idx + 1} · {analyzeDraftLocally(txt).wordCount}w
+                        </div>
+                        <p className="text-ink-secondary leading-relaxed line-clamp-4">
+                          {txt || '(empty)'}
+                        </p>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* 2. SKELETON RECONSTRUCTION STUDY / CLUE RAIL */}
+            {activeDrill === 'skeleton' && !focusMode && (
+              <div
+                data-testid="skeleton-drill-panel"
+                className="px-5 py-4 border-b border-border-subtle bg-subtle/45 space-y-3"
+              >
+                {skeletonPhase === 'study' ? (
+                  <>
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div className="text-xs font-semibold text-ink-primary">
+                        Study Phase · Read for connectors &amp; cadence, jot 4 skeleton clues
+                      </div>
+                      <button
+                        type="button"
+                        disabled={skeletonLoading}
+                        onClick={() => void handleNextSkeletonPassage()}
+                        className="btn-secondary inline-flex items-center gap-1 px-2.5 py-1 text-[11px] font-medium"
+                      >
+                        <Shuffle className="w-3 h-3" aria-hidden="true" />
+                        <span>
+                          {skeletonLoading ? 'Loading...' : 'Next Passage'}
+                        </span>
+                      </button>
+                    </div>
+
+                    <blockquote
+                      data-testid="skeleton-master-passage"
+                      className="p-3.5 rounded-md border border-border-default bg-surface text-xs sm:text-[13px] text-ink-primary leading-relaxed"
+                    >
+                      {skeletonPassage.text}
+                    </blockquote>
+
+                    <div className="flex flex-wrap items-center gap-2">
                       <input
                         type="text"
-                        value={pivotFocus}
-                        onChange={(e) => setPivotFocus(e.target.value)}
-                        placeholder="e.g., Ultrasonic tank level sensor / Capstone PCB status email..."
-                        aria-label="Universal Pivot custom focus"
-                        className="input-tactile flex-1 min-w-[200px] px-3 py-1.5 text-xs"
+                        value={skeletonCluesInput}
+                        onChange={(e) => setSkeletonCluesInput(e.target.value)}
+                        aria-label="4 skeleton clue phrases separated by commas"
+                        placeholder="4 short clues separated by commas (e.g. sensor drift, moving average, real fault, noise filter)"
+                        className="input-tactile flex-1 min-w-[220px] px-3 py-1.5 text-xs"
                       />
                       <button
                         type="button"
-                        disabled={pivoting || pivotFocus.trim().length < 3}
-                        onClick={handleUniversalPivot}
-                        className="btn-primary px-3 py-1.5 text-xs font-medium"
+                        data-testid="skeleton-hide-reconstruct-button"
+                        onClick={() => {
+                          playTactileClick(tactileSoundEnabled);
+                          setSkeletonPhase('reconstruct');
+                          window.setTimeout(
+                            () =>
+                              document.getElementById('writing-editor')?.focus(),
+                            40
+                          );
+                        }}
+                        className="btn-primary inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium whitespace-nowrap"
                       >
-                        {pivoting ? 'Pivoting...' : 'Apply Pivot'}
+                        <EyeOff className="w-3.5 h-3.5" aria-hidden="true" />
+                        <span>Hide &amp; Reconstruct</span>
                       </button>
                     </div>
+                  </>
+                ) : (
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <div className="space-y-1">
+                      <div className="text-[11px] font-medium text-ink-muted">
+                        Pinned Skeleton Rail · Rebuild in your own natural words
+                      </div>
+                      <div
+                        data-testid="skeleton-clue-rail"
+                        className="flex flex-wrap items-center gap-x-2.5 gap-y-1 text-xs font-mono-tabular font-semibold text-ink-primary"
+                      >
+                        {parsedSkeletonClues.map((clue, idx) => (
+                          <span key={idx}>
+                            {idx + 1}. {clue}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setSkeletonPhase('study')}
+                      className="btn-ghost text-[11px] font-medium"
+                    >
+                      Peek Master
+                    </button>
                   </div>
                 )}
+              </div>
+            )}
 
-                {activeLinkedSlot.suggestions &&
-                  activeLinkedSlot.suggestions.length > 0 && (
-                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 pt-1">
-                      {activeLinkedSlot.suggestions.map((angle, idx) => {
-                        const key = `${activeLinkedSlot.id}-${idx}`;
-                        const done = Boolean(checkedAngles[key]);
-                        return (
-                          <button
-                            key={key}
-                            type="button"
-                            onClick={() =>
-                              setCheckedAngles((prev) => ({
-                                ...prev,
-                                [key]: !done,
-                              }))
-                            }
-                            className={`text-left p-2 rounded-sm border text-[11px] leading-snug flex items-start gap-1.5 transition-colors cursor-pointer ${
-                              done
-                                ? 'border-status-success-border bg-status-success-soft text-status-success line-through'
-                                : 'border-border-subtle bg-surface text-ink-secondary hover:border-border-strong'
-                            }`}
-                          >
-                            <Check
-                              className={`w-3.5 h-3.5 shrink-0 mt-0.5 ${
-                                done
-                                  ? 'text-status-success'
-                                  : 'text-ink-muted'
-                              }`}
-                              aria-hidden="true"
-                            />
-                            <span>{angle}</span>
-                          </button>
-                        );
-                      })}
-                    </div>
-                  )}
-                  </div>
-              </>
+            {/* 3. TIME CAPSULE SEALED BANNER */}
+            {activeDrill === 'time-capsule' && timeCapsuleOrigin && !focusMode && (
+              <div
+                data-testid="time-capsule-seal-banner"
+                className="px-5 py-3 border-b border-border-subtle bg-subtle/50 flex flex-wrap items-center justify-between gap-2 text-xs"
+              >
+                <div className="flex items-center gap-2">
+                  <History className="w-3.5 h-3.5 text-accent shrink-0" aria-hidden="true" />
+                  <span className="text-ink-secondary">
+                    <strong className="text-ink-primary">Blind Retest</strong> ·
+                    Your {timeCapsuleOrigin.date} draft is sealed until you submit.
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setActiveDrill('standard');
+                    setTimeCapsuleOrigin(null);
+                  }}
+                  className="btn-ghost text-[11px]"
+                >
+                  Exit Retest
+                </button>
+              </div>
+            )}
+
+            {/* 4. REVISE & LIFT (PASS 2) PINNED FOCUS BANNER */}
+            {revisionContext && !focusMode && (
+              <div
+                data-testid="revision-focus-banner"
+                className="px-5 py-3 border-b border-border-subtle bg-accent-soft/35 space-y-1.5 text-xs"
+              >
+                <div className="flex items-center justify-between gap-2">
+                  <span className="font-semibold text-ink-primary font-mono-tabular">
+                    Pass 2 · Revise &amp; Lift (Target: beat {revisionContext.pass1Score}/60)
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setRevisionContext(null)}
+                    aria-label="Cancel revision pass"
+                    className="btn-ghost p-0.5"
+                  >
+                    <X className="w-3 h-3" aria-hidden="true" />
+                  </button>
+                </div>
+                <ul className="space-y-0.5 text-[11px] text-ink-secondary">
+                  {revisionContext.focusItems.map((item, i) => (
+                    <li key={i}>· {item}</li>
+                  ))}
+                </ul>
+              </div>
             )}
 
             {/* Manuscript Body */}
             <div className="p-5 sm:p-8 space-y-5">
-              {/* Quiet Random Topic Starter Hint (only when drawn from zero-API deck) */}
+              {/* Quiet Random Topic Starter Hint */}
               {!activeLinkedSlot && !focusMode && suggestedTopicMeta && (
                 <div
                   data-testid="random-topic-hint"
@@ -1637,13 +2739,9 @@ export function WriteStudio({
                       data-testid="new-spark-button"
                       onClick={handleSuggestRandomTopic}
                       disabled={suggestingTopic || askingAiTopic}
-                      title="Draw the next non-repeating topic from the 52-week roadmap"
-                      className="group/spark inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md border border-border-default bg-surface hover:border-border-strong text-[11px] font-medium text-ink-secondary hover:text-ink-primary transition-colors cursor-pointer"
+                      className="btn-secondary inline-flex items-center gap-1.5 px-2.5 py-1 text-[11px] font-medium"
                     >
-                      <Shuffle
-                        className="w-3 h-3 transition-transform duration-300 group-hover/spark:rotate-180"
-                        aria-hidden="true"
-                      />
+                      <Shuffle className="w-3 h-3" aria-hidden="true" />
                       <span>{suggestingTopic ? 'Drawing...' : 'New spark'}</span>
                     </button>
                     <button
@@ -1651,8 +2749,7 @@ export function WriteStudio({
                       data-testid="ask-ai-topic-button"
                       onClick={() => void handleAskAiForFreshTopic()}
                       disabled={askingAiTopic || suggestingTopic}
-                      title="Ask AI to craft a brand-new custom topic"
-                      className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md border border-border-default bg-surface hover:border-border-strong text-[11px] font-medium text-ink-secondary hover:text-ink-primary transition-colors cursor-pointer"
+                      className="btn-secondary inline-flex items-center gap-1.5 px-2.5 py-1 text-[11px] font-medium"
                     >
                       <Sparkles
                         className={`w-3 h-3 ${askingAiTopic ? 'animate-pulse text-ink-primary' : ''}`}
@@ -1673,6 +2770,7 @@ export function WriteStudio({
                 </div>
               )}
 
+              {/* Draft Title */}
               <div className="border-b border-border-subtle pb-3">
                 <label htmlFor="draft-topic" className="sr-only">
                   Session topic or title
@@ -1698,48 +2796,289 @@ export function WriteStudio({
                 />
               </div>
 
-              <div>
-                <label htmlFor="writing-editor" className="sr-only">
-                  Writing editor
-                </label>
-                <textarea
-                  id="writing-editor"
-                  value={content}
-                  onChange={(e) => {
-                    setContent(e.target.value);
-                    setSavedSuccess(false);
-                    setDraftSavedLabel(null);
-                    setPromotedVocabBanner(null);
-                    activeLoggedSessionIdRef.current = null;
-                  }}
-                  onKeyDown={(e) => {
-                    if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 's') {
-                      e.preventDefault();
-                      handleSaveDraftClick();
+              {/* 3-Minute No-Backspace Flow Sprint Active Bar */}
+              {flowLockActive && (
+                <div
+                  data-testid="flow-lock-banner"
+                  className="flex flex-wrap items-center justify-between gap-2 px-3 py-2 rounded-md border border-border-default bg-subtle/60 text-[11px]"
+                >
+                  <span className="inline-flex items-center gap-1.5 font-mono-tabular text-ink-primary font-medium">
+                    <Flame className="w-3.5 h-3.5 text-accent" aria-hidden="true" />
+                    <span>
+                      {flowHintVisible
+                        ? `Keep moving — editing unlocks in ${formatCountdownMMSS(flowSecondsLeft)}`
+                        : `Flow Sprint active · ${formatCountdownMMSS(flowSecondsLeft)} remaining`}
+                    </span>
+                  </span>
+                  <button
+                    type="button"
+                    data-testid="flow-unlock-early-button"
+                    onClick={() => {
+                      setFlowLockActive(false);
+                      setFlowHintVisible(false);
+                    }}
+                    className="inline-link-tactile font-medium cursor-pointer"
+                  >
+                    End Early &amp; Unlock Editing
+                  </button>
+                </div>
+              )}
+
+              {/* EDITOR SURFACE: Dual Canvas for 3 Rooms OR Clean 66ch Single Canvas */}
+              {activeDrill === 'three-rooms' ? (
+                <div data-testid="three-rooms-editor" className="space-y-3">
+                  {/* Mobile Room Switcher */}
+                  <div className="flex md:hidden items-center justify-between">
+                    <div className="segmented-track inline-flex gap-0.5">
+                      <button
+                        type="button"
+                        data-active={mobileRoomTab === 'roomA' ? 'true' : 'false'}
+                        onClick={() => setMobileRoomTab('roomA')}
+                        className="segmented-item px-3 py-1 text-xs font-medium"
+                      >
+                        Room A · 10-Yr-Old
+                      </button>
+                      <button
+                        type="button"
+                        data-active={mobileRoomTab === 'roomB' ? 'true' : 'false'}
+                        onClick={() => setMobileRoomTab('roomB')}
+                        className="segmented-item px-3 py-1 text-xs font-medium"
+                      >
+                        Room B · Interviewer
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    {/* Room A */}
+                    <div
+                      className={`p-4 rounded-md border border-border-subtle bg-subtle/30 space-y-2 ${
+                        mobileRoomTab === 'roomB' ? 'hidden md:block' : 'block'
+                      }`}
+                    >
+                      <div className="flex items-center justify-between gap-2 text-xs">
+                        <span className="font-semibold text-ink-primary">
+                          Room A · Curious 10-Year-Old
+                        </span>
+                        <span className="font-mono-tabular text-[11px] text-ink-muted">
+                          {roomAWordCount}w (50–90w)
+                        </span>
+                      </div>
+                      <p className="text-[11px] text-ink-muted">
+                        Plain everyday analogy — zero acronyms or jargon.
+                      </p>
+                      <textarea
+                        id="room-a-editor"
+                        data-testid="room-a-editor"
+                        rows={7}
+                        value={roomAText}
+                        onChange={(e) => {
+                          setRoomAText(e.target.value);
+                          setSavedSuccess(false);
+                        }}
+                        placeholder="Explain it with a kitchen or playground analogy. Zero jargon..."
+                        className="w-full bg-transparent text-sm leading-[1.8] text-ink-primary placeholder:text-ink-muted focus:outline-none resize-y"
+                      />
+                      <div
+                        data-testid="room-a-jargon-status"
+                        className="pt-2 border-t border-border-subtle text-[11px] font-mono-tabular"
+                      >
+                        {!roomAJargonCheck || roomAJargonCheck.jargonHits.length === 0 ? (
+                          <span className="text-status-success">
+                            Jargon check clean
+                          </span>
+                        ) : (
+                          <span className="text-status-warning">
+                            Jargon in Room A: {roomAJargonCheck.jargonHits.join(', ')}
+                          </span>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Room B */}
+                    <div
+                      className={`p-4 rounded-md border border-border-subtle bg-subtle/30 space-y-2 ${
+                        mobileRoomTab === 'roomA' ? 'hidden md:block' : 'block'
+                      }`}
+                    >
+                      <div className="flex items-center justify-between gap-2 text-xs">
+                        <span className="font-semibold text-ink-primary">
+                          Room B · Skeptical Senior Interviewer
+                        </span>
+                        <span className="font-mono-tabular text-[11px] text-ink-muted">
+                          {roomBWordCount}w (70–120w)
+                        </span>
+                      </div>
+                      <p className="text-[11px] text-ink-muted">
+                        Crisp executive defense — name failure modes and trade-offs.
+                      </p>
+                      <textarea
+                        id="room-b-editor"
+                        data-testid="room-b-editor"
+                        rows={7}
+                        value={roomBText}
+                        onChange={(e) => {
+                          setRoomBText(e.target.value);
+                          setSavedSuccess(false);
+                        }}
+                        placeholder="State the failure mode, trade-off, and concrete fix sharply..."
+                        className="w-full bg-transparent text-sm leading-[1.8] text-ink-primary placeholder:text-ink-muted focus:outline-none resize-y"
+                      />
+                      <div className="pt-2 border-t border-border-subtle text-[11px] font-mono-tabular text-ink-muted">
+                        Target: sharp engineering register
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              ) : (
+                <div
+                  key={flowShakeTick}
+                  className={flowShakeTick > 0 && flowHintVisible ? 'flow-shake' : ''}
+                >
+                  <label htmlFor="writing-editor" className="sr-only">
+                    Writing editor
+                  </label>
+                  <textarea
+                    id="writing-editor"
+                    value={content}
+                    onChange={(e) => {
+                      setContent(e.target.value);
+                      setSavedSuccess(false);
+                      setDraftSavedLabel(null);
+                      setPromotedVocabBanner(null);
+                      if (!revisionContext) {
+                        activeLoggedSessionIdRef.current = null;
+                      }
+                      scheduleVanishingDesk();
+                    }}
+                    onBeforeInput={(e) => {
+                      const nativeEvt = e.nativeEvent as InputEvent;
+                      if (
+                        shouldBlockFlowBeforeInput(flowLockActive, {
+                          inputType: nativeEvt?.inputType,
+                        }).blocked
+                      ) {
+                        e.preventDefault();
+                        triggerFlowBlockFeedback();
+                      }
+                    }}
+                    onKeyDown={(e) => {
+                      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 's') {
+                        e.preventDefault();
+                        handleSaveDraftClick();
+                        return;
+                      }
+                      if (
+                        shouldBlockFlowKeydown(flowLockActive, {
+                          key: e.key,
+                          metaKey: e.metaKey,
+                          ctrlKey: e.ctrlKey,
+                        }).blocked
+                      ) {
+                        e.preventDefault();
+                        triggerFlowBlockFeedback();
+                      }
+                    }}
+                    rows={focusMode ? 17 : 9}
+                    placeholder={
+                      activeDrill === 'skeleton'
+                        ? 'Reconstruct the passage from your 4 skeleton clues in your own natural words...'
+                        : activeDrill === 'compression-432'
+                          ? `${currentSprintSpec.label}: ${currentSprintSpec.guidance}`
+                          : mode === 'linkedin'
+                            ? 'Open with a sharp observation or a lesson worth sharing...'
+                            : mode === 'email'
+                              ? 'Lead clearly with your purpose in the opening line...'
+                              : mode === 'friend'
+                                ? 'Write naturally, as if catching up with a close friend...'
+                                : mode === 'technical'
+                                  ? 'Explain the core idea clearly, step by step, without jargon...'
+                                  : mode === 'creative'
+                                    ? 'Begin with a concrete image, sound, or turning point...'
+                                    : 'Begin writing freely. Your words stay private on this device...'
                     }
-                  }}
-                  rows={focusMode ? 17 : 8}
-                  placeholder={
-                    mode === 'linkedin'
-                      ? 'Open with a sharp observation or a lesson worth sharing...'
-                      : mode === 'email'
-                        ? 'Lead clearly with your purpose in the opening line...'
-                        : mode === 'friend'
-                          ? 'Write naturally, as if catching up with a close friend...'
-                          : mode === 'technical'
-                            ? 'Explain the core idea clearly, step by step, without jargon...'
-                            : mode === 'creative'
-                              ? 'Begin with a concrete image, sound, or turning point...'
-                              : 'Begin writing freely. Your words stay private and encrypted...'
-                  }
-                  className="w-full bg-transparent text-[15px] sm:text-base leading-[1.85] text-ink-primary placeholder:text-ink-muted resize-y focus:outline-none"
-                />
-              </div>
+                    className="w-full max-w-[66ch] bg-transparent text-[15px] sm:text-base leading-[1.85] text-ink-primary placeholder:text-ink-muted resize-y focus:outline-none"
+                  />
+                </div>
+              )}
+
+              {/* Live Zero-Quota Prose Diagnostics Bar (Signal/Noise + Sentence Rhythm Strip + Constraint) */}
+              {diagnostics.wordCount >= 8 && (
+                <div
+                  data-testid="live-prose-diagnostics"
+                  className="pt-2.5 border-t border-border-subtle/70 flex flex-wrap items-center justify-between gap-3 text-[11px] font-mono-tabular text-ink-muted"
+                >
+                  <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+                    <span>
+                      Signal/Noise{' '}
+                      <strong className="text-ink-primary">
+                        {liveProseDiagnostics.signalNoiseRatio}%
+                      </strong>
+                    </span>
+
+                    {/* Minimal Sentence Rhythm Strip */}
+                    {liveProseDiagnostics.sentenceLengths.length > 0 && (
+                      <div
+                        className="inline-flex items-end gap-[2px] h-3.5"
+                        title={`Sentence word lengths: ${liveProseDiagnostics.sentenceLengths.join(', ')}`}
+                        aria-label={`Sentence rhythm across ${liveProseDiagnostics.sentenceLengths.length} sentences`}
+                      >
+                        {liveProseDiagnostics.sentenceLengths
+                          .slice(0, 18)
+                          .map((len, idx) => {
+                            const heightPx = Math.max(
+                              3,
+                              Math.min(14, Math.round((len / 28) * 14))
+                            );
+                            const isLong = len >= 26;
+                            return (
+                              <span
+                                key={idx}
+                                className={`w-[3px] rounded-xs ${
+                                  isLong ? 'bg-status-warning' : 'bg-ink-secondary/60'
+                                }`}
+                                style={{ height: `${heightPx}px` }}
+                              />
+                            );
+                          })}
+                      </div>
+                    )}
+
+                    {liveProseDiagnostics.calqueFixes.length > 0 && (
+                      <span className="text-status-warning">
+                        {liveProseDiagnostics.calqueFixes.length} phrasing{' '}
+                        {liveProseDiagnostics.calqueFixes.length === 1
+                          ? 'nudge'
+                          : 'nudges'}
+                      </span>
+                    )}
+                  </div>
+
+                  {activeConstraint && constraintResult && (
+                    <span
+                      data-testid="live-constraint-status"
+                      className={
+                        constraintResult.passed
+                          ? 'text-status-success font-medium'
+                          : 'text-status-warning font-medium'
+                      }
+                    >
+                      {constraintResult.passed
+                        ? `✓ ${activeConstraint.shortLabel}`
+                        : `${constraintResult.violationCount} rule ${
+                            constraintResult.violationCount === 1
+                              ? 'flag'
+                              : 'flags'
+                          }: ${constraintResult.details}`}
+                    </span>
+                  )}
+                </div>
+              )}
 
               {/* Tactile Pen-and-Paper Daily Word Goal Ink-Drop Well */}
               <InkDropGoalWell progress={dailyInkProgress} />
 
-              {/* Instant Live Offline Proofreader Strip (0 API tokens, spelling + basic grammar) */}
+              {/* Instant Live Offline Proofreader Strip */}
               {liveOfflineCheckEnabled &&
                 offlineIssues.length > 0 &&
                 showOfflinePanel && (
@@ -1758,13 +3097,15 @@ export function WriteStudio({
                         </span>
                       </div>
                       <div className="flex items-center gap-2">
-                        <button
-                          type="button"
-                          onClick={handleApplyAllOfflineFixes}
-                          className="inline-link-tactile text-ink-primary font-medium"
-                        >
-                          Fix all ({offlineIssues.length})
-                        </button>
+                        {activeDrill !== 'three-rooms' && (
+                          <button
+                            type="button"
+                            onClick={handleApplyAllOfflineFixes}
+                            className="inline-link-tactile text-ink-primary font-medium"
+                          >
+                            Fix all ({offlineIssues.length})
+                          </button>
+                        )}
                         <button
                           type="button"
                           onClick={() => setShowOfflinePanel(false)}
@@ -1789,7 +3130,9 @@ export function WriteStudio({
                             ? 'extra space'
                             : issue.original;
                         const displayReplacement =
-                          issue.replacement === ' ' ? 'single space' : issue.replacement;
+                          issue.replacement === ' '
+                            ? 'single space'
+                            : issue.replacement;
                         return (
                           <button
                             key={issue.id}
@@ -1807,9 +3150,7 @@ export function WriteStudio({
                             <span className="font-medium text-ink-primary">
                               {displayReplacement}
                             </span>
-                            <span
-                              className={`text-[10px] capitalize ${categoryColor}`}
-                            >
+                            <span className={`text-[10px] capitalize ${categoryColor}`}>
                               {issue.category}
                             </span>
                           </button>
@@ -1910,7 +3251,11 @@ export function WriteStudio({
                       aria-hidden="true"
                     />
                     <span>
-                      {evaluating ? 'Evaluating...' : 'Evaluate & Score'}
+                      {evaluating
+                        ? 'Evaluating...'
+                        : revisionContext
+                          ? 'Score Revision'
+                          : 'Evaluate & Score'}
                     </span>
                   </button>
                 </div>
@@ -2046,14 +3391,24 @@ export function WriteStudio({
                     vocabUpgrades: evaluation.vocabUpgrades,
                     routingMeta: evaluation.routingMeta,
                     modelUsed: evaluation.modelUsed,
+                    spokenReadinessScore: evaluation.spokenReadinessScore,
+                    signalNoiseRatio: evaluation.signalNoiseRatio,
+                    audienceReaction: evaluation.audienceReaction,
+                    audience,
+                    calqueFixes: evaluation.calqueFixes,
+                    drillType: activeDrill,
+                    drillMeta: lastSubmittedDrillMeta,
+                    drillVerdict: evaluation.drillVerdict,
+                    revisionDelta: lastRevisionDelta,
                   }}
-                  draftContent={content}
+                  draftContent={effectiveDraftText}
                   savedSuccess={savedSuccess}
                   existingVocabSet={existingVocabSet}
                   savedVocabKeys={savedVocabKeys}
                   onApplyTextReplacement={applyTextReplacement}
                   onApplyAllGrammarFixes={handleApplyAllEvaluationFixes}
                   onSaveVocabItem={(v) => handleSaveVocabItem(v)}
+                  onStartRevision={handleStartRevisionPass}
                 />
               </div>
             ) : null}

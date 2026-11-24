@@ -2,7 +2,7 @@
   "entities": {
     "UserProfile": {
       "title": "UserProfile",
-      "description": "Private cloud user profile, settings, and cross-device preferences.",
+      "description": "Private cloud user profile, settings, custom coach instructions, and cross-device preferences.",
       "type": "object",
       "properties": {
         "uid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
@@ -20,6 +20,10 @@
         "autoSaveVocab": { "type": "boolean" },
         "focusModeDefault": { "type": "boolean" },
         "autoReloadSchedule": { "type": "boolean" },
+        "customCoachPrompt": { "type": "string", "maxLength": 500 },
+        "coachPresets": { "type": "array" },
+        "tactileSoundEnabled": { "type": "boolean" },
+        "vaultLatchEnabled": { "type": "boolean" },
         "createdAt": { "type": "string", "format": "date-time" },
         "updatedAt": { "type": "string", "format": "date-time" }
       },
@@ -27,14 +31,14 @@
     },
     "WritingSessionDoc": {
       "title": "WritingSessionDoc",
-      "description": "Cloud-synced writing entry and multidimensional rubric evaluation matching the Writing Progress & Evaluation Tracker schema.",
+      "description": "Cloud-synced writing entry, practice drill record, and multidimensional rubric evaluation.",
       "type": "object",
       "properties": {
         "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
         "ownerId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
         "date": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$", "maxLength": 10 },
         "daySlot": { "type": "string", "maxLength": 80 },
-        "mode": { "type": "string", "enum": ["journal", "linkedin", "email", "friend", "technical", "creative"] },
+        "mode": { "type": "string", "enum": ["journal", "linkedin", "email", "friend", "technical", "creative", "converse"] },
         "promptCategory": { "type": "string", "maxLength": 100 },
         "tone": { "type": "string", "enum": ["professional-warm", "conversational", "formal-executive", "academic-technical", "crisp-direct", "narrative-vivid"] },
         "topicDescription": { "type": "string", "minLength": 1, "maxLength": 300 },
@@ -52,6 +56,16 @@
         "strictImprovements": { "type": "string", "maxLength": 1500 },
         "grammarFixes": { "type": "array" },
         "vocabUpgrades": { "type": "array" },
+        "spokenReadinessScore": { "type": "number" },
+        "signalNoiseRatio": { "type": "number" },
+        "audienceReaction": { "type": "string", "maxLength": 400 },
+        "audience": { "type": "string", "maxLength": 40 },
+        "calqueFixes": { "type": "array" },
+        "drillType": { "type": "string", "enum": ["standard", "compression-432", "skeleton", "three-rooms", "time-capsule"] },
+        "drillMeta": { "type": "object" },
+        "drillVerdict": { "type": "object" },
+        "revisionOfSessionId": { "type": "string", "maxLength": 128 },
+        "revisionDelta": { "type": "number" },
         "status": { "type": "string", "enum": ["Completed", "Draft"] },
         "evaluationPending": { "type": "boolean" },
         "modelUsed": { "type": "string", "maxLength": 64 },
@@ -62,7 +76,7 @@
     },
     "CalendarSlotDoc": {
       "title": "CalendarSlotDoc",
-      "description": "Cloud-synced tri-weekly Wednesday/Friday/Sunday or custom writing task.",
+      "description": "Cloud-synced 4-5x/week 10-minute practice slot or custom writing task.",
       "type": "object",
       "properties": {
         "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
@@ -71,7 +85,7 @@
         "slotLabel": { "type": "string", "maxLength": 60 },
         "slotTime": { "type": "string", "maxLength": 20 },
         "scheduledDate": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$", "maxLength": 10 },
-        "mode": { "type": "string", "enum": ["journal", "linkedin", "email", "friend", "technical", "creative"] },
+        "mode": { "type": "string", "enum": ["journal", "linkedin", "email", "friend", "technical", "creative", "converse"] },
         "tone": { "type": "string", "enum": ["professional-warm", "conversational", "formal-executive", "academic-technical", "crisp-direct", "narrative-vivid"] },
         "promptCategory": { "type": "string", "maxLength": 100 },
         "topic": { "type": "string", "minLength": 1, "maxLength": 300 },
@@ -84,6 +98,8 @@
         "suggestions": { "type": "array" },
         "isTriWeekly": { "type": "boolean" },
         "pillar": { "type": "string", "enum": ["technical-concept", "linkedin-email", "creative-story"] },
+        "recommendedDrill": { "type": "string", "enum": ["standard", "compression-432", "skeleton", "three-rooms", "time-capsule"] },
+        "isConverseSlot": { "type": "boolean" },
         "createdAt": { "type": "string", "format": "date-time" },
         "updatedAt": { "type": "string", "format": "date-time" }
       },
@@ -100,10 +116,13 @@
         "betterAlternative": { "type": "string", "minLength": 1, "maxLength": 160 },
         "explanation": { "type": "string", "maxLength": 500 },
         "contextSnippet": { "type": "string", "maxLength": 300 },
-        "mode": { "type": "string", "enum": ["journal", "linkedin", "email", "friend", "technical", "creative"] },
+        "mode": { "type": "string", "enum": ["journal", "linkedin", "email", "friend", "technical", "creative", "converse"] },
         "dateAdded": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$", "maxLength": 10 },
         "mastered": { "type": "boolean" },
         "sessionId": { "type": "string", "maxLength": 128 },
+        "category": { "type": "string", "maxLength": 60 },
+        "usageCount": { "type": "number" },
+        "masteryStage": { "type": "string", "enum": ["new", "emerging", "building", "mastered"] },
         "createdAt": { "type": "string", "format": "date-time" },
         "updatedAt": { "type": "string", "format": "date-time" }
       },
@@ -121,7 +140,7 @@
     },
     "/users/{userId}/calendarSlots/{slotId}": {
       "schema": { "$ref": "#/entities/CalendarSlotDoc" },
-      "description": "Tri-weekly Tue/Thu/Sat and custom scheduled writing tasks owned by the authenticated user."
+      "description": "4-5x/week 10-minute practice slots and custom scheduled writing tasks owned by the authenticated user."
     },
     "/users/{userId}/vocabulary/{vocabId}": {
       "schema": { "$ref": "#/entities/VocabEntryDoc" },

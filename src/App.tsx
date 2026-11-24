@@ -3,8 +3,11 @@ import { onAuthStateChanged, type User } from 'firebase/auth';
 import type {
   AppView,
   CalendarSlot,
+  CoachPresetId,
+  DrillType,
   EncryptedEnvelope,
   StudentProfile,
+  ThemePreference,
   ToneSetting,
   VaultPayload,
   VocabEntry,
@@ -35,6 +38,7 @@ import {
   curriculumTopicToCalendarSlot,
   evaluatePeriodicAiAdaptation,
   getRemainingMonthPreferredSpecs,
+  inferRecommendedDrillForSlot,
   pickNextUnusedCurriculumTopic,
   shouldAutoRollMonthSchedule,
   shouldShowNewUserWelcomeFlashcard,
@@ -88,7 +92,7 @@ import {
   syncVaultToGoogleSheets,
 } from './utils/workspaceSync';
 import { Header, type CloudSyncState } from './components/Header';
-import { VaultGate } from './components/VaultGate';
+import { EntryDesk } from './components/EntryDesk';
 import { WriteStudio } from './components/WriteStudio';
 import { ConverseStudio } from './components/ConverseStudio';
 import { DashboardView } from './components/DashboardView';
@@ -96,6 +100,13 @@ import { CalendarView } from './components/CalendarView';
 import { VocabularyView } from './components/VocabularyView';
 import { VaultSettingsView } from './components/VaultSettingsView';
 import { ScheduledTaskModal } from './components/ScheduledTaskModal';
+import {
+  clearLocalDeskVault,
+  loadLocalDeskVault,
+  loadLocalDeskVaultSync,
+  saveLocalDeskVault,
+} from './utils/localDeskStore';
+import { sanitizeCustomCoachPrompt } from './utils/proseDiagnostics';
 import { ClearTasksModal } from './components/ClearTasksModal';
 import {
   OnboardingProfileModal,
@@ -125,7 +136,9 @@ import {
 } from './utils/offlineRecovery';
 
 const LOCAL_STORAGE_KEY = 'cadence_encrypted_vault_v1';
-const THEME_KEY = 'cadence_theme';
+const LOCAL_DESK_STORAGE_KEY = 'quillit_local_desk_idb';
+const THEME_KEY = 'quillit_theme';
+const LEGACY_THEME_KEY = 'cadence_theme';
 
 function getAccountStorageKey(uid: string): string {
   return `cadence_encrypted_vault_uid_${uid}`;
@@ -153,23 +166,54 @@ function isAutostartWithoutOnboarding(): boolean {
   }
 }
 
+function readInitialThemePreference(): ThemePreference {
+  try {
+    const saved =
+      localStorage.getItem(THEME_KEY) || localStorage.getItem(LEGACY_THEME_KEY);
+    if (saved === 'light' || saved === 'dark' || saved === 'system') {
+      return saved;
+    }
+  } catch {
+    // ignore storage errors
+  }
+  return 'system';
+}
+
+function getSystemDarkPreference(): boolean {
+  try {
+    return (
+      typeof window !== 'undefined' &&
+      typeof window.matchMedia === 'function' &&
+      window.matchMedia('(prefers-color-scheme: dark)').matches
+    );
+  } catch {
+    return false;
+  }
+}
+
 export default function App() {
   const todayISO = formatLocalDateISO(new Date());
 
-  const [theme, setTheme] = useState<'light' | 'dark'>(() => {
-    try {
-      const saved = localStorage.getItem(THEME_KEY);
-      if (saved === 'light' || saved === 'dark') return saved;
-    } catch {
-      // ignore storage errors
-    }
-    return 'dark';
-  });
+  const [themePreference, setThemePreference] = useState<ThemePreference>(
+    readInitialThemePreference
+  );
+  const [systemPrefersDark, setSystemPrefersDark] = useState<boolean>(
+    getSystemDarkPreference
+  );
+  const resolvedTheme: 'light' | 'dark' =
+    themePreference === 'system'
+      ? systemPrefersDark
+        ? 'dark'
+        : 'light'
+      : themePreference;
 
   const [activeStorageKey, setActiveStorageKey] =
     useState<string>(LOCAL_STORAGE_KEY);
   const activeStorageKeyRef = useRef<string>(LOCAL_STORAGE_KEY);
   const manuallyLockedRef = useRef<boolean>(false);
+  const [localDeskSessionsCount, setLocalDeskSessionsCount] = useState<number>(
+    () => loadLocalDeskVaultSync()?.sessions.length ?? 0
+  );
 
   const [storedEnvelope, setStoredEnvelope] = useState<EncryptedEnvelope | null>(
     () => loadStoredEnvelope(LOCAL_STORAGE_KEY)
@@ -259,6 +303,10 @@ export default function App() {
     useState<ToneSetting>('academic-technical');
   const [studioInitialTopic, setStudioInitialTopic] = useState('');
   const [studioInitialSlot, setStudioInitialSlot] = useState('Slot 1');
+  const [studioInitialDrill, setStudioInitialDrill] =
+    useState<DrillType>('standard');
+  const [studioTimeCapsuleOrigin, setStudioTimeCapsuleOrigin] =
+    useState<WritingSession | null>(null);
   const [linkedSlotId, setLinkedSlotId] = useState<string | undefined>(undefined);
   const [writeEvalInProgress, setWriteEvalInProgress] = useState(false);
   const [writeEvalHasUnreadResult, setWriteEvalHasUnreadResult] = useState(false);
@@ -360,6 +408,27 @@ export default function App() {
     [vault?.sessions, vault?.settings.lastPeriodicAiSessionCount]
   );
 
+  const weeklyCompletedCount = useMemo(() => {
+    if (!vault) return 0;
+    const [y, m, d] = todayISO.split('-').map(Number);
+    const dt = new Date(y || 2026, (m || 1) - 1, d || 1);
+    const mondayOffset = (dt.getDay() + 6) % 7;
+    const start = formatLocalDateISO(
+      new Date(dt.getFullYear(), dt.getMonth(), dt.getDate() - mondayOffset)
+    );
+    const end = formatLocalDateISO(
+      new Date(dt.getFullYear(), dt.getMonth(), dt.getDate() - mondayOffset + 6)
+    );
+    return vault.sessions.filter(
+      (s) => s.status === 'Completed' && s.date >= start && s.date <= end
+    ).length;
+  }, [vault, todayISO]);
+
+  const weeklyTargetCount = useMemo(() => {
+    const days = vault?.settings.studentProfile?.preferredDays?.length ?? 4;
+    return Math.min(7, Math.max(3, days));
+  }, [vault?.settings.studentProfile?.preferredDays]);
+
   const canUseFirestore = Boolean(
     hasConfiguredFirestoreDatabase &&
       cloudUser &&
@@ -377,19 +446,29 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') {
+      return;
+    }
+    const mq = window.matchMedia('(prefers-color-scheme: dark)');
+    const handler = (e: MediaQueryListEvent) => setSystemPrefersDark(e.matches);
+    mq.addEventListener('change', handler);
+    return () => mq.removeEventListener('change', handler);
+  }, []);
+
+  useEffect(() => {
     const root = document.documentElement;
-    root.setAttribute('data-theme', theme);
-    if (theme === 'dark') {
+    root.setAttribute('data-theme', resolvedTheme);
+    if (resolvedTheme === 'dark') {
       root.classList.add('dark');
     } else {
       root.classList.remove('dark');
     }
     try {
-      localStorage.setItem(THEME_KEY, theme);
+      localStorage.setItem(THEME_KEY, themePreference);
     } catch {
       // ignore
     }
-  }, [theme]);
+  }, [resolvedTheme, themePreference]);
 
   useEffect(() => {
     if (!auth) {
@@ -424,6 +503,12 @@ export default function App() {
         ...nextVault,
         updatedAt: new Date().toISOString(),
       };
+      if (targetKey === LOCAL_DESK_STORAGE_KEY) {
+        await saveLocalDeskVault(updated);
+        setLocalDeskSessionsCount(updated.sessions.length);
+        setVault(updated);
+        return;
+      }
       const envelope = await encryptVault(updated, passphrase);
       localStorage.setItem(targetKey, JSON.stringify(envelope));
       setStoredEnvelope(envelope);
@@ -617,13 +702,46 @@ export default function App() {
         setCloudSyncStatus('local');
       }
 
+      const pendingLocalDesk = await loadLocalDeskVault();
+      const hasLocalDeskData = Boolean(
+        pendingLocalDesk &&
+          (pendingLocalDesk.sessions.length > 0 ||
+            pendingLocalDesk.vocabulary.length > 0 ||
+            pendingLocalDesk.calendarSlots.length > 0)
+      );
+
+      const mergeLocalDeskIfPresent = async (base: VaultPayload) => {
+        if (!hasLocalDeskData || !pendingLocalDesk) return base;
+        const merged = mergeVaultPayloads(base, {
+          sessions: pendingLocalDesk.sessions,
+          vocabulary: pendingLocalDesk.vocabulary,
+          calendarSlots: pendingLocalDesk.calendarSlots,
+        });
+        await clearLocalDeskVault();
+        setLocalDeskSessionsCount(0);
+        return {
+          ...merged,
+          settings: {
+            ...merged.settings,
+            customCoachPrompt:
+              merged.settings.customCoachPrompt ||
+              pendingLocalDesk.settings.customCoachPrompt,
+            coachPresets:
+              merged.settings.coachPresets?.length
+                ? merged.settings.coachPresets
+                : pendingLocalDesk.settings.coachPresets,
+          },
+        };
+      };
+
       const existingAccountEnvelope = loadStoredEnvelope(storageKey);
       if (existingAccountEnvelope) {
         try {
           const decrypted = await decryptVault(existingAccountEnvelope, accountPass);
           const { cleaned, changed } = stripPredefinedSeedData(decrypted);
-          if (changed) {
-            await persistVault(cleaned, accountPass, storageKey);
+          const withLocal = await mergeLocalDeskIfPresent(cleaned);
+          if (changed || hasLocalDeskData) {
+            await persistVault(withLocal, accountPass, storageKey);
           } else {
             setVault(decrypted);
             setStoredEnvelope(existingAccountEnvelope);
@@ -642,7 +760,8 @@ export default function App() {
           const legacyPass = `quilit-google-${user.uid}`;
           const decrypted = await decryptVault(legacyEnvelope, legacyPass);
           const { cleaned } = stripPredefinedSeedData(decrypted);
-          await persistVault(cleaned, accountPass, storageKey);
+          const withLocal = await mergeLocalDeskIfPresent(cleaned);
+          await persistVault(withLocal, accountPass, storageKey);
           setActivePassphrase(accountPass);
           return;
         } catch {
@@ -651,7 +770,9 @@ export default function App() {
       }
 
       // Fresh device or first sign-in: initialize empty account cache; Firestore sync hydrates remote data
-      const initialPayload = createEmptyVaultPayload();
+      const initialPayload = await mergeLocalDeskIfPresent(
+        createEmptyVaultPayload()
+      );
       await persistVault(initialPayload, accountPass, storageKey);
       setActivePassphrase(accountPass);
       setActiveView('write');
@@ -1456,6 +1577,8 @@ export default function App() {
             tone: TONE_LABELS[targetSession.tone],
             topic: targetSession.topicDescription,
             studentProfile: vault.settings.studentProfile,
+            customCoachPrompt: vault.settings.customCoachPrompt,
+            coachPresets: vault.settings.coachPresets,
             previousSessionSummary: coachContext.previousSessionSummary,
             practicingVocab: coachContext.practicingWords.map(
               (v) => v.betterAlternative
@@ -1698,6 +1821,73 @@ export default function App() {
     setActiveView('dashboard');
   }
 
+  async function handleEnterLocalDesk() {
+    manuallyLockedRef.current = false;
+    activeStorageKeyRef.current = LOCAL_DESK_STORAGE_KEY;
+    setActiveStorageKey(LOCAL_DESK_STORAGE_KEY);
+    setCloudSyncStatus('local');
+    setCloudSyncError(null);
+
+    const existing = await loadLocalDeskVault();
+    if (existing) {
+      const { cleaned } = stripPredefinedSeedData(existing);
+      const ensured: VaultPayload = cleaned.settings.studentProfile
+        ?.onboardingCompleted
+        ? cleaned
+        : {
+            ...cleaned,
+            settings: {
+              ...cleaned.settings,
+              studentProfile: {
+                ...(cleaned.settings.studentProfile ?? {
+                  collegeDegree: 'B.Tech Electronics & Instrumentation (EIE)',
+                  semester: 'Active Practice',
+                  collegeName: 'Local Desk',
+                  age: 21,
+                  targetWordGoal: 220,
+                  preferredDays: [1, 3, 5, 0],
+                  defaultMode: 'technical',
+                }),
+                onboardingCompleted: true,
+              },
+            },
+          };
+      await saveLocalDeskVault(ensured);
+      setLocalDeskSessionsCount(ensured.sessions.length);
+      setVault(ensured);
+      setActivePassphrase('quillit-local-desk-no-pass');
+      setActiveView('write');
+      return;
+    }
+
+    const fresh = createEmptyVaultPayload();
+    const readyLocal: VaultPayload = {
+      ...fresh,
+      settings: {
+        ...fresh.settings,
+        studentProfile: {
+          collegeDegree: 'B.Tech Electronics & Instrumentation (EIE)',
+          semester: 'Active Practice',
+          collegeName: 'Local Desk',
+          age: 21,
+          targetWordGoal: 220,
+          preferredDays: [1, 3, 5, 0],
+          defaultMode: 'technical',
+          onboardingCompleted: true,
+        },
+        dailyWordGoal: 220,
+        liveOfflineCheck: true,
+        tactileSoundEnabled: false,
+        vaultLatchEnabled: true,
+      },
+    };
+    await saveLocalDeskVault(readyLocal);
+    setLocalDeskSessionsCount(0);
+    setVault(readyLocal);
+    setActivePassphrase('quillit-local-desk-no-pass');
+    setActiveView('write');
+  }
+
   function handleLockVault() {
     manuallyLockedRef.current = true;
     setVault(null);
@@ -1705,10 +1895,79 @@ export default function App() {
     setFocusMode(false);
     setShowEditProfileModal(false);
     setPendingWorkspaceTarget(null);
+    setLocalDeskSessionsCount(loadLocalDeskVaultSync()?.sessions.length ?? 0);
   }
 
-  function toggleTheme() {
-    setTheme((prev) => (prev === 'dark' ? 'light' : 'dark'));
+  function handleChangeThemePreference(pref: ThemePreference) {
+    setThemePreference(pref);
+    if (vault && activePassphrase) {
+      void updateVaultState((prev) => ({
+        ...prev,
+        settings: {
+          ...prev.settings,
+          themePreference: pref,
+        },
+      }));
+    }
+  }
+
+  function cycleTheme() {
+    const next: ThemePreference =
+      themePreference === 'system'
+        ? 'light'
+        : themePreference === 'light'
+          ? 'dark'
+          : 'system';
+    handleChangeThemePreference(next);
+  }
+
+  function handleSaveCoachPreferences(params: {
+    customCoachPrompt: string;
+    coachPresets: CoachPresetId[];
+  }) {
+    const sanitized = sanitizeCustomCoachPrompt(params.customCoachPrompt);
+    void updateVaultState((prev) => {
+      const nextSettings = {
+        ...prev.settings,
+        customCoachPrompt: sanitized,
+        coachPresets: params.coachPresets,
+      };
+      if (canUseFirestore && cloudUser) {
+        void ensureUserProfileDoc(cloudUser, nextSettings).catch(
+          handleCloudSoftFailure
+        );
+      }
+      return {
+        ...prev,
+        settings: nextSettings,
+      };
+    });
+  }
+
+  function handleUpdateDeskPreferences(params: {
+    tactileSoundEnabled?: boolean;
+    vaultLatchEnabled?: boolean;
+  }) {
+    void updateVaultState((prev) => {
+      const nextSettings = {
+        ...prev.settings,
+        ...(typeof params.tactileSoundEnabled === 'boolean'
+          ? { tactileSoundEnabled: params.tactileSoundEnabled }
+          : {}),
+        ...(typeof params.vaultLatchEnabled === 'boolean'
+          ? { vaultLatchEnabled: params.vaultLatchEnabled }
+          : {}),
+      };
+      if (canUseFirestore && cloudUser) {
+        void ensureUserProfileDoc(cloudUser, nextSettings).catch(
+          handleCloudSoftFailure
+        );
+      }
+      return {
+        ...prev,
+        settings: nextSettings,
+      };
+    });
   }
 
   function handleToggleAutoReloadSchedule() {
@@ -2132,7 +2391,24 @@ export default function App() {
     setStudioInitialTone(slot.tone);
     setStudioInitialTopic(slot.topic);
     setStudioInitialSlot(`${slot.dayOfWeek} · ${slot.slotLabel}`);
+    setStudioInitialDrill(
+      slot.recommendedDrill ??
+        inferRecommendedDrillForSlot(slot.scheduledDate).recommendedDrill
+    );
+    setStudioTimeCapsuleOrigin(null);
     setLinkedSlotId(slot.id);
+    setStudioKey((k) => k + 1);
+    setActiveView('write');
+  }
+
+  function handleLaunchTimeCapsule(originSession: WritingSession) {
+    setStudioInitialMode(originSession.mode);
+    setStudioInitialTone(originSession.tone);
+    setStudioInitialTopic(originSession.topicDescription);
+    setStudioInitialSlot('30-Day Time Capsule');
+    setStudioInitialDrill('time-capsule');
+    setStudioTimeCapsuleOrigin(originSession);
+    setLinkedSlotId(undefined);
     setStudioKey((k) => k + 1);
     setActiveView('write');
   }
@@ -2156,9 +2432,14 @@ export default function App() {
   }
 
   function handleResetVault() {
-    localStorage.removeItem(activeStorageKeyRef.current);
-    if (activeStorageKeyRef.current === LOCAL_STORAGE_KEY) {
-      clearOfflineRecoveryLockbox();
+    if (activeStorageKeyRef.current === LOCAL_DESK_STORAGE_KEY) {
+      void clearLocalDeskVault();
+      setLocalDeskSessionsCount(0);
+    } else {
+      localStorage.removeItem(activeStorageKeyRef.current);
+      if (activeStorageKeyRef.current === LOCAL_STORAGE_KEY) {
+        clearOfflineRecoveryLockbox();
+      }
     }
     manuallyLockedRef.current = true;
     setStoredEnvelope(loadStoredEnvelope(LOCAL_STORAGE_KEY));
@@ -2482,20 +2763,18 @@ export default function App() {
   if (!vault) {
     const existingLocalEnvelope = loadStoredEnvelope(LOCAL_STORAGE_KEY);
     return (
-      <VaultGate
-        hasExistingVault={Boolean(existingLocalEnvelope)}
-        existingLocalEnvelope={existingLocalEnvelope}
-        theme={theme}
-        onToggleTheme={toggleTheme}
+      <EntryDesk
+        themePreference={themePreference}
+        resolvedTheme={resolvedTheme}
+        onChangeThemePreference={handleChangeThemePreference}
+        hasLegacyEncryptedVault={Boolean(existingLocalEnvelope)}
+        localDeskSessionsCount={localDeskSessionsCount}
         onGoogleSignIn={handleGoogleSignInFromGate}
         onEmailSignIn={handleEmailSignInFromGate}
         onEmailSignUp={handleEmailSignUpFromGate}
         onSendPasswordReset={handleSendPasswordReset}
-        onCreateOfflineSpace={handleCreateOfflineSpace}
-        onCompleteOfflineEntry={handleCompleteOfflineEntry}
-        onUnlockVault={handleUnlockVault}
-        onRecoverWithKey={handleRecoverOfflineWithKey}
-        onRecoverWithSecurityAnswer={handleRecoverOfflineWithSecurityAnswer}
+        onEnterLocalDesk={handleEnterLocalDesk}
+        onUnlockLegacyVault={handleUnlockVault}
         onImportEncryptedBackup={handleImportEncryptedBackup}
       />
     );
@@ -2516,8 +2795,8 @@ export default function App() {
           initialNotificationsEnabled={vault.settings.notificationsEnabled !== false}
           initialLiveOfflineCheck={vault.settings.liveOfflineCheck !== false}
           isEditingExisting={false}
-          theme={theme}
-          onToggleTheme={toggleTheme}
+          theme={resolvedTheme}
+          onToggleTheme={cycleTheme}
           onSave={handleSaveStudentProfile}
         />
         <OfflineMigrationModal
@@ -2535,8 +2814,9 @@ export default function App() {
       {!(activeView === 'write' && focusMode) && (
         <Header
           activeView={activeView}
-          theme={theme}
-          onToggleTheme={toggleTheme}
+          themePreference={themePreference}
+          resolvedTheme={resolvedTheme}
+          onCycleTheme={cycleTheme}
           onNavigate={(view) => {
             setFocusMode(false);
             if (view === 'write') {
@@ -2558,6 +2838,15 @@ export default function App() {
               void handleConnectCloud();
             }
           }}
+          localSessionCount={
+            activeStorageKey === LOCAL_DESK_STORAGE_KEY && !cloudUser
+              ? vault.sessions.length
+              : 0
+          }
+          weeklyCompletedCount={weeklyCompletedCount}
+          weeklyTargetCount={weeklyTargetCount}
+          tactileSoundEnabled={Boolean(vault.settings.tactileSoundEnabled)}
+          vaultLatchEnabled={vault.settings.vaultLatchEnabled !== false}
           notificationSummary={notificationSummary}
           notificationsEnabled={Boolean(vault.settings.notificationsEnabled)}
           browserPermission={browserPermission}
@@ -2618,15 +2907,18 @@ export default function App() {
           <WriteStudio
             key={studioKey}
             todayISO={todayISO}
-            theme={theme}
+            theme={resolvedTheme}
             focusMode={focusMode}
-            onToggleTheme={toggleTheme}
+            onToggleTheme={cycleTheme}
             onToggleFocusMode={() => setFocusMode((f) => !f)}
             sessions={vault.sessions}
             vocabulary={vault.vocabulary}
             calendarSlots={vault.calendarSlots}
             studentProfile={vault.settings.studentProfile}
             coachContext={coachContext}
+            customCoachPrompt={vault.settings.customCoachPrompt}
+            coachPresets={vault.settings.coachPresets}
+            tactileSoundEnabled={Boolean(vault.settings.tactileSoundEnabled)}
             autoReloadSchedule={vault.settings.autoReloadSchedule !== false}
             refreshingSchedule={refreshingSchedule}
             scheduleError={scheduleError}
@@ -2642,6 +2934,8 @@ export default function App() {
             initialTone={studioInitialTone}
             initialTopic={studioInitialTopic}
             initialDaySlot={studioInitialSlot}
+            initialDrillType={studioInitialDrill}
+            initialTimeCapsuleOrigin={studioTimeCapsuleOrigin}
             linkedCalendarSlotId={linkedSlotId}
             dailyWordGoal={
               vault.settings.dailyWordGoal ||
@@ -2671,6 +2965,8 @@ export default function App() {
             studentProfile={vault.settings.studentProfile}
             vocabulary={vault.vocabulary}
             coachContext={coachContext}
+            customCoachPrompt={vault.settings.customCoachPrompt}
+            coachPresets={vault.settings.coachPresets}
             onSaveSession={handleSaveSession}
             onAddVocabEntry={handleAddVocabEntry}
             onConverseStatusChange={handleConverseStatusChange}
@@ -2683,9 +2979,10 @@ export default function App() {
             vocabulary={vault.vocabulary}
             calendarSlots={vault.calendarSlots}
             todayISO={todayISO}
-            theme={theme}
+            theme={resolvedTheme}
             onStartWriting={() => setActiveView('write')}
             onStartConverse={() => setActiveView('converse')}
+            onLaunchTimeCapsule={handleLaunchTimeCapsule}
           />
         )}
 
@@ -2710,6 +3007,7 @@ export default function App() {
             onDeleteSlot={handleDeleteSlot}
             onClearAllSlots={() => setShowClearTasksModal(true)}
             onLaunchSlotInStudio={handleLaunchSlotInStudio}
+            onStartConverse={() => setActiveView('converse')}
             onOpenScheduledPopup={(slot) => setActivePopupSlot(slot)}
           />
         )}
@@ -2730,6 +3028,10 @@ export default function App() {
           <VaultSettingsView
             vault={vault}
             todayISO={todayISO}
+            themePreference={themePreference}
+            onChangeThemePreference={handleChangeThemePreference}
+            onSaveCoachPreferences={handleSaveCoachPreferences}
+            onUpdateDeskPreferences={handleUpdateDeskPreferences}
             cloudUser={
               cloudUser
                 ? {
@@ -2777,8 +3079,8 @@ export default function App() {
           initialNotificationsEnabled={Boolean(vault.settings.notificationsEnabled)}
           initialLiveOfflineCheck={vault.settings.liveOfflineCheck !== false}
           isEditingExisting={true}
-          theme={theme}
-          onToggleTheme={toggleTheme}
+          theme={resolvedTheme}
+          onToggleTheme={cycleTheme}
           onSave={handleSaveStudentProfile}
           onClose={() => setShowEditProfileModal(false)}
         />

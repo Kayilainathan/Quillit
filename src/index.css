@@ -148,24 +148,26 @@
   }
 }
 
-/* 1. Primary Button */
+/* 1. Primary Button — Tactile Mechanical Detent (120ms hover, 70ms press) */
 .btn-primary {
   background-color: var(--accent);
   color: var(--ink-inverse);
-  border: 1px solid transparent;
+  border: 1px solid color-mix(in srgb, var(--accent) 82%, var(--ink-primary));
   border-radius: var(--radius-md);
-  box-shadow: var(--highlight-inset);
+  box-shadow: var(--shadow-btn-rest), var(--highlight-inset);
   transition:
-    transform var(--dur-fast) var(--ease-snappy),
-    filter var(--dur-fast) var(--ease-snappy),
-    box-shadow var(--dur-fast) var(--ease-snappy),
-    opacity var(--dur-fast) var(--ease-snappy);
+    transform var(--dur-instant) var(--ease-snappy),
+    background-color var(--dur-instant) var(--ease-snappy),
+    border-color var(--dur-instant) var(--ease-snappy),
+    box-shadow var(--dur-instant) var(--ease-snappy),
+    opacity var(--dur-instant) var(--ease-snappy);
   cursor: pointer;
 }
 
 .btn-primary:active:not(:disabled) {
-  transform: translateY(0) scale(0.985);
-  transition-duration: 90ms;
+  transform: translateY(1px) scale(0.982);
+  box-shadow: var(--shadow-btn-active);
+  transition-duration: var(--dur-press);
 }
 
 .btn-primary:disabled {
@@ -173,32 +175,35 @@
   cursor: not-allowed;
 }
 
-/* 2. Secondary / Ghost / Icon Buttons */
+/* 2. Secondary / Ghost / Icon Buttons — Tactile Keycap Physics */
 .btn-secondary {
   background-color: var(--bg-surface);
   color: var(--ink-primary);
   border: 1px solid var(--border-default);
   border-radius: var(--radius-md);
+  box-shadow: var(--shadow-btn-rest);
   transition:
-    background-color var(--dur-fast) var(--ease-snappy),
-    border-color var(--dur-fast) var(--ease-snappy),
-    color var(--dur-fast) var(--ease-snappy),
+    background-color var(--dur-instant) var(--ease-snappy),
+    border-color var(--dur-instant) var(--ease-snappy),
+    color var(--dur-instant) var(--ease-snappy),
+    box-shadow var(--dur-instant) var(--ease-snappy),
     transform var(--dur-instant) var(--ease-snappy);
   cursor: pointer;
 }
 
 .btn-secondary svg,
 .btn-ghost svg {
-  opacity: 0.72;
+  opacity: 0.78;
   transition:
-    opacity var(--dur-fast) var(--ease-snappy),
-    transform var(--dur-fast) var(--ease-snappy);
+    opacity var(--dur-instant) var(--ease-snappy),
+    transform var(--dur-instant) var(--ease-snappy);
 }
 
 .btn-secondary:active:not(:disabled),
 .btn-ghost:active:not(:disabled) {
-  transform: scale(0.97);
-  transition-duration: 90ms;
+  transform: translateY(1px) scale(0.982);
+  box-shadow: var(--shadow-btn-active);
+  transition-duration: var(--dur-press);
 }
 
 .btn-secondary:disabled,
@@ -213,11 +218,40 @@
   border: 1px solid transparent;
   border-radius: var(--radius-sm);
   transition:
-    background-color var(--dur-fast) var(--ease-snappy),
-    color var(--dur-fast) var(--ease-snappy),
-    border-color var(--dur-fast) var(--ease-snappy),
+    background-color var(--dur-instant) var(--ease-snappy),
+    color var(--dur-instant) var(--ease-snappy),
+    border-color var(--dur-instant) var(--ease-snappy),
     transform var(--dur-instant) var(--ease-snappy);
   cursor: pointer;
+}
+
+/* Tactile Chip / Toggle Pill (only for interactive controls, never static metadata) */
+.btn-chip {
+  background-color: var(--bg-surface);
+  color: var(--ink-secondary);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-btn-rest);
+  transition:
+    background-color var(--dur-instant) var(--ease-snappy),
+    border-color var(--dur-instant) var(--ease-snappy),
+    color var(--dur-instant) var(--ease-snappy),
+    box-shadow var(--dur-instant) var(--ease-snappy),
+    transform var(--dur-instant) var(--ease-snappy);
+  cursor: pointer;
+}
+
+.btn-chip[data-active="true"] {
+  background-color: var(--accent-soft);
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 42%, var(--border-default));
+  font-weight: 600;
+}
+
+.btn-chip:active:not(:disabled) {
+  transform: translateY(1px) scale(0.982);
+  box-shadow: var(--shadow-btn-active);
+  transition-duration: var(--dur-press);
 }
 
 /* 3. Static Display Cards vs Interactive Clickable Cards */
@@ -423,19 +457,23 @@
 /* 9. Touch Guard — Hover lifts & washes only on fine pointer devices */
 @media (hover: hover) and (pointer: fine) {
   .btn-primary:hover:not(:disabled) {
-    filter: brightness(1.08);
+    background-color: var(--accent-hover);
     transform: translateY(-1px);
-    box-shadow: var(--shadow-sm), var(--highlight-inset);
-  }
-
-  [data-theme="dark"] .btn-primary:hover:not(:disabled),
-  .dark .btn-primary:hover:not(:disabled) {
-    filter: brightness(0.92);
+    box-shadow: var(--shadow-btn-hover), var(--highlight-inset);
   }
 
   .btn-secondary:hover:not(:disabled) {
     background-color: var(--bg-subtle);
     border-color: var(--border-strong);
+    transform: translateY(-1px);
+    box-shadow: var(--shadow-btn-hover);
+  }
+
+  .btn-chip:hover:not(:disabled) {
+    border-color: var(--border-strong);
+    color: var(--ink-primary);
+    transform: translateY(-1px);
+    box-shadow: var(--shadow-btn-hover);
   }
 
   .btn-secondary:hover:not(:disabled) svg,
@@ -949,6 +987,81 @@
   animation: vocabMasteredRowCelebrate 2.2s ease-in-out 2;
 }
 
+/* v3.1 Practice Mechanics: Flow Sprint Micro-Shake, Vanishing Desk, Linked Quotes & Vault Latch */
+@keyframes flowShake {
+  0%, 100% {
+    transform: translateX(0);
+  }
+  25% {
+    transform: translateX(-3px);
+  }
+  50% {
+    transform: translateX(3px);
+  }
+  75% {
+    transform: translateX(-2px);
+  }
+}
+
+.flow-shake {
+  animation: flowShake 120ms var(--ease-snappy) both;
+}
+
+.vanishing-chrome {
+  transition: opacity 280ms var(--ease-out-expo);
+}
+
+.vanishing-chrome[data-faded="true"] {
+  opacity: 0.18;
+}
+
+.vanishing-chrome[data-faded="true"]:hover,
+.vanishing-chrome[data-faded="true"]:focus-within {
+  opacity: 1;
+}
+
+.quote-highlight-mark {
+  background-color: var(--accent-soft);
+  color: var(--ink-primary);
+  border-bottom: 2px solid var(--accent);
+  border-radius: 3px;
+  padding: 0 2px;
+  transition: background-color 140ms var(--ease-snappy);
+}
+
+.vault-latch-track {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  width: 34px;
+  height: 18px;
+  border-radius: var(--radius-full);
+  background-color: var(--bg-subtle);
+  border: 1px solid var(--border-default);
+  transition:
+    background-color var(--dur-instant) var(--ease-snappy),
+    border-color var(--dur-instant) var(--ease-snappy);
+}
+
+.vault-latch-track[data-latched="true"] {
+  background-color: var(--accent);
+  border-color: var(--accent);
+}
+
+.vault-latch-thumb {
+  width: 12px;
+  height: 12px;
+  border-radius: var(--radius-full);
+  background-color: var(--bg-surface);
+  box-shadow: var(--shadow-sm);
+  transform: translateX(2px);
+  transition: transform var(--dur-instant) var(--ease-snappy);
+}
+
+.vault-latch-track[data-latched="true"] .vault-latch-thumb {
+  transform: translateX(18px);
+}
+
 /* Reduced Motion Compliance */
 @media (prefers-reduced-motion: reduce) {
   *,
@@ -962,8 +1075,12 @@
 
   .btn-primary:hover,
   .btn-primary:active,
+  .btn-secondary:hover,
   .btn-secondary:active,
+  .btn-chip:hover,
+  .btn-chip:active,
   .btn-ghost:active,
+  .flow-shake,
   .card-interactive:hover,
   .card-interactive:active,
   .card-interactive:hover .card-arrow,

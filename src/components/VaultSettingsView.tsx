@@ -1,6 +1,7 @@
 import { useState, type ChangeEvent, type FormEvent } from 'react';
 import {
   CalendarPlus,
+  Check,
   Cloud,
   Download,
   ExternalLink,
@@ -8,20 +9,76 @@ import {
   FileText,
   GraduationCap,
   KeyRound,
+  Laptop,
+  Lock,
   LogOut,
+  Moon,
   RefreshCw,
   ShieldCheck,
+  SlidersHorizontal,
+  Sun,
   Trash2,
   Upload,
+  Volume2,
+  VolumeX,
 } from 'lucide-react';
-import type { EncryptedEnvelope, VaultPayload } from '../types';
+import type {
+  CoachPresetId,
+  EncryptedEnvelope,
+  ThemePreference,
+  VaultPayload,
+} from '../types';
 import type { CloudSyncState } from './Header';
 import { exportSessionsToCsv } from '../utils/analytics';
 import { isEncryptedEnvelope } from '../utils/crypto';
+import { sanitizeCustomCoachPrompt } from '../utils/proseDiagnostics';
+import { playTactileClick } from '../utils/tactileSound';
+
+const COACH_PRESET_OPTIONS: Array<{
+  id: CoachPresetId;
+  label: string;
+  hint: string;
+}> = [
+  {
+    id: 'brutally-honest',
+    label: 'Brutally Honest',
+    hint: 'Zero sugarcoating; surface weak reasoning immediately',
+  },
+  {
+    id: 'technical-interview-clarity',
+    label: 'Technical Interview Clarity',
+    hint: 'Enforce crisp system explanations & concrete trade-offs',
+  },
+  {
+    id: 'ban-corporate-slop',
+    label: 'Ban Corporate Slop',
+    hint: 'Flag leverage/synergy/delve and thesaurus padding',
+  },
+  {
+    id: 'flag-literal-translations',
+    label: 'Flag Literal Translations',
+    hint: 'Catch textbook calques like "revert back" or "do the needful"',
+  },
+  {
+    id: 'short-punchy-sentences',
+    label: 'Short Punchy Sentences',
+    hint: 'Push cadence under ~16 words per sentence on average',
+  },
+];
 
 interface VaultSettingsViewProps {
   vault: VaultPayload;
   todayISO: string;
+  themePreference: ThemePreference;
+  onChangeThemePreference: (pref: ThemePreference) => void;
+  onSaveCoachPreferences: (params: {
+    customCoachPrompt: string;
+    coachPresets: CoachPresetId[];
+  }) => void;
+  onUpdateDeskPreferences: (params: {
+    tactileSoundEnabled?: boolean;
+    vaultLatchEnabled?: boolean;
+  }) => void;
   cloudUser: {
     uid: string;
     email: string | null;
@@ -57,6 +114,10 @@ interface VaultSettingsViewProps {
 export function VaultSettingsView({
   vault,
   todayISO,
+  themePreference,
+  onChangeThemePreference,
+  onSaveCoachPreferences,
+  onUpdateDeskPreferences,
   cloudUser,
   cloudSyncStatus,
   cloudSyncError,
@@ -80,6 +141,14 @@ export function VaultSettingsView({
   onRestoreBackup,
   onResetVault,
 }: VaultSettingsViewProps) {
+  const [coachPromptDraft, setCoachPromptDraft] = useState(
+    vault.settings.customCoachPrompt ?? ''
+  );
+  const [selectedPresets, setSelectedPresets] = useState<CoachPresetId[]>(
+    vault.settings.coachPresets ?? []
+  );
+  const [coachSavedNotice, setCoachSavedNotice] = useState(false);
+
   const [newPass, setNewPass] = useState('');
   const [confirmPass, setConfirmPass] = useState('');
   const [passMessage, setPassMessage] = useState<string | null>(null);
@@ -97,6 +166,35 @@ export function VaultSettingsView({
   const [confirmReset, setConfirmReset] = useState(false);
 
   const profile = vault.settings.studentProfile;
+  const tactileSoundEnabled = Boolean(vault.settings.tactileSoundEnabled);
+  const vaultLatchEnabled = Boolean(vault.settings.vaultLatchEnabled);
+
+  function handleTogglePreset(id: CoachPresetId) {
+    playTactileClick(tactileSoundEnabled);
+    setCoachSavedNotice(false);
+    setSelectedPresets((prev) => {
+      const next = prev.includes(id)
+        ? prev.filter((item) => item !== id)
+        : [...prev, id];
+      onSaveCoachPreferences({
+        customCoachPrompt: sanitizeCustomCoachPrompt(coachPromptDraft),
+        coachPresets: next,
+      });
+      return next;
+    });
+  }
+
+  function handleSaveCoachPromptClick() {
+    playTactileClick(tactileSoundEnabled);
+    const cleaned = sanitizeCustomCoachPrompt(coachPromptDraft);
+    setCoachPromptDraft(cleaned);
+    onSaveCoachPreferences({
+      customCoachPrompt: cleaned,
+      coachPresets: selectedPresets,
+    });
+    setCoachSavedNotice(true);
+    window.setTimeout(() => setCoachSavedNotice(false), 2400);
+  }
 
   async function handleDownloadEncryptedBackup() {
     const envelope = await onExportEncryptedBackup();
@@ -287,6 +385,227 @@ export function VaultSettingsView({
             Set up your name, age, college, and preferred weekly writing rhythm to personalize your calendar and reminders.
           </p>
         )}
+      </section>
+
+      {/* Custom Coach Instructions (v3.1) */}
+      <section
+        data-testid="custom-coach-settings"
+        className="card-surface p-6 space-y-4"
+      >
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="flex items-center gap-2 text-sm font-semibold text-ink-primary">
+            <SlidersHorizontal
+              className="w-4 h-4 text-ink-secondary"
+              aria-hidden="true"
+            />
+            <span>Custom Coach Instructions</span>
+          </div>
+          <span className="text-[11px] font-mono-tabular text-ink-muted">
+            Applied to Write &amp; Converse
+          </span>
+        </div>
+
+        <p className="text-xs text-ink-secondary leading-relaxed">
+          Shape how your AI coach evaluates drafts and responds in live conversation. Preset toggles save instantly; add custom rules below up to 500 characters.
+        </p>
+
+        <div
+          role="group"
+          aria-label="Coach feedback presets"
+          className="flex flex-wrap gap-2"
+        >
+          {COACH_PRESET_OPTIONS.map((preset) => {
+            const active = selectedPresets.includes(preset.id);
+            return (
+              <button
+                key={preset.id}
+                type="button"
+                data-testid={`coach-preset-${preset.id}`}
+                data-active={active ? 'true' : 'false'}
+                aria-pressed={active}
+                title={preset.hint}
+                onClick={() => handleTogglePreset(preset.id)}
+                className="btn-chip inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium"
+              >
+                {active && <Check className="w-3 h-3" aria-hidden="true" />}
+                <span>{preset.label}</span>
+              </button>
+            );
+          })}
+        </div>
+
+        <div className="space-y-2">
+          <div className="flex items-center justify-between text-[11px]">
+            <label
+              htmlFor="custom-coach-prompt-input"
+              className="font-medium text-ink-secondary"
+            >
+              Personal Coach Notes (optional)
+            </label>
+            <span className="font-mono-tabular text-ink-muted">
+              {coachPromptDraft.length}/500
+            </span>
+          </div>
+          <textarea
+            id="custom-coach-prompt-input"
+            data-testid="custom-coach-prompt-input"
+            rows={3}
+            maxLength={500}
+            value={coachPromptDraft}
+            onChange={(e) => {
+              setCoachPromptDraft(e.target.value.slice(0, 500));
+              setCoachSavedNotice(false);
+            }}
+            placeholder='e.g., "Focus on crisp technical explanations for interviews. Flag passive voice and filler openers immediately."'
+            className="input-tactile w-full px-3.5 py-2.5 text-xs leading-relaxed resize-y"
+          />
+          <div className="flex items-center justify-between gap-3">
+            <span className="text-[11px] text-ink-muted">
+              Injected safely inside fenced preferences — never overrides core rubric fairness.
+            </span>
+            <div className="flex items-center gap-2.5 shrink-0">
+              {coachSavedNotice && (
+                <span
+                  data-testid="coach-saved-indicator"
+                  className="inline-flex items-center gap-1 text-[11px] text-status-success font-medium"
+                >
+                  <Check className="w-3 h-3" aria-hidden="true" />
+                  <span>Saved</span>
+                </span>
+              )}
+              <button
+                type="button"
+                data-testid="save-coach-instructions-button"
+                onClick={handleSaveCoachPromptClick}
+                className="btn-primary px-3.5 py-1.5 text-xs font-medium whitespace-nowrap"
+              >
+                Save Instructions
+              </button>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      {/* Appearance, Tactile Feel & Optional Vault Latch */}
+      <section className="card-surface p-6 space-y-4">
+        <div className="flex items-center gap-2 text-sm font-semibold text-ink-primary">
+          <Lock className="w-4 h-4 text-ink-secondary" aria-hidden="true" />
+          <span>Appearance, Tactile Feel &amp; Vault Latch</span>
+        </div>
+
+        <div className="divide-y divide-border-subtle border-y border-border-subtle">
+          {/* Theme */}
+          <div className="py-3.5 flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <div className="text-xs font-medium text-ink-primary">Theme</div>
+              <div className="text-[11px] text-ink-muted">
+                Cotton Rag Paper (Light), Nocturne Obsidian (Dark), or match OS
+              </div>
+            </div>
+            <div
+              role="radiogroup"
+              aria-label="Theme mode"
+              className="segmented-track inline-flex items-center gap-0.5"
+            >
+              {(
+                [
+                  { id: 'light', label: 'Light', icon: Sun },
+                  { id: 'dark', label: 'Dark', icon: Moon },
+                  { id: 'system', label: 'Auto', icon: Laptop },
+                ] as Array<{ id: ThemePreference; label: string; icon: typeof Sun }>
+              ).map((opt) => {
+                const Icon = opt.icon;
+                const active = themePreference === opt.id;
+                return (
+                  <button
+                    key={opt.id}
+                    type="button"
+                    role="radio"
+                    aria-checked={active}
+                    data-active={active ? 'true' : 'false'}
+                    onClick={() => {
+                      playTactileClick(tactileSoundEnabled);
+                      onChangeThemePreference(opt.id);
+                    }}
+                    className="segmented-item inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium"
+                  >
+                    <Icon className="w-3.5 h-3.5" aria-hidden="true" />
+                    <span>{opt.label}</span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* Tactile Click Sound */}
+          <div className="py-3.5 flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <div className="text-xs font-medium text-ink-primary">
+                Tactile Detent Sound
+              </div>
+              <div className="text-[11px] text-ink-muted">
+                Subtle mechanical click on toggle &amp; lock switches (off by default)
+              </div>
+            </div>
+            <button
+              type="button"
+              role="switch"
+              aria-checked={tactileSoundEnabled}
+              onClick={() => {
+                const next = !tactileSoundEnabled;
+                if (next) playTactileClick(true);
+                onUpdateDeskPreferences({ tactileSoundEnabled: next });
+              }}
+              className={`inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium ${
+                tactileSoundEnabled ? 'btn-primary' : 'btn-secondary'
+              }`}
+            >
+              {tactileSoundEnabled ? (
+                <>
+                  <Volume2 className="w-3.5 h-3.5" aria-hidden="true" />
+                  <span>Enabled</span>
+                </>
+              ) : (
+                <>
+                  <VolumeX className="w-3.5 h-3.5" aria-hidden="true" />
+                  <span>Muted</span>
+                </>
+              )}
+            </button>
+          </div>
+
+          {/* Optional Vault Latch */}
+          <div className="py-3.5 flex flex-wrap items-center justify-between gap-3">
+            <div className="max-w-lg">
+              <div className="text-xs font-medium text-ink-primary">
+                Vault Latch (Private Journal Mode)
+              </div>
+              <div className="text-[11px] text-ink-muted leading-relaxed">
+                Arms the mechanical lock latch in the top bar for quick desk locking. Practice drafts stay ready for instant AI coaching.
+              </div>
+            </div>
+            <button
+              type="button"
+              role="switch"
+              aria-checked={vaultLatchEnabled}
+              onClick={() => {
+                const next = !vaultLatchEnabled;
+                playTactileClick(tactileSoundEnabled);
+                onUpdateDeskPreferences({ vaultLatchEnabled: next });
+              }}
+              className="btn-secondary inline-flex items-center gap-2 px-3 py-1.5 text-xs font-medium"
+            >
+              <span
+                className="vault-latch-track"
+                data-locked={vaultLatchEnabled ? 'true' : 'false'}
+                aria-hidden="true"
+              >
+                <span className="vault-latch-thumb" />
+              </span>
+              <span>{vaultLatchEnabled ? 'Armed' : 'Standard'}</span>
+            </button>
+          </div>
+        </div>
       </section>
 
       {/* Cross-Device Cloud Sync (Google Sheets, Google Docs & Firestore) */}

@@ -177,6 +177,71 @@ function sanitizeSessionPayload(
   if (session.internationalMetrics) {
     payload.internationalMetrics = { ...session.internationalMetrics };
   }
+  if (typeof session.spokenReadinessScore === 'number' && Number.isFinite(session.spokenReadinessScore)) {
+    payload.spokenReadinessScore = Math.max(0, Math.min(100, Math.round(session.spokenReadinessScore)));
+  }
+  if (typeof session.signalNoiseRatio === 'number' && Number.isFinite(session.signalNoiseRatio)) {
+    payload.signalNoiseRatio = Math.max(0, Math.min(100, Math.round(session.signalNoiseRatio)));
+  }
+  if (session.audienceReaction) {
+    payload.audienceReaction = clip(session.audienceReaction, 400);
+  }
+  if (session.audience) {
+    payload.audience = clip(session.audience, 40);
+  }
+  if (Array.isArray(session.calqueFixes) && session.calqueFixes.length > 0) {
+    payload.calqueFixes = session.calqueFixes.slice(0, 15).map((c) => ({
+      phrase: clip(c.phrase, 120),
+      naturalAlternative: clip(c.naturalAlternative, 160),
+      reason: clip(c.reason, 220),
+    }));
+  }
+  if (
+    session.drillType === 'standard' ||
+    session.drillType === 'compression-432' ||
+    session.drillType === 'skeleton' ||
+    session.drillType === 'three-rooms' ||
+    session.drillType === 'time-capsule'
+  ) {
+    payload.drillType = session.drillType;
+  }
+  if (session.drillMeta && typeof session.drillMeta === 'object') {
+    const dm: Record<string, unknown> = {
+      drillType: session.drillMeta.drillType || 'standard',
+    };
+    if (session.drillMeta.audience) dm.audience = clip(session.drillMeta.audience, 40);
+    if (session.drillMeta.constraintLabel) dm.constraintLabel = clip(session.drillMeta.constraintLabel, 140);
+    if (typeof session.drillMeta.constraintViolations === 'number') {
+      dm.constraintViolations = Math.max(0, Math.min(100, Math.round(session.drillMeta.constraintViolations)));
+    }
+    if (typeof session.drillMeta.flowSprintUsed === 'boolean') dm.flowSprintUsed = session.drillMeta.flowSprintUsed;
+    if (typeof session.drillMeta.compressionRatio === 'number') dm.compressionRatio = session.drillMeta.compressionRatio;
+    if (session.drillMeta.skeletonTitle) dm.skeletonTitle = clip(session.drillMeta.skeletonTitle, 160);
+    if (session.drillMeta.timeCapsuleOriginSessionId) {
+      dm.timeCapsuleOriginSessionId = clip(session.drillMeta.timeCapsuleOriginSessionId, 128);
+    }
+    if (typeof session.drillMeta.timeCapsuleOriginScore === 'number') {
+      dm.timeCapsuleOriginScore = session.drillMeta.timeCapsuleOriginScore;
+    }
+    payload.drillMeta = dm;
+  }
+  if (session.drillVerdict && typeof session.drillVerdict === 'object') {
+    const dv: Record<string, unknown> = {
+      headline: clip(session.drillVerdict.headline, 180),
+      summary: clip(session.drillVerdict.summary, 600),
+    };
+    if (session.drillVerdict.badge) dv.badge = clip(session.drillVerdict.badge, 80);
+    if (typeof session.drillVerdict.compressionRatio === 'number') dv.compressionRatio = session.drillVerdict.compressionRatio;
+    if (typeof session.drillVerdict.registerShiftScore === 'number') dv.registerShiftScore = session.drillVerdict.registerShiftScore;
+    if (typeof session.drillVerdict.timeCapsuleDelta === 'number') dv.timeCapsuleDelta = session.drillVerdict.timeCapsuleDelta;
+    payload.drillVerdict = dv;
+  }
+  if (session.revisionOfSessionId) {
+    payload.revisionOfSessionId = clip(session.revisionOfSessionId, 128);
+  }
+  if (typeof session.revisionDelta === 'number' && Number.isFinite(session.revisionDelta)) {
+    payload.revisionDelta = Math.max(-60, Math.min(60, Number(session.revisionDelta.toFixed(1))));
+  }
   if (typeof session.evaluationPending === 'boolean') {
     payload.evaluationPending = session.evaluationPending;
   }
@@ -235,6 +300,18 @@ function sanitizeSlotPayload(
   ) {
     payload.pillar = slot.pillar;
   }
+  if (
+    slot.recommendedDrill === 'standard' ||
+    slot.recommendedDrill === 'compression-432' ||
+    slot.recommendedDrill === 'skeleton' ||
+    slot.recommendedDrill === 'three-rooms' ||
+    slot.recommendedDrill === 'time-capsule'
+  ) {
+    payload.recommendedDrill = slot.recommendedDrill;
+  }
+  if (typeof slot.isConverseSlot === 'boolean') {
+    payload.isConverseSlot = slot.isConverseSlot;
+  }
 
   return payload;
 }
@@ -257,6 +334,22 @@ function sanitizeVocabPayload(
   };
   if (entry.sessionId) {
     payload.sessionId = sanitizeDocId(entry.sessionId, 'SESSION');
+  }
+  const cat = entry.category || entry.aiCategory;
+  if (cat) {
+    payload.category = clip(cat, 60);
+  }
+  const uCount = typeof entry.usageCount === 'number' ? entry.usageCount : entry.correctUseCount;
+  if (typeof uCount === 'number' && Number.isFinite(uCount)) {
+    payload.usageCount = Math.max(0, Math.min(500, Math.round(uCount)));
+  }
+  if (
+    entry.masteryStage === 'new' ||
+    entry.masteryStage === 'emerging' ||
+    entry.masteryStage === 'building' ||
+    entry.masteryStage === 'mastered'
+  ) {
+    payload.masteryStage = entry.masteryStage;
   }
   return payload;
 }
@@ -299,6 +392,20 @@ export async function ensureUserProfileDoc(
   }
   if (settings.googleDocId) {
     baseFields.googleDocId = clip(settings.googleDocId, 128);
+  }
+  if (typeof settings.customCoachPrompt === 'string') {
+    baseFields.customCoachPrompt = clip(settings.customCoachPrompt, 500);
+  }
+  if (Array.isArray(settings.coachPresets)) {
+    baseFields.coachPresets = settings.coachPresets
+      .slice(0, 8)
+      .map((p) => clip(p, 60));
+  }
+  if (typeof settings.tactileSoundEnabled === 'boolean') {
+    baseFields.tactileSoundEnabled = settings.tactileSoundEnabled;
+  }
+  if (typeof settings.vaultLatchEnabled === 'boolean') {
+    baseFields.vaultLatchEnabled = settings.vaultLatchEnabled;
   }
 
   try {
@@ -354,6 +461,31 @@ export async function ensureUserProfileDoc(
       hydrated.googleDocId = existing.googleDocId;
       hydrated.googleDocUrl = `https://docs.google.com/document/d/${existing.googleDocId}/edit`;
     }
+    if (
+      !settings.customCoachPrompt &&
+      typeof existing.customCoachPrompt === 'string' &&
+      existing.customCoachPrompt
+    ) {
+      hydrated.customCoachPrompt = existing.customCoachPrompt.slice(0, 500);
+    }
+    if (
+      (!settings.coachPresets || settings.coachPresets.length === 0) &&
+      Array.isArray(existing.coachPresets)
+    ) {
+      hydrated.coachPresets = existing.coachPresets.slice(0, 8) as UserSettings['coachPresets'];
+    }
+    if (
+      typeof settings.tactileSoundEnabled !== 'boolean' &&
+      typeof existing.tactileSoundEnabled === 'boolean'
+    ) {
+      hydrated.tactileSoundEnabled = existing.tactileSoundEnabled;
+    }
+    if (
+      typeof settings.vaultLatchEnabled !== 'boolean' &&
+      typeof existing.vaultLatchEnabled === 'boolean'
+    ) {
+      hydrated.vaultLatchEnabled = existing.vaultLatchEnabled;
+    }
 
     // Preserve existing cloud profile fields when updating from a fresh device
     const updatePayload: Record<string, unknown> = { ...baseFields };
@@ -403,6 +535,26 @@ export async function syncSessionToCloud(
           cefrLevel: sanitized.cefrLevel,
           ...(sanitized.internationalMetrics
             ? { internationalMetrics: sanitized.internationalMetrics }
+            : {}),
+          ...(typeof sanitized.spokenReadinessScore === 'number'
+            ? { spokenReadinessScore: sanitized.spokenReadinessScore }
+            : {}),
+          ...(typeof sanitized.signalNoiseRatio === 'number'
+            ? { signalNoiseRatio: sanitized.signalNoiseRatio }
+            : {}),
+          ...(sanitized.audienceReaction
+            ? { audienceReaction: sanitized.audienceReaction }
+            : {}),
+          ...(sanitized.audience ? { audience: sanitized.audience } : {}),
+          ...(sanitized.calqueFixes ? { calqueFixes: sanitized.calqueFixes } : {}),
+          ...(sanitized.drillType ? { drillType: sanitized.drillType } : {}),
+          ...(sanitized.drillMeta ? { drillMeta: sanitized.drillMeta } : {}),
+          ...(sanitized.drillVerdict ? { drillVerdict: sanitized.drillVerdict } : {}),
+          ...(sanitized.revisionOfSessionId
+            ? { revisionOfSessionId: sanitized.revisionOfSessionId }
+            : {}),
+          ...(typeof sanitized.revisionDelta === 'number'
+            ? { revisionDelta: sanitized.revisionDelta }
             : {}),
           toneVerdict: sanitized.toneVerdict,
           flowVerdict: sanitized.flowVerdict,
@@ -464,6 +616,12 @@ export async function syncSlotToCloud(
       if (sanitized.suggestions) {
         updates.suggestions = sanitized.suggestions;
       }
+      if (sanitized.recommendedDrill) {
+        updates.recommendedDrill = sanitized.recommendedDrill;
+      }
+      if (typeof sanitized.isConverseSlot === 'boolean') {
+        updates.isConverseSlot = sanitized.isConverseSlot;
+      }
       await updateDoc(ref, updates);
     }
   } catch (error) {
@@ -508,6 +666,11 @@ export async function syncVocabToCloud(
         mastered: sanitized.mastered,
         explanation: sanitized.explanation,
         contextSnippet: sanitized.contextSnippet,
+        ...(sanitized.category ? { category: sanitized.category } : {}),
+        ...(typeof sanitized.usageCount === 'number'
+          ? { usageCount: sanitized.usageCount }
+          : {}),
+        ...(sanitized.masteryStage ? { masteryStage: sanitized.masteryStage } : {}),
         updatedAt: serverTimestamp(),
       });
     }
@@ -558,6 +721,43 @@ function docToSession(raw: Record<string, unknown>): WritingSession {
     vocabUpgrades: Array.isArray(raw.vocabUpgrades)
       ? (raw.vocabUpgrades as WritingSession['vocabUpgrades'])
       : [],
+    spokenReadinessScore:
+      typeof raw.spokenReadinessScore === 'number'
+        ? raw.spokenReadinessScore
+        : undefined,
+    signalNoiseRatio:
+      typeof raw.signalNoiseRatio === 'number'
+        ? raw.signalNoiseRatio
+        : undefined,
+    audienceReaction:
+      typeof raw.audienceReaction === 'string'
+        ? raw.audienceReaction
+        : undefined,
+    audience:
+      typeof raw.audience === 'string'
+        ? (raw.audience as WritingSession['audience'])
+        : undefined,
+    calqueFixes: Array.isArray(raw.calqueFixes)
+      ? (raw.calqueFixes as WritingSession['calqueFixes'])
+      : undefined,
+    drillType:
+      typeof raw.drillType === 'string'
+        ? (raw.drillType as WritingSession['drillType'])
+        : undefined,
+    drillMeta:
+      raw.drillMeta && typeof raw.drillMeta === 'object'
+        ? (raw.drillMeta as WritingSession['drillMeta'])
+        : undefined,
+    drillVerdict:
+      raw.drillVerdict && typeof raw.drillVerdict === 'object'
+        ? (raw.drillVerdict as WritingSession['drillVerdict'])
+        : undefined,
+    revisionOfSessionId:
+      typeof raw.revisionOfSessionId === 'string'
+        ? raw.revisionOfSessionId
+        : undefined,
+    revisionDelta:
+      typeof raw.revisionDelta === 'number' ? raw.revisionDelta : undefined,
     status: raw.status === 'Draft' ? 'Draft' : 'Completed',
     evaluationPending:
       typeof raw.evaluationPending === 'boolean'
@@ -599,6 +799,12 @@ function docToSlot(raw: Record<string, unknown>): CalendarSlot {
     isTriWeekly:
       typeof raw.isTriWeekly === 'boolean' ? raw.isTriWeekly : undefined,
     pillar: raw.pillar as CalendarSlot['pillar'],
+    recommendedDrill:
+      typeof raw.recommendedDrill === 'string'
+        ? (raw.recommendedDrill as CalendarSlot['recommendedDrill'])
+        : undefined,
+    isConverseSlot:
+      typeof raw.isConverseSlot === 'boolean' ? raw.isConverseSlot : undefined,
   };
 }
 
@@ -613,6 +819,14 @@ function docToVocab(raw: Record<string, unknown>): VocabEntry {
     dateAdded: String(raw.dateAdded),
     mastered: Boolean(raw.mastered),
     sessionId: typeof raw.sessionId === 'string' ? raw.sessionId : undefined,
+    category: typeof raw.category === 'string' ? raw.category : undefined,
+    aiCategory: typeof raw.category === 'string' ? raw.category : undefined,
+    usageCount: typeof raw.usageCount === 'number' ? raw.usageCount : undefined,
+    correctUseCount: typeof raw.usageCount === 'number' ? raw.usageCount : undefined,
+    masteryStage:
+      typeof raw.masteryStage === 'string'
+        ? (raw.masteryStage as VocabEntry['masteryStage'])
+        : undefined,
   };
 }
 

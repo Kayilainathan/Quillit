@@ -19,6 +19,7 @@ import {
 } from 'lucide-react';
 import type {
   CoachHighlightPoint,
+  CoachPresetId,
   ConversationBenchmarkReport,
   ConversationMessage,
   ConversationPace,
@@ -106,6 +107,8 @@ interface ConverseStudioProps {
   studentProfile?: StudentProfile;
   vocabulary: VocabEntry[];
   coachContext: CoachPerformanceContext;
+  customCoachPrompt?: string;
+  coachPresets?: CoachPresetId[];
   onSaveSession: (
     session: WritingSession,
     newVocabEntries: VocabEntry[],
@@ -193,6 +196,8 @@ export function ConverseStudio({
   studentProfile,
   vocabulary,
   coachContext,
+  customCoachPrompt,
+  coachPresets,
   onSaveSession,
   onAddVocabEntry,
   onConverseStatusChange,
@@ -611,6 +616,8 @@ export function ConverseStudio({
           latestUserMessage: text,
           studentProfile,
           practicingVocab: practicingWordStrings,
+          customCoachPrompt: customCoachPrompt || undefined,
+          coachPresets: coachPresets && coachPresets.length > 0 ? coachPresets : undefined,
         }),
       });
 
@@ -865,6 +872,8 @@ export function ConverseStudio({
           previousSessionSummary: coachContext.previousSessionSummary,
           practicingVocab: practicingWordStrings,
           studentProfile,
+          customCoachPrompt: customCoachPrompt || undefined,
+          coachPresets: coachPresets && coachPresets.length > 0 ? coachPresets : undefined,
         }),
       });
 

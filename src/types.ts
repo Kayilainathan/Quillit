@@ -1,3 +1,5 @@
+export type ThemePreference = 'system' | 'light' | 'dark';
+
 export type WritingMode =
   | 'journal'
   | 'linkedin'
@@ -28,6 +30,77 @@ export type TriWeeklyPillar =
   | 'technical-concept'
   | 'linkedin-email'
   | 'creative-story';
+
+export type DrillType =
+  | 'standard'
+  | 'compression-432'
+  | 'skeleton'
+  | 'three-rooms'
+  | 'time-capsule';
+
+export type AudienceOption =
+  | 'Interviewer'
+  | 'Hiring Manager'
+  | 'Professor'
+  | 'LinkedIn Reader'
+  | 'Friend';
+
+export type CoachPresetId =
+  | 'brutally-honest'
+  | 'technical-interview-clarity'
+  | 'ban-corporate-slop'
+  | 'flag-literal-translations'
+  | 'short-punchy-sentences';
+
+export interface CalqueFix {
+  phrase: string;
+  naturalAlternative: string;
+  reason: string;
+}
+
+export interface DrillMeta {
+  drillType: DrillType;
+  audience?: AudienceOption;
+  constraintId?: string;
+  constraintLabel?: string;
+  constraintViolations?: number;
+  flowSprintUsed?: boolean;
+  flowBlockedDeletes?: number;
+  compressionWordCounts?: [number, number, number];
+  compressionRatio?: number;
+  skeletonPassageId?: string;
+  skeletonTitle?: string;
+  skeletonOriginalText?: string;
+  skeletonClues?: string[];
+  roomsJargonCount?: number;
+  roomAText?: string;
+  roomBText?: string;
+  timeCapsuleOriginSessionId?: string;
+  timeCapsuleOriginDate?: string;
+  timeCapsuleOriginScore?: number;
+  timeCapsuleOriginText?: string;
+}
+
+export interface DrillVerdict {
+  headline: string;
+  summary: string;
+  badge?: string;
+  compressionRatio?: number;
+  registerShiftScore?: number;
+  skeletonAlignmentNote?: string;
+  timeCapsuleDelta?: number;
+}
+
+export interface ProseDiagnosticsResult {
+  wordCount: number;
+  sentenceCount: number;
+  sentenceLengths: number[];
+  signalNoiseRatio: number; // 0-100
+  fillerCount: number;
+  fillerWordsFound: string[];
+  calqueFixes: CalqueFix[];
+  baselineSpokenReadiness: number; // 0-100
+}
 
 export interface RubricScores {
   naturalVoiceFlow: number;
@@ -65,6 +138,8 @@ export interface VocabSuggestion {
   contextTag?: string;
 }
 
+export type VocabMasteryStage = 'new' | 'emerging' | 'building' | 'mastered';
+
 export interface VocabEntry {
   id: string;
   used: string;
@@ -76,7 +151,10 @@ export interface VocabEntry {
   mastered: boolean;
   sessionId?: string;
   aiCategory?: string;
+  category?: string;
   correctUseCount?: number;
+  usageCount?: number;
+  masteryStage?: VocabMasteryStage;
 }
 
 export interface RewrittenSample {
@@ -141,6 +219,17 @@ export interface WritingSession {
   grammarFixes: GrammarFix[];
   vocabUpgrades: VocabSuggestion[];
   routingMeta?: EvaluationRoutingMeta;
+  /** v3.1 High-Signal Evaluation & Practice Mechanic fields */
+  spokenReadinessScore?: number; // 0-100
+  signalNoiseRatio?: number; // 0-100
+  audienceReaction?: string;
+  audience?: AudienceOption;
+  calqueFixes?: CalqueFix[];
+  drillType?: DrillType;
+  drillMeta?: DrillMeta;
+  drillVerdict?: DrillVerdict;
+  revisionOfSessionId?: string;
+  revisionDelta?: number; // Pass 2 - Pass 1 total score delta (-60..60)
   status: 'Completed' | 'Draft';
   evaluationPending?: boolean;
   modelUsed?: string;
@@ -169,6 +258,9 @@ export interface CalendarSlot {
   pillar?: TriWeeklyPillar;
   curriculumTopicId?: string;
   source?: 'curriculum-52w' | 'ai-adapted' | 'manual';
+  /** v3.1 4-5x/week 10-min practice mechanic badge */
+  recommendedDrill?: DrillType;
+  isConverseSlot?: boolean;
 }
 
 export interface TopicPrompt {
@@ -217,6 +309,11 @@ export interface UserSettings {
   usedCurriculumIds?: string[];
   /** Session count when periodic AI feedback adaptation last ran */
   lastPeriodicAiSessionCount?: number;
+  /** v3.1 Custom Coach Instructions & Tactile Preferences */
+  customCoachPrompt?: string;
+  coachPresets?: CoachPresetId[];
+  tactileSoundEnabled?: boolean;
+  vaultLatchEnabled?: boolean;
 }
 
 export interface VaultPayload {

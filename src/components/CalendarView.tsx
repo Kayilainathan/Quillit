@@ -31,6 +31,7 @@ import {
   formatLocalDateISO,
 } from '../utils/analytics';
 import { formatWritingDaysSummary } from '../utils/fastEvaluate';
+import { inferRecommendedDrillForSlot } from '../utils/curriculumEngine';
 
 const FULL_WEEKDAYS = [
   'Sunday',
@@ -116,6 +117,7 @@ interface CalendarViewProps {
     reason: string;
   };
   onLaunchSlotInStudio: (slot: CalendarSlot) => void;
+  onStartConverse?: () => void;
   onOpenScheduledPopup: (slot: CalendarSlot) => void;
 }
 
@@ -166,6 +168,7 @@ export function CalendarView({
   onClearAllSlots,
   periodicAiStatus,
   onLaunchSlotInStudio,
+  onStartConverse,
   onOpenScheduledPopup,
 }: CalendarViewProps) {
   const [todayYear, todayMonth] = useMemo(() => {
@@ -1081,7 +1084,13 @@ export function CalendarView({
                           </div>
                           <div className="text-[11px] text-ink-muted mt-1 font-mono-tabular">
                             {MODE_LABELS[slot.mode]} · {TONE_LABELS[slot.tone]} ·{' '}
-                            {slot.targetWords}w
+                            {slot.targetWords}w ·{' '}
+                            <span className="text-ink-secondary">
+                              {inferRecommendedDrillForSlot(slot.dayOfWeek, slot.pillar).drillShortLabel}
+                            </span>
+                            {!slot.completed && slot.scheduledDate < todayISO && (
+                              <span> · Still open — 10 min</span>
+                            )}
                           </div>
                         </div>
                         <button
@@ -1112,11 +1121,15 @@ export function CalendarView({
                         <div className="flex items-center gap-1.5">
                           <button
                             type="button"
-                            onClick={() => onLaunchSlotInStudio(slot)}
+                            onClick={() =>
+                              slot.isConverseSlot && onStartConverse
+                                ? onStartConverse()
+                                : onLaunchSlotInStudio(slot)
+                            }
                             className="btn-primary inline-flex items-center gap-1 px-2.5 py-1 text-[11px] font-medium"
                           >
                             <PenLine className="w-3 h-3" aria-hidden="true" />
-                            <span>Write</span>
+                            <span>{slot.isConverseSlot ? 'Converse' : 'Write'}</span>
                           </button>
                           <button
                             type="button"
@@ -1303,9 +1316,19 @@ export function CalendarView({
                           {slot.dayOfWeek}, {slot.scheduledDate}
                         </span>
                         <span>·</span>
+                        <span>
+                          {inferRecommendedDrillForSlot(slot.dayOfWeek, slot.pillar).drillShortLabel}
+                        </span>
+                        <span>·</span>
                         <span>{MODE_LABELS[slot.mode]}</span>
                         <span>·</span>
                         <span>{slot.targetWords}w</span>
+                        {!slot.completed && slot.scheduledDate < todayISO && (
+                          <>
+                            <span>·</span>
+                            <span className="text-ink-secondary">Still open — 10 min</span>
+                          </>
+                        )}
                       </div>
                       <div
                         className={`text-sm font-medium mt-0.5 ${
@@ -1327,11 +1350,15 @@ export function CalendarView({
                   <div className="flex items-center gap-1.5 shrink-0">
                     <button
                       type="button"
-                      onClick={() => onLaunchSlotInStudio(slot)}
+                      onClick={() =>
+                        slot.isConverseSlot && onStartConverse
+                          ? onStartConverse()
+                          : onLaunchSlotInStudio(slot)
+                      }
                       className="btn-secondary inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-medium"
                     >
                       <PenLine className="w-3 h-3" aria-hidden="true" />
-                      <span>Write</span>
+                      <span>{slot.isConverseSlot ? 'Converse' : 'Write'}</span>
                     </button>
                     <button
                       type="button"

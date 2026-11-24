@@ -1,5 +1,6 @@
 import type {
   CalendarSlot,
+  DrillType,
   StudentProfile,
   TriWeeklyPillar,
   WritingSession,
@@ -180,6 +181,71 @@ export function pickNextUnusedCurriculumTopic(params: {
   return candidates[0];
 }
 
+export function inferRecommendedDrillForSlot(
+  dayOfWeek: string,
+  pillar?: TriWeeklyPillar
+): {
+  recommendedDrill: DrillType;
+  isConverseSlot: boolean;
+  drillShortLabel: string;
+} {
+  const day = dayOfWeek.toLowerCase();
+  if (day.startsWith('mon')) {
+    return {
+      recommendedDrill: 'skeleton',
+      isConverseSlot: false,
+      drillShortLabel: '10m · Skeleton',
+    };
+  }
+  if (day.startsWith('wed')) {
+    return {
+      recommendedDrill: 'compression-432',
+      isConverseSlot: false,
+      drillShortLabel: '10m · 4/3/2 Sprint',
+    };
+  }
+  if (day.startsWith('fri')) {
+    return {
+      recommendedDrill: 'three-rooms',
+      isConverseSlot: false,
+      drillShortLabel: '10m · 3 Rooms',
+    };
+  }
+  if (day.startsWith('sat')) {
+    return {
+      recommendedDrill: 'standard',
+      isConverseSlot: true,
+      drillShortLabel: '10m · Converse Flex',
+    };
+  }
+  if (day.startsWith('sun')) {
+    return {
+      recommendedDrill: 'standard',
+      isConverseSlot: false,
+      drillShortLabel: '10m · Story + Flow',
+    };
+  }
+  if (pillar === 'technical-concept') {
+    return {
+      recommendedDrill: 'compression-432',
+      isConverseSlot: false,
+      drillShortLabel: '10m · 4/3/2 Sprint',
+    };
+  }
+  if (pillar === 'linkedin-email') {
+    return {
+      recommendedDrill: 'three-rooms',
+      isConverseSlot: false,
+      drillShortLabel: '10m · 3 Rooms',
+    };
+  }
+  return {
+    recommendedDrill: 'skeleton',
+    isConverseSlot: false,
+    drillShortLabel: '10m · Skeleton',
+  };
+}
+
 export function curriculumTopicToCalendarSlot(params: {
   topic: CurriculumTopic;
   scheduledDate: string;
@@ -201,6 +267,7 @@ export function curriculumTopicToCalendarSlot(params: {
 
   const suffix = dayOfWeek.slice(0, 3).toLowerCase();
   const weekLabel = `W${String(topic.week).padStart(2, '0')} · ${topic.category}`;
+  const drillSpec = inferRecommendedDrillForSlot(dayOfWeek, topic.pillar);
 
   return {
     id: `plan-${scheduledDate}-${suffix}`,
@@ -224,6 +291,8 @@ export function curriculumTopicToCalendarSlot(params: {
     suggestions: [...topic.suggestions],
     curriculumTopicId: topic.id,
     source,
+    recommendedDrill: drillSpec.recommendedDrill,
+    isConverseSlot: drillSpec.isConverseSlot,
   };
 }
 

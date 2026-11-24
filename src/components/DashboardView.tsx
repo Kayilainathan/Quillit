@@ -1,8 +1,11 @@
 import { useMemo, useState } from 'react';
 import {
+  ArrowRight,
   ArrowUpRight,
   Award,
+  Clock,
   Download,
+  History,
   Search,
   Table2,
   Target,
@@ -23,6 +26,7 @@ import {
   deriveInternationalMetrics,
   exportSessionsToCsv,
   findGrowthLever,
+  formatLocalDateISO,
 } from '../utils/analytics';
 import {
   ConsistencyGrid,
@@ -34,6 +38,7 @@ import { ConverseFluencyChart } from './ConverseFluencyChart';
 import { FluencyHeatmap } from './FluencyHeatmap';
 import { EvaluationReportView } from './EvaluationReportView';
 import { isConverseSession } from '../utils/converseAnalytics';
+import { findTimeCapsuleCandidate } from '../utils/timeCapsule';
 
 interface DashboardViewProps {
   sessions: WritingSession[];
@@ -43,6 +48,7 @@ interface DashboardViewProps {
   theme: 'light' | 'dark';
   onStartWriting: () => void;
   onStartConverse?: () => void;
+  onLaunchTimeCapsule?: (originSession: WritingSession) => void;
 }
 
 export function DashboardView({
@@ -53,6 +59,7 @@ export function DashboardView({
   theme,
   onStartWriting,
   onStartConverse,
+  onLaunchTimeCapsule,
 }: DashboardViewProps) {
   const [searchQuery, setSearchQuery] = useState('');
   const [modeFilter, setModeFilter] = useState<string>('all');
@@ -110,6 +117,45 @@ export function DashboardView({
       bestSession,
     };
   }, [completed, vocabulary, calendarSlots, todayISO]);
+
+  // Weekly 10-Min Cadence (4 core sessions Mon/Wed/Fri/Sun + optional Sat Converse)
+  const weeklyCadence = useMemo(() => {
+    const [y, m, d] = todayISO.split('-').map(Number);
+    const dt = new Date(y || 2026, (m || 1) - 1, d || 1);
+    const mondayOffset = (dt.getDay() + 6) % 7;
+    const startDt = new Date(dt.getFullYear(), dt.getMonth(), dt.getDate() - mondayOffset);
+    const endDt = new Date(startDt.getFullYear(), startDt.getMonth(), startDt.getDate() + 6);
+    const weekStartISO = formatLocalDateISO(startDt);
+    const weekEndISO = formatLocalDateISO(endDt);
+
+    const thisWeekSessions = completed.filter(
+      (s) => s.date >= weekStartISO && s.date <= weekEndISO
+    );
+    const hasConverseThisWeek = thisWeekSessions.some((s) => isConverseSession(s));
+    const coreCount = Math.min(4, thisWeekSessions.filter((s) => !isConverseSession(s)).length);
+    const totalCount = thisWeekSessions.length;
+    const ringPct = Math.min(100, Math.round((Math.min(4, totalCount) / 4) * 100));
+
+    return {
+      coreCount,
+      totalCount,
+      hasConverseThisWeek,
+      ringPct,
+    };
+  }, [completed, todayISO]);
+
+  const timeCapsuleCandidate = useMemo(
+    () => findTimeCapsuleCandidate(completed, todayISO),
+    [completed, todayISO]
+  );
+
+  const latestTimeCapsuleSession = useMemo(
+    () =>
+      completed.find(
+        (s) => s.drillType === 'time-capsule' && s.drillVerdict?.summary
+      ) ?? null,
+    [completed]
+  );
 
   const filteredSessions = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
@@ -278,6 +324,128 @@ export function DashboardView({
           <div className="mt-1 text-xs font-mono-tabular text-ink-muted">
             {metrics.vocabStats.weekCount} wk · {metrics.vocabStats.monthCount} mo
           </div>
+        </div>
+      </section>
+
+      {/* Weekly 10-Min Cadence Ring & Blind Time Capsule Readiness */}
+      <section
+        aria-label="Weekly cadence and time capsule"
+        className="grid grid-cols-1 lg:grid-cols-12 gap-4"
+      >
+        <div
+          data-testid="dashboard-cadence-ring"
+          className="card-surface lg:col-span-6 p-5 flex items-center justify-between gap-5"
+        >
+          <div className="flex items-center gap-4 min-w-0">
+            <div className="relative w-14 h-14 shrink-0">
+              <svg viewBox="0 0 48 48" className="w-14 h-14 -rotate-90" aria-hidden="true">
+                <circle
+                  cx="24"
+                  cy="24"
+                  r="19"
+                  fill="none"
+                  stroke="var(--border-subtle)"
+                  strokeWidth="4"
+                />
+                <circle
+                  cx="24"
+                  cy="24"
+                  r="19"
+                  fill="none"
+                  stroke="var(--accent)"
+                  strokeWidth="4"
+                  strokeLinecap="round"
+                  strokeDasharray={2 * Math.PI * 19}
+                  strokeDashoffset={
+                    2 * Math.PI * 19 * (1 - weeklyCadence.ringPct / 100)
+                  }
+                />
+              </svg>
+              <div className="absolute inset-0 flex items-center justify-center font-mono-tabular text-xs font-semibold text-ink-primary">
+                {Math.min(4, weeklyCadence.totalCount)}/4
+              </div>
+            </div>
+
+            <div className="min-w-0 space-y-1">
+              <div className="inline-flex items-center gap-1.5 text-xs font-medium text-ink-secondary">
+                <Clock className="w-3.5 h-3.5 text-ink-muted" aria-hidden="true" />
+                <span>Weekly 10-Min Cadence</span>
+              </div>
+              <div className="text-sm font-semibold text-ink-primary">
+                {weeklyCadence.totalCount >= 4
+                  ? 'Weekly fluency target complete'
+                  : `${Math.max(0, 4 - weeklyCadence.totalCount)} quick 10-min ${4 - weeklyCadence.totalCount === 1 ? 'session' : 'sessions'} left this week`}
+              </div>
+              <div className="text-[11px] font-mono-tabular text-ink-muted">
+                Mon Skeleton · Wed 4/3/2 · Fri 3 Rooms · Sun Flow
+                {weeklyCadence.hasConverseThisWeek ? ' · Sat Converse ✓' : ' · Sat Converse optional'}
+              </div>
+            </div>
+          </div>
+
+          <button
+            type="button"
+            onClick={onStartWriting}
+            className="btn-secondary px-3 py-1.5 text-xs font-medium whitespace-nowrap shrink-0"
+          >
+            10-Min Desk
+          </button>
+        </div>
+
+        <div
+          data-testid="dashboard-time-capsule"
+          className="card-surface lg:col-span-6 p-5 flex flex-wrap items-center justify-between gap-4"
+        >
+          <div className="space-y-1 min-w-0 flex-1">
+            <div className="inline-flex items-center gap-1.5 text-xs font-medium text-ink-secondary">
+              <History className="w-3.5 h-3.5 text-ink-muted" aria-hidden="true" />
+              <span>30-Day Blind Time Capsule</span>
+            </div>
+            {timeCapsuleCandidate ? (
+              <>
+                <div className="text-sm font-semibold text-ink-primary truncate">
+                  {!timeCapsuleCandidate.isFull30Day
+                    ? `Early Retest Ready · "${timeCapsuleCandidate.session.topicDescription}"`
+                    : `${timeCapsuleCandidate.daysOld}d Retest Ready · "${timeCapsuleCandidate.session.topicDescription}"`}
+                </div>
+                <div className="text-[11px] text-ink-muted font-mono-tabular">
+                  Original draft sealed ({timeCapsuleCandidate.session.totalScore}/60 on{' '}
+                  {timeCapsuleCandidate.session.date}) · Rewrite blind to measure real growth
+                </div>
+              </>
+            ) : latestTimeCapsuleSession ? (
+              <>
+                <div className="text-sm font-semibold text-ink-primary">
+                  {latestTimeCapsuleSession.drillVerdict?.headline ||
+                    'Blind Retest Logged'}
+                </div>
+                <div className="text-[11px] text-ink-secondary">
+                  {latestTimeCapsuleSession.drillVerdict?.summary}
+                </div>
+              </>
+            ) : (
+              <>
+                <div className="text-sm font-semibold text-ink-primary">
+                  {completed.length}/3 sessions until your first Blind Retest
+                </div>
+                <div className="text-[11px] text-ink-muted">
+                  Re-answer an older prompt blind—then unseal Past You vs Today You side by side.
+                </div>
+              </>
+            )}
+          </div>
+
+          {timeCapsuleCandidate && onLaunchTimeCapsule && (
+            <button
+              type="button"
+              data-testid="dashboard-launch-time-capsule"
+              onClick={() => onLaunchTimeCapsule(timeCapsuleCandidate.session)}
+              className="btn-primary inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-medium whitespace-nowrap shrink-0"
+            >
+              <span>Blind Retest</span>
+              <ArrowRight className="w-3.5 h-3.5" aria-hidden="true" />
+            </button>
+          )}
         </div>
       </section>
 

@@ -1,7 +1,8 @@
 /* ==========================================================================
-   Quilit Design Tokens — Tactile Modern Minimal (Light + Dark)
-   Centralized neutral surfaces, inks, hairline borders, Obsidian Monochrome
-   accent preset, muted semantic statuses, radii, typography, and motion.
+   Quillit v3.1 Design Tokens — Quiet Luxury Literary Stationery (Light + Dark)
+   Cotton Rag Paper Light (#FAF8F4 + Deep Forest Ink #1F4E46)
+   Nocturne Obsidian Dark (#0E0E0D + Muted Sage Ink #6FB3A4)
+   Zero neon glows, zero purple gradients, strict WCAG AA contrast.
    ========================================================================== */
 
 :root,
@@ -13,68 +14,74 @@
   --font-sans: 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;
   --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, monospace;
 
-  /* Layered Surfaces — Warm Paper Light */
-  --bg-canvas: #FAF9F6;
+  /* Layered Surfaces — Cotton Rag Paper Light */
+  --bg-canvas: #FAF8F4;
   --bg-surface: #FFFFFF;
-  --bg-subtle: #F3F1EC;
+  --bg-subtle: #F2EFE9;
   --bg-elevated: #FFFFFF;
-  --bg-scrim: rgba(20, 20, 19, 0.32);
+  --bg-scrim: rgba(20, 20, 19, 0.34);
 
   /* Ink Hierarchy */
   --ink-primary: #141413;
-  --ink-secondary: #575652;
-  --ink-muted: #8C8A84;
-  --ink-inverse: #FAF9F6;
+  --ink-secondary: #52514D;
+  --ink-muted: #75736D;
+  --ink-inverse: #FAF8F4;
 
   /* Borders & Dividers */
   --border-subtle: rgba(20, 20, 19, 0.08);
-  --border-default: rgba(20, 20, 19, 0.13);
-  --border-strong: rgba(20, 20, 19, 0.24);
+  --border-default: rgba(20, 20, 19, 0.14);
+  --border-strong: rgba(20, 20, 19, 0.28);
 
-  /* Accent Preset — Obsidian Monochrome */
-  --accent: #18181B;
-  --accent-hover: #27272A;
-  --accent-soft: rgba(24, 24, 27, 0.08);
-  --focus-ring: rgba(24, 24, 27, 0.22);
+  /* Accent Preset — Deep Forest Ink */
+  --accent-primary: #1F4E46;
+  --accent: var(--accent-primary);
+  --accent-hover: #173B35;
+  --accent-soft: rgba(31, 78, 70, 0.10);
+  --focus-ring: rgba(31, 78, 70, 0.24);
 
   /* Muted Semantic Status Tokens (10% soft fills, never neon) */
   --status-success: #256D4E;
   --status-success-soft: rgba(37, 109, 78, 0.10);
   --status-success-border: rgba(37, 109, 78, 0.24);
 
-  --status-warning: #9A5F16;
+  --status-warn: #9A5F16;
+  --status-warning: var(--status-warn);
   --status-warning-soft: rgba(154, 95, 22, 0.10);
   --status-warning-border: rgba(154, 95, 22, 0.24);
 
-  --status-danger: #B43832;
-  --status-danger-soft: rgba(180, 56, 50, 0.10);
-  --status-danger-border: rgba(180, 56, 50, 0.24);
+  --status-error: #A63A34;
+  --status-danger: var(--status-error);
+  --status-danger-soft: rgba(166, 58, 52, 0.10);
+  --status-danger-border: rgba(166, 58, 52, 0.24);
 
-  --status-info: #2558D9;
-  --status-info-soft: rgba(37, 88, 217, 0.10);
-  --status-info-border: rgba(37, 88, 217, 0.24);
+  --status-info: #22548A;
+  --status-info-soft: rgba(34, 84, 138, 0.10);
+  --status-info-border: rgba(34, 84, 138, 0.24);
 
   /* Chart & Matrix Palette */
-  --chart-primary: #18181B;
-  --chart-primary-soft: rgba(24, 24, 27, 0.08);
+  --chart-primary: #1F4E46;
+  --chart-primary-soft: rgba(31, 78, 70, 0.10);
   --chart-secondary: #256D4E;
   --chart-secondary-soft: rgba(37, 109, 78, 0.12);
   --chart-tertiary: #9A5F16;
   --chart-grid: rgba(20, 20, 19, 0.09);
-  --chart-empty: #F3F1EC;
+  --chart-empty: #F2EFE9;
   --chart-empty-border: rgba(20, 20, 19, 0.10);
   --chart-ramp-1: #C8DDD2;
   --chart-ramp-2: #8FBBA4;
   --chart-ramp-3: #4E8B6F;
-  --chart-ramp-4: #256D4E;
+  --chart-ramp-4: #1F4E46;
   --chart-cell-ink-low: #141413;
-  --chart-cell-ink-high: #FAF9F6;
+  --chart-cell-ink-high: #FAF8F4;
 
-  /* Elevation (Whisper-soft, multi-layered, floating layers only) */
+  /* Elevation & Tactile Mechanical Keycap Shadows */
   --shadow-sm: 0 1px 2px rgba(20, 20, 19, 0.04), 0 1px 1px rgba(20, 20, 19, 0.02);
   --shadow-md: 0 6px 20px -4px rgba(20, 20, 19, 0.08), 0 2px 6px -2px rgba(20, 20, 19, 0.04);
   --shadow-lg: 0 18px 40px -10px rgba(20, 20, 19, 0.12), 0 4px 12px -2px rgba(20, 20, 19, 0.05);
-  --highlight-inset: inset 0 1px 0 rgba(255, 255, 255, 0.18);
+  --highlight-inset: inset 0 1px 0 rgba(255, 255, 255, 0.22);
+  --shadow-btn-rest: 0 1px 1px rgba(20, 20, 19, 0.06), inset 0 1px 0 rgba(255, 255, 255, 0.45);
+  --shadow-btn-hover: 0 2px 4px rgba(20, 20, 19, 0.08), inset 0 1px 0 rgba(255, 255, 255, 0.60);
+  --shadow-btn-active: inset 0 1px 2px rgba(20, 20, 19, 0.14);
 
   /* Radii Scale */
   --radius-sm: 6px;
@@ -85,9 +92,10 @@
   /* Motion Choreography */
   --ease-out-expo: cubic-bezier(0.16, 1, 0.3, 1);
   --ease-snappy: cubic-bezier(0.2, 0, 0, 1);
-  --dur-instant: 110ms;
-  --dur-fast: 170ms;
-  --dur-normal: 240ms;
+  --dur-press: 70ms;
+  --dur-instant: 120ms;
+  --dur-fast: 160ms;
+  --dur-normal: 220ms;
 
   /* Scrollbar */
   --scrollbar-thumb: rgba(20, 20, 19, 0.16);
@@ -98,68 +106,74 @@
 .dark {
   color-scheme: dark;
 
-  /* Layered Surfaces — Deep Obsidian Dark */
+  /* Layered Surfaces — Nocturne Obsidian Dark */
   --bg-canvas: #0E0E0D;
-  --bg-surface: #161614;
-  --bg-subtle: #1E1E1B;
+  --bg-surface: #151513;
+  --bg-subtle: #1D1D1A;
   --bg-elevated: #232320;
-  --bg-scrim: rgba(0, 0, 0, 0.56);
+  --bg-scrim: rgba(0, 0, 0, 0.60);
 
   /* Ink Hierarchy */
   --ink-primary: #F2F0EB;
-  --ink-secondary: #A19F98;
-  --ink-muted: #6B6963;
-  --ink-inverse: #111110;
+  --ink-secondary: #A4A29B;
+  --ink-muted: #787670;
+  --ink-inverse: #0E0E0D;
 
   /* Borders & Dividers */
   --border-subtle: rgba(255, 255, 255, 0.07);
-  --border-default: rgba(255, 255, 255, 0.12);
-  --border-strong: rgba(255, 255, 255, 0.24);
+  --border-default: rgba(255, 255, 255, 0.13);
+  --border-strong: rgba(255, 255, 255, 0.26);
 
-  /* Accent Preset — Obsidian Monochrome */
-  --accent: #F4F4F5;
-  --accent-hover: #E4E4E7;
-  --accent-soft: rgba(244, 244, 245, 0.12);
-  --focus-ring: rgba(244, 244, 245, 0.28);
+  /* Accent Preset — Muted Sage Ink */
+  --accent-primary: #6FB3A4;
+  --accent: var(--accent-primary);
+  --accent-hover: #83C4B6;
+  --accent-soft: rgba(111, 179, 164, 0.14);
+  --focus-ring: rgba(111, 179, 164, 0.30);
 
   /* Muted Semantic Status Tokens */
   --status-success: #5EB58C;
   --status-success-soft: rgba(94, 181, 140, 0.12);
   --status-success-border: rgba(94, 181, 140, 0.26);
 
-  --status-warning: #E0A44B;
+  --status-warn: #E0A44B;
+  --status-warning: var(--status-warn);
   --status-warning-soft: rgba(224, 164, 75, 0.12);
   --status-warning-border: rgba(224, 164, 75, 0.26);
 
-  --status-danger: #E26B64;
+  --status-error: #E26B64;
+  --status-danger: var(--status-error);
   --status-danger-soft: rgba(226, 107, 100, 0.12);
   --status-danger-border: rgba(226, 107, 100, 0.26);
 
-  --status-info: #7DA2FF;
-  --status-info-soft: rgba(125, 162, 255, 0.12);
-  --status-info-border: rgba(125, 162, 255, 0.26);
+  --status-info: #7FA8D9;
+  --status-info-soft: rgba(127, 168, 217, 0.12);
+  --status-info-border: rgba(127, 168, 217, 0.26);
 
   /* Chart & Matrix Palette */
-  --chart-primary: #F2F0EB;
-  --chart-primary-soft: rgba(242, 240, 235, 0.10);
+  --chart-primary: #6FB3A4;
+  --chart-primary-soft: rgba(111, 179, 164, 0.14);
   --chart-secondary: #5EB58C;
   --chart-secondary-soft: rgba(94, 181, 140, 0.14);
   --chart-tertiary: #E0A44B;
   --chart-grid: rgba(255, 255, 255, 0.08);
   --chart-empty: #1A1A18;
   --chart-empty-border: rgba(255, 255, 255, 0.08);
-  --chart-ramp-1: #1E352B;
-  --chart-ramp-2: #2D5342;
-  --chart-ramp-3: #438166;
-  --chart-ramp-4: #5EB58C;
+  --chart-ramp-1: #1E352F;
+  --chart-ramp-2: #2D554B;
+  --chart-ramp-3: #4A877A;
+  --chart-ramp-4: #6FB3A4;
   --chart-cell-ink-low: #F2F0EB;
-  --chart-cell-ink-high: #111110;
+  --chart-cell-ink-high: #0E0E0D;
 
-  /* Elevation (Subtle top-edge specular highlight + deep ambient shadow) */
+  /* Elevation & Tactile Mechanical Keycap Shadows */
   --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.35), inset 0 1px 0 rgba(255, 255, 255, 0.04);
   --shadow-md: 0 10px 28px -6px rgba(0, 0, 0, 0.55), inset 0 1px 0 rgba(255, 255, 255, 0.05);
   --shadow-lg: 0 24px 56px -12px rgba(0, 0, 0, 0.72), inset 0 1px 0 rgba(255, 255, 255, 0.06);
-  --highlight-inset: inset 0 1px 0 rgba(255, 255, 255, 0.25);
+  --highlight-inset: inset 0 1px 0 rgba(255, 255, 255, 0.24);
+  --shadow-btn-rest: 0 1px 2px rgba(0, 0, 0, 0.36), inset 0 1px 0 rgba(255, 255, 255, 0.06);
+  --shadow-btn-hover: 0 3px 6px rgba(0, 0, 0, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.10);
+  --shadow-btn-active: inset 0 1px 3px rgba(0, 0, 0, 0.50);
 
   /* Scrollbar */
   --scrollbar-thumb: rgba(255, 255, 255, 0.14);

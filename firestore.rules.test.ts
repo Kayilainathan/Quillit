@@ -29,3 +29,36 @@ test('firestore.rules enforces default-deny, verified ownership, size bounds, an
     }
   }
 });
+
+test('firestore.rules validates all v3.1 UserProfile, WritingSession, CalendarSlot, and VocabEntry fields in lockstep with blueprint', () => {
+  // UserProfile v3.1 fields
+  assert.ok(rules.includes("data.customCoachPrompt is string && data.customCoachPrompt.size() <= 500"));
+  assert.ok(rules.includes("data.coachPresets is list && data.coachPresets.size() <= 8"));
+  assert.ok(rules.includes("data.tactileSoundEnabled is bool"));
+  assert.ok(rules.includes("data.vaultLatchEnabled is bool"));
+
+  // WritingSession v3.1 fields + converse mode
+  assert.ok(rules.includes("'converse'"));
+  assert.ok(rules.includes("data.spokenReadinessScore >= 0 && data.spokenReadinessScore <= 100"));
+  assert.ok(rules.includes("data.signalNoiseRatio >= 0 && data.signalNoiseRatio <= 100"));
+  assert.ok(rules.includes("data.audienceReaction is string && data.audienceReaction.size() <= 400"));
+  assert.ok(rules.includes("isValidDrillType(data.drillType)"));
+  assert.ok(rules.includes("data.revisionOfSessionId is string && data.revisionOfSessionId.size() <= 128"));
+  assert.ok(rules.includes("data.revisionDelta >= -60 && data.revisionDelta <= 60"));
+
+  // VocabEntry v3.1 mastery fields
+  assert.ok(rules.includes("data.category is string && data.category.size() <= 60"));
+  assert.ok(rules.includes("data.usageCount >= 0 && data.usageCount <= 500"));
+  assert.ok(rules.includes("isValidMasteryStage(data.masteryStage)"));
+
+  // Verify blueprint lockstep
+  assert.equal(blueprint.entities.UserProfile.properties.customCoachPrompt.maxLength, 500);
+  assert.ok(blueprint.entities.WritingSessionDoc.properties.mode.enum.includes('converse'));
+  assert.equal(blueprint.entities.WritingSessionDoc.properties.audienceReaction.maxLength, 400);
+  assert.deepEqual(blueprint.entities.VocabEntryDoc.properties.masteryStage.enum, [
+    'new',
+    'emerging',
+    'building',
+    'mastered',
+  ]);
+});

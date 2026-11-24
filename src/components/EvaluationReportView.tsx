@@ -1,14 +1,23 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
+  ArrowRight,
   BookOpen,
   Check,
   Copy,
+  Eye,
   FileText,
+  History,
   PenLine,
+  RotateCw,
   Sparkles,
 } from 'lucide-react';
 import type {
+  AudienceOption,
+  CalqueFix,
   CoachHighlightPoint,
+  DrillMeta,
+  DrillType,
+  DrillVerdict,
   EvaluationRoutingMeta,
   FeedbackImplementationDetail,
   FeedbackImplementedStatus,
@@ -26,6 +35,7 @@ import {
   computeTotalScore,
 } from '../utils/analytics';
 import { formatDetailedCoachMarkdown } from '../utils/evaluationCalibration';
+import { computeProseDiagnostics } from '../utils/proseDiagnostics';
 
 export interface EvaluationReportData {
   topic: string;
@@ -47,6 +57,16 @@ export interface EvaluationReportData {
   vocabUpgrades: VocabSuggestion[];
   routingMeta?: EvaluationRoutingMeta;
   modelUsed?: string;
+  // v3.1 High-Signal Diagnostics & Drill Verdicts
+  spokenReadinessScore?: number;
+  signalNoiseRatio?: number;
+  audienceReaction?: string;
+  audience?: AudienceOption;
+  calqueFixes?: CalqueFix[];
+  drillType?: DrillType;
+  drillMeta?: DrillMeta;
+  drillVerdict?: DrillVerdict;
+  revisionDelta?: number;
 }
 
 interface EvaluationReportViewProps {
@@ -59,6 +79,7 @@ interface EvaluationReportViewProps {
   onApplyTextReplacement?: (original: string, replacement: string) => void;
   onApplyAllGrammarFixes?: () => void;
   onSaveVocabItem?: (item: VocabSuggestion) => void;
+  onStartRevision?: () => void;
 }
 
 const LOADING_PHASES = [
@@ -117,7 +138,7 @@ export function EvaluationLoadingCard({
         </p>
       </div>
 
-      {/* Subtle structural preview matching final layout to avoid layout shift */}
+      {/* Structural preview matching final layout to avoid layout shift */}
       <div className="space-y-3 pt-2 border-t border-border-subtle opacity-60">
         <div className="grid grid-cols-2 gap-2">
           {RUBRIC_DIMENSIONS.map((dim) => (
@@ -147,6 +168,27 @@ function canApplyInDraft(draftContent: string | undefined, original: string): bo
   return draftContent.includes(original);
 }
 
+function renderHighlightedDraft(draft: string, activeQuote: string | null) {
+  if (!activeQuote || activeQuote.trim().length < 3) {
+    return <span>{draft}</span>;
+  }
+  const needle = activeQuote.trim();
+  const idx = draft.toLowerCase().indexOf(needle.toLowerCase());
+  if (idx === -1) {
+    return <span>{draft}</span>;
+  }
+  const before = draft.slice(0, idx);
+  const match = draft.slice(idx, idx + needle.length);
+  const after = draft.slice(idx + needle.length);
+  return (
+    <>
+      <span>{before}</span>
+      <mark className="quote-highlight-mark">{match}</mark>
+      <span>{after}</span>
+    </>
+  );
+}
+
 export function EvaluationReportView({
   report,
   defaultView = 'summary',
@@ -157,13 +199,45 @@ export function EvaluationReportView({
   onApplyTextReplacement,
   onApplyAllGrammarFixes,
   onSaveVocabItem,
+  onStartRevision,
 }: EvaluationReportViewProps) {
   const [viewMode, setViewMode] = useState<'summary' | 'detailed'>(defaultView);
   const [copiedMarkdown, setCopiedMarkdown] = useState(false);
+  const [activeQuote, setActiveQuote] = useState<string | null>(null);
+  const [showDraftInspector, setShowDraftInspector] = useState(false);
+  const [diffMode, setDiffMode] = useState<'draft' | 'after'>('draft');
+  const [showPastCapsuleDraft, setShowPastCapsuleDraft] = useState(false);
 
   const totalScore = computeTotalScore(report.scores);
   const percentage = computePercentage(totalScore);
   const intl = report.internationalMetrics;
+
+  // Deterministic local fallback for Spoken-Readiness & Signal-to-Noise if backend omitted them
+  const localProseDiag = useMemo(
+    () => (draftContent ? computeProseDiagnostics(draftContent) : null),
+    [draftContent]
+  );
+  const spokenReadinessScore =
+    typeof report.spokenReadinessScore === 'number'
+      ? Math.round(report.spokenReadinessScore)
+      : localProseDiag
+        ? localProseDiag.baselineSpokenReadiness
+        : Math.round(
+            ((report.scores.naturalVoiceFlow + report.scores.claritySimplicity) / 20) * 100
+          );
+  const signalNoiseRatio =
+    typeof report.signalNoiseRatio === 'number'
+      ? Math.round(report.signalNoiseRatio)
+      : localProseDiag
+        ? localProseDiag.signalNoiseRatio
+        : Math.round((report.scores.concisenessDirectness / 10) * 100);
+
+  const calqueFixes: CalqueFix[] = useMemo(() => {
+    if (report.calqueFixes && report.calqueFixes.length > 0) {
+      return report.calqueFixes;
+    }
+    return localProseDiag?.calqueFixes ?? [];
+  }, [report.calqueFixes, localProseDiag]);
 
   const pinpointedRewrites: PinpointedRewrite[] =
     report.pinpointedRewrites && report.pinpointedRewrites.length > 0
@@ -179,7 +253,6 @@ export function EvaluationReportView({
           ]
         : [];
 
-  // Surgical grammar fixes that are not exact duplicates of a pinpointed rewrite
   const pinpointedOriginalSet = new Set(
     pinpointedRewrites.map((p) => p.original.trim().toLowerCase())
   );
@@ -198,6 +271,23 @@ export function EvaluationReportView({
     (report.modelUsed === 'offline-rubric'
       ? 'Offline Rubric'
       : 'AI Coach');
+
+  // Preview text with all rewrites + grammar fixes applied for Before/After Ink Diff toggle
+  const afterPreviewText = useMemo(() => {
+    if (!draftContent) return '';
+    let next = draftContent;
+    for (const rw of pinpointedRewrites) {
+      if (rw.original && next.includes(rw.original)) {
+        next = next.replace(rw.original, rw.rewrite);
+      }
+    }
+    for (const fix of surgicalGrammarFixes) {
+      if (fix.original && next.includes(fix.original)) {
+        next = next.replace(fix.original, fix.corrected);
+      }
+    }
+    return next;
+  }, [draftContent, pinpointedRewrites, surgicalGrammarFixes]);
 
   async function handleCopyDetailedMarkdown() {
     const md = formatDetailedCoachMarkdown({
@@ -229,7 +319,7 @@ export function EvaluationReportView({
 
   return (
     <div className="space-y-5">
-      {/* Top Scorecard Header + Summary / Detailed Toggle */}
+      {/* Top Scorecard Header */}
       <div className="space-y-3">
         <div className="flex items-start justify-between gap-2">
           <div className="min-w-0">
@@ -239,12 +329,32 @@ export function EvaluationReportView({
             </div>
             <div
               data-testid="evaluation-score-headline"
-              className="text-2xl font-semibold font-mono-tabular text-ink-primary mt-0.5"
+              className="text-2xl font-semibold font-mono-tabular text-ink-primary mt-0.5 flex flex-wrap items-baseline gap-2"
             >
-              {totalScore} / 60{' '}
-              <span className="text-sm font-medium text-ink-secondary">
-                ({percentage.toFixed(1)}%)
+              <span>
+                {totalScore} / 60{' '}
+                <span className="text-sm font-medium text-ink-secondary">
+                  ({percentage.toFixed(1)}%)
+                </span>
               </span>
+              {typeof report.revisionDelta === 'number' && (
+                <span
+                  data-testid="revision-delta-label"
+                  className={`text-xs font-mono-tabular font-semibold ${
+                    report.revisionDelta > 0
+                      ? 'text-status-success'
+                      : report.revisionDelta < 0
+                        ? 'text-status-warning'
+                        : 'text-ink-muted'
+                  }`}
+                >
+                  {report.revisionDelta > 0
+                    ? `+${report.revisionDelta} lift`
+                    : report.revisionDelta === 0
+                      ? '±0 pts'
+                      : `${report.revisionDelta} pts`}
+                </span>
+              )}
             </div>
           </div>
 
@@ -272,7 +382,181 @@ export function EvaluationReportView({
           </div>
         </div>
 
-        {/* Clean Segmented Mode Switcher: Summary vs Detailed Coach Report */}
+        {/* v3.1 High-Signal Diagnostics Strip: Spoken-Readiness · Signal/Noise · Revise & Lift */}
+        <div
+          data-testid="high-signal-metrics-strip"
+          className="grid grid-cols-3 divide-x divide-border-subtle border-y border-border-subtle py-2.5 bg-subtle/35 rounded-sm"
+        >
+          <div className="px-2.5">
+            <div className="text-[10px] uppercase tracking-[0.05em] text-ink-muted">
+              Spoken-Ready
+            </div>
+            <div className="font-mono-tabular text-sm font-semibold text-ink-primary mt-0.5">
+              {spokenReadinessScore}%
+            </div>
+          </div>
+          <div className="px-2.5">
+            <div className="text-[10px] uppercase tracking-[0.05em] text-ink-muted">
+              Signal / Noise
+            </div>
+            <div className="font-mono-tabular text-sm font-semibold text-ink-primary mt-0.5">
+              {signalNoiseRatio}%
+            </div>
+          </div>
+          <div className="px-2.5 flex items-center justify-end">
+            {onStartRevision ? (
+              <button
+                type="button"
+                data-testid="revise-and-lift-button"
+                onClick={onStartRevision}
+                className="btn-secondary inline-flex items-center gap-1 px-2.5 py-1.5 text-[11px] font-medium whitespace-nowrap"
+              >
+                <RotateCw className="w-3 h-3" aria-hidden="true" />
+                <span>Revise &amp; Lift</span>
+              </button>
+            ) : (
+              <div className="text-right">
+                <div className="text-[10px] uppercase tracking-[0.05em] text-ink-muted">
+                  Audience
+                </div>
+                <div className="text-xs font-medium text-ink-primary mt-0.5 truncate">
+                  {report.audience || 'General'}
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* Audience Gut-Reaction Line */}
+        {report.audienceReaction && (
+          <div
+            data-testid="audience-reaction-card"
+            className="px-3 py-2.5 rounded-md border border-border-subtle bg-subtle/50 text-xs leading-relaxed"
+          >
+            <span className="font-semibold text-ink-primary">
+              {report.audience || 'Reader'} reaction:{' '}
+            </span>
+            <span className="text-ink-secondary">{report.audienceReaction}</span>
+          </div>
+        )}
+
+        {/* Drill-Specific Verdict Banner (4/3/2, Skeleton, 3 Rooms, Time Capsule) */}
+        {(report.drillVerdict ||
+          (report.drillType && report.drillType !== 'standard')) && (
+          <div
+            data-testid="drill-verdict-banner"
+            className="p-3.5 rounded-md border border-border-default bg-surface space-y-2.5 text-xs"
+          >
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <span className="font-semibold text-ink-primary">
+                {report.drillVerdict?.headline ||
+                  (report.drillType === 'compression-432'
+                    ? '4/3/2 Compression Verdict'
+                    : report.drillType === 'skeleton'
+                      ? 'Skeleton Reconstruction'
+                      : report.drillType === 'three-rooms'
+                        ? 'Audience Ladder · Register Shift'
+                        : report.drillType === 'time-capsule'
+                          ? 'Blind Time Capsule Unsealed'
+                          : 'Practice Drill Summary')}
+              </span>
+              {typeof report.drillVerdict?.badge === 'string' && (
+                <span className="font-mono-tabular text-[11px] font-semibold text-accent">
+                  {report.drillVerdict.badge}
+                </span>
+              )}
+            </div>
+
+            {report.drillVerdict?.summary && (
+              <p className="text-[11px] text-ink-secondary leading-relaxed">
+                {report.drillVerdict.summary}
+              </p>
+            )}
+
+            {/* 4/3/2 Compression Ratio Strip */}
+            {report.drillType === 'compression-432' &&
+              report.drillMeta?.compressionWordCounts && (
+                <div className="font-mono-tabular text-[11px] text-ink-primary flex flex-wrap items-center gap-2 pt-1 border-t border-border-subtle">
+                  <span>
+                    {report.drillMeta.compressionWordCounts[0]}w →{' '}
+                    {report.drillMeta.compressionWordCounts[1]}w →{' '}
+                    {report.drillMeta.compressionWordCounts[2]}w
+                  </span>
+                  {typeof report.drillMeta.compressionRatio === 'number' && (
+                    <span className="text-status-success font-semibold">
+                      · {report.drillMeta.compressionRatio}% tighter
+                    </span>
+                  )}
+                </div>
+              )}
+
+            {/* Skeleton Master Passage vs Reconstruction Comparison */}
+            {report.drillType === 'skeleton' &&
+              report.drillMeta?.skeletonOriginalText && (
+                <div className="pt-2 border-t border-border-subtle space-y-2">
+                  <div className="text-[10px] uppercase tracking-[0.05em] text-ink-muted">
+                    Master Model Passage (Compare Phrasing &amp; Connectors)
+                  </div>
+                  <p className="text-xs text-ink-secondary leading-relaxed italic">
+                    &ldquo;{report.drillMeta.skeletonOriginalText}&rdquo;
+                  </p>
+                </div>
+              )}
+
+            {/* Time Capsule Past You vs Today You Unsealed Drawer */}
+            {report.drillType === 'time-capsule' &&
+              report.drillMeta?.timeCapsuleOriginScore !== undefined && (
+                <div className="pt-2 border-t border-border-subtle space-y-2">
+                  <div className="flex flex-wrap items-center justify-between gap-2 font-mono-tabular text-[11px]">
+                    <span className="text-ink-secondary inline-flex items-center gap-1.5">
+                      <History className="w-3.5 h-3.5" aria-hidden="true" />
+                      <span>
+                        Past You ({report.drillMeta.timeCapsuleOriginDate || 'earlier'}):{' '}
+                        <strong className="text-ink-primary">
+                          {report.drillMeta.timeCapsuleOriginScore}/60
+                        </strong>
+                      </span>
+                      <ArrowRight className="w-3 h-3 text-ink-muted" aria-hidden="true" />
+                      <span>
+                        Today:{' '}
+                        <strong className="text-ink-primary">{totalScore}/60</strong>
+                      </span>
+                    </span>
+                    <span
+                      className={`font-semibold ${
+                        totalScore - report.drillMeta.timeCapsuleOriginScore >= 0
+                          ? 'text-status-success'
+                          : 'text-status-warning'
+                      }`}
+                    >
+                      {totalScore - report.drillMeta.timeCapsuleOriginScore >= 0 ? '+' : ''}
+                      {totalScore - report.drillMeta.timeCapsuleOriginScore} pts
+                    </span>
+                  </div>
+                  {report.drillMeta.timeCapsuleOriginText && (
+                    <div>
+                      <button
+                        type="button"
+                        onClick={() => setShowPastCapsuleDraft((v) => !v)}
+                        className="inline-link-tactile text-[11px] font-medium cursor-pointer"
+                      >
+                        {showPastCapsuleDraft
+                          ? 'Hide Past Draft'
+                          : 'Unseal Original Draft'}
+                      </button>
+                      {showPastCapsuleDraft && (
+                        <p className="mt-2 p-2.5 rounded-sm bg-subtle text-[11px] text-ink-secondary leading-relaxed whitespace-pre-wrap">
+                          {report.drillMeta.timeCapsuleOriginText}
+                        </p>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
+          </div>
+        )}
+
+        {/* Clean Segmented Mode Switcher + Draft Quote Margin Toggle */}
         <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
           <div
             role="tablist"
@@ -304,28 +588,84 @@ export function EvaluationReportView({
             </button>
           </div>
 
-          {viewMode === 'detailed' && (
-            <button
-              type="button"
-              data-testid="copy-detailed-report-button"
-              onClick={() => void handleCopyDetailedMarkdown()}
-              className="inline-link-tactile inline-flex items-center gap-1 text-[11px] font-medium whitespace-nowrap cursor-pointer"
-            >
-              {copiedMarkdown ? (
-                <>
-                  <Check className="w-3 h-3 text-status-success" aria-hidden="true" />
-                  <span className="text-status-success">Copied Markdown</span>
-                </>
-              ) : (
-                <>
-                  <Copy className="w-3 h-3" aria-hidden="true" />
-                  <span>Copy Report</span>
-                </>
-              )}
-            </button>
-          )}
+          <div className="flex items-center gap-3">
+            {draftContent && draftContent.trim().length > 0 && (
+              <button
+                type="button"
+                data-testid="toggle-draft-inspector"
+                onClick={() => setShowDraftInspector((v) => !v)}
+                className="inline-link-tactile inline-flex items-center gap-1 text-[11px] font-medium whitespace-nowrap cursor-pointer"
+              >
+                <Eye className="w-3 h-3" aria-hidden="true" />
+                <span>{showDraftInspector ? 'Hide Margin' : 'Inspect Draft'}</span>
+              </button>
+            )}
+
+            {viewMode === 'detailed' && (
+              <button
+                type="button"
+                data-testid="copy-detailed-report-button"
+                onClick={() => void handleCopyDetailedMarkdown()}
+                className="inline-link-tactile inline-flex items-center gap-1 text-[11px] font-medium whitespace-nowrap cursor-pointer"
+              >
+                {copiedMarkdown ? (
+                  <>
+                    <Check className="w-3 h-3 text-status-success" aria-hidden="true" />
+                    <span className="text-status-success">Copied Markdown</span>
+                  </>
+                ) : (
+                  <>
+                    <Copy className="w-3 h-3" aria-hidden="true" />
+                    <span>Copy Report</span>
+                  </>
+                )}
+              </button>
+            )}
+          </div>
         </div>
       </div>
+
+      {/* Linked Verbatim Quote Margin & Before/After Ink Diff Inspector */}
+      {showDraftInspector && draftContent && (
+        <section
+          aria-label="Draft quote inspector"
+          data-testid="draft-quote-inspector"
+          className="p-3.5 rounded-md border border-border-default bg-subtle/50 space-y-2.5"
+        >
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-[11px] font-medium text-ink-primary">
+              {diffMode === 'after'
+                ? 'After Suggested Fixes Preview'
+                : activeQuote
+                  ? 'Highlighted Verbatim Quote'
+                  : 'Hover or click any critique below to spotlight it'}
+            </span>
+            <div className="segmented-track inline-flex items-center gap-0.5">
+              <button
+                type="button"
+                data-active={diffMode === 'draft' ? 'true' : 'false'}
+                onClick={() => setDiffMode('draft')}
+                className="segmented-item px-2 py-0.5 text-[10px] font-medium"
+              >
+                Original
+              </button>
+              <button
+                type="button"
+                data-active={diffMode === 'after' ? 'true' : 'false'}
+                onClick={() => setDiffMode('after')}
+                className="segmented-item px-2 py-0.5 text-[10px] font-medium"
+              >
+                Ink Diff
+              </button>
+            </div>
+          </div>
+          <p className="text-xs text-ink-secondary leading-relaxed whitespace-pre-wrap max-h-44 overflow-y-auto">
+            {diffMode === 'after'
+              ? afterPreviewText
+              : renderHighlightedDraft(draftContent, activeQuote)}
+          </p>
+        </section>
+      )}
 
       {/* ================================================================= */}
       {/* VIEW 1: COMPACT PRIORITY SUMMARY (Scores -> Grammar/Rewrites -> Vocab) */}
@@ -403,10 +743,21 @@ export function EvaluationReportView({
                   const applicable =
                     Boolean(onApplyTextReplacement) &&
                     canApplyInDraft(draftContent, item.original);
+                  const isHighlighted = activeQuote === item.original;
                   return (
                     <div
                       key={`rw-${idx}`}
-                      className="p-3 rounded-md bg-subtle border border-border-subtle space-y-2 text-xs"
+                      onMouseEnter={() => setActiveQuote(item.original)}
+                      onMouseLeave={() => setActiveQuote(null)}
+                      onClick={() => {
+                        setActiveQuote(item.original);
+                        if (draftContent) setShowDraftInspector(true);
+                      }}
+                      className={`p-3 rounded-md bg-subtle border space-y-2 text-xs transition-colors ${
+                        isHighlighted
+                          ? 'border-accent'
+                          : 'border-border-subtle'
+                      }`}
                     >
                       <div className="flex items-start justify-between gap-2">
                         <p className="text-[11px] text-ink-secondary leading-relaxed">
@@ -415,9 +766,10 @@ export function EvaluationReportView({
                         {applicable && onApplyTextReplacement && (
                           <button
                             type="button"
-                            onClick={() =>
-                              onApplyTextReplacement(item.original, item.rewrite)
-                            }
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              onApplyTextReplacement(item.original, item.rewrite);
+                            }}
                             className="inline-link-tactile text-[11px] font-medium whitespace-nowrap shrink-0 cursor-pointer"
                           >
                             Apply Rewrite
@@ -449,6 +801,8 @@ export function EvaluationReportView({
                       return (
                         <div
                           key={`gf-${idx}`}
+                          onMouseEnter={() => setActiveQuote(fix.original)}
+                          onMouseLeave={() => setActiveQuote(null)}
                           className="p-2.5 rounded-md bg-subtle/70 border border-border-subtle text-xs space-y-1"
                         >
                           <div className="flex items-center justify-between gap-2">
@@ -482,6 +836,49 @@ export function EvaluationReportView({
                         </div>
                       );
                     })}
+                  </div>
+                )}
+
+                {/* Idiomatic / Literal Translation (Calque) Fixes */}
+                {calqueFixes.length > 0 && (
+                  <div className="pt-2 border-t border-border-subtle space-y-1.5">
+                    <div className="text-[11px] font-semibold text-ink-primary">
+                      Natural Idiomatic Phrasing (Calque Fixes)
+                    </div>
+                    {calqueFixes.map((cf, idx) => (
+                      <div
+                        key={`cq-${idx}`}
+                        className="p-2 rounded-sm bg-subtle/50 border border-border-subtle text-[11px] flex flex-wrap items-center justify-between gap-2"
+                      >
+                        <span>
+                          <span className="line-through text-ink-muted">
+                            {cf.phrase}
+                          </span>{' '}
+                          →{' '}
+                          <span className="font-semibold text-status-success">
+                            {cf.naturalAlternative}
+                          </span>
+                          {cf.reason && (
+                            <span className="text-ink-muted"> · {cf.reason}</span>
+                          )}
+                        </span>
+                        {onApplyTextReplacement &&
+                          canApplyInDraft(draftContent, cf.phrase) && (
+                            <button
+                              type="button"
+                              onClick={() =>
+                                onApplyTextReplacement(
+                                  cf.phrase,
+                                  cf.naturalAlternative
+                                )
+                              }
+                              className="inline-link-tactile font-medium cursor-pointer"
+                            >
+                              Apply
+                            </button>
+                          )}
+                      </div>
+                    ))}
                   </div>
                 )}
               </div>
@@ -702,6 +1099,8 @@ export function EvaluationReportView({
                   return (
                     <div
                       key={`det-rw-${idx}`}
+                      onMouseEnter={() => setActiveQuote(item.original)}
+                      onMouseLeave={() => setActiveQuote(null)}
                       className="p-3.5 rounded-md bg-subtle border border-border-subtle space-y-2"
                     >
                       <div className="flex items-start justify-between gap-2">

@@ -30,7 +30,7 @@ service cloud.firestore {
     }
 
     function isValidMode(m) {
-      return m in ['journal', 'linkedin', 'email', 'friend', 'technical', 'creative'];
+      return m in ['journal', 'linkedin', 'email', 'friend', 'technical', 'creative', 'converse'];
     }
 
     function isValidTone(t) {
@@ -42,6 +42,14 @@ service cloud.firestore {
         'crisp-direct',
         'narrative-vivid'
       ];
+    }
+
+    function isValidDrillType(d) {
+      return d in ['standard', 'compression-432', 'skeleton', 'three-rooms', 'time-capsule'];
+    }
+
+    function isValidMasteryStage(s) {
+      return s in ['new', 'emerging', 'building', 'mastered'];
     }
 
     function isValidISODate(d) {
@@ -59,7 +67,8 @@ service cloud.firestore {
           'semester', 'collegeName', 'age', 'onboardingCompleted',
           'googleSpreadsheetId', 'googleDocId', 'dailyWordGoal',
           'autoSaveVocab', 'focusModeDefault', 'autoReloadSchedule',
-          'createdAt', 'updatedAt'
+          'customCoachPrompt', 'coachPresets', 'tactileSoundEnabled',
+          'vaultLatchEnabled', 'createdAt', 'updatedAt'
         ])
         && data.uid == userId
         && isValidId(data.uid)
@@ -77,6 +86,10 @@ service cloud.firestore {
         && data.autoSaveVocab is bool
         && data.focusModeDefault is bool
         && data.autoReloadSchedule is bool
+        && (!('customCoachPrompt' in data) || (data.customCoachPrompt is string && data.customCoachPrompt.size() <= 500))
+        && (!('coachPresets' in data) || (data.coachPresets is list && data.coachPresets.size() <= 8 && (data.coachPresets.size() == 0 || data.coachPresets[0] is string)))
+        && (!('tactileSoundEnabled' in data) || data.tactileSoundEnabled is bool)
+        && (!('vaultLatchEnabled' in data) || data.vaultLatchEnabled is bool)
         && data.createdAt is timestamp
         && data.updatedAt is timestamp;
     }
@@ -94,8 +107,11 @@ service cloud.firestore {
           'topicDescription', 'content', 'wordCount', 'scores', 'totalScore',
           'percentage', 'cefrLevel', 'internationalMetrics', 'toneVerdict',
           'flowVerdict', 'feedbackImplemented', 'whatImproved',
-          'strictImprovements', 'grammarFixes', 'vocabUpgrades', 'status',
-          'evaluationPending', 'modelUsed', 'createdAt', 'updatedAt'
+          'strictImprovements', 'grammarFixes', 'vocabUpgrades',
+          'spokenReadinessScore', 'signalNoiseRatio', 'audienceReaction',
+          'audience', 'calqueFixes', 'drillType', 'drillMeta', 'drillVerdict',
+          'revisionOfSessionId', 'revisionDelta',
+          'status', 'evaluationPending', 'modelUsed', 'createdAt', 'updatedAt'
         ])
         && data.id == sessionId && isValidId(data.id)
         && data.ownerId == userId && isValidId(data.ownerId)
@@ -125,6 +141,16 @@ service cloud.firestore {
         && (data.grammarFixes.size() == 0 || data.grammarFixes[0] is map)
         && data.vocabUpgrades is list && data.vocabUpgrades.size() <= 25
         && (data.vocabUpgrades.size() == 0 || data.vocabUpgrades[0] is map)
+        && (!('spokenReadinessScore' in data) || (data.spokenReadinessScore is number && data.spokenReadinessScore >= 0 && data.spokenReadinessScore <= 100))
+        && (!('signalNoiseRatio' in data) || (data.signalNoiseRatio is number && data.signalNoiseRatio >= 0 && data.signalNoiseRatio <= 100))
+        && (!('audienceReaction' in data) || (data.audienceReaction is string && data.audienceReaction.size() <= 400))
+        && (!('audience' in data) || (data.audience is string && data.audience.size() <= 40))
+        && (!('calqueFixes' in data) || (data.calqueFixes is list && data.calqueFixes.size() <= 15 && (data.calqueFixes.size() == 0 || data.calqueFixes[0] is map)))
+        && (!('drillType' in data) || isValidDrillType(data.drillType))
+        && (!('drillMeta' in data) || (data.drillMeta is map && data.drillMeta.keys().size() <= 22))
+        && (!('drillVerdict' in data) || (data.drillVerdict is map && data.drillVerdict.keys().size() <= 10))
+        && (!('revisionOfSessionId' in data) || (data.revisionOfSessionId is string && data.revisionOfSessionId.size() <= 128))
+        && (!('revisionDelta' in data) || (data.revisionDelta is number && data.revisionDelta >= -60 && data.revisionDelta <= 60))
         && data.status in ['Completed', 'Draft']
         && (!('evaluationPending' in data) || data.evaluationPending is bool)
         && (!('modelUsed' in data) || (data.modelUsed is string && data.modelUsed.size() <= 64))
@@ -142,7 +168,8 @@ service cloud.firestore {
           'id', 'ownerId', 'dayOfWeek', 'slotLabel', 'slotTime', 'scheduledDate',
           'mode', 'tone', 'promptCategory', 'topic', 'topicPrimer', 'pivotRule',
           'feedbackReminder', 'targetWords', 'completed', 'linkedSessionId',
-          'suggestions', 'isTriWeekly', 'pillar', 'createdAt', 'updatedAt'
+          'suggestions', 'isTriWeekly', 'pillar', 'recommendedDrill',
+          'isConverseSlot', 'createdAt', 'updatedAt'
         ])
         && data.id == slotId && isValidId(data.id)
         && data.ownerId == userId && isValidId(data.ownerId)
@@ -163,6 +190,8 @@ service cloud.firestore {
         && (!('suggestions' in data) || (data.suggestions is list && data.suggestions.size() <= 6 && (data.suggestions.size() == 0 || data.suggestions[0] is string)))
         && (!('isTriWeekly' in data) || data.isTriWeekly is bool)
         && (!('pillar' in data) || data.pillar in ['technical-concept', 'linkedin-email', 'creative-story'])
+        && (!('recommendedDrill' in data) || isValidDrillType(data.recommendedDrill))
+        && (!('isConverseSlot' in data) || data.isConverseSlot is bool)
         && data.createdAt is timestamp
         && data.updatedAt is timestamp;
     }
@@ -175,6 +204,7 @@ service cloud.firestore {
         && data.keys().hasOnly([
           'id', 'ownerId', 'used', 'betterAlternative', 'explanation',
           'contextSnippet', 'mode', 'dateAdded', 'mastered', 'sessionId',
+          'category', 'usageCount', 'masteryStage',
           'createdAt', 'updatedAt'
         ])
         && data.id == vocabId && isValidId(data.id)
@@ -187,6 +217,9 @@ service cloud.firestore {
         && isValidISODate(data.dateAdded)
         && data.mastered is bool
         && (!('sessionId' in data) || (data.sessionId is string && data.sessionId.size() <= 128))
+        && (!('category' in data) || (data.category is string && data.category.size() <= 60))
+        && (!('usageCount' in data) || (data.usageCount is number && data.usageCount >= 0 && data.usageCount <= 500))
+        && (!('masteryStage' in data) || isValidMasteryStage(data.masteryStage))
         && data.createdAt is timestamp
         && data.updatedAt is timestamp;
     }
@@ -214,7 +247,8 @@ service cloud.firestore {
           'email', 'displayName', 'semesterLabel', 'collegeDegree', 'semester',
           'collegeName', 'age', 'onboardingCompleted', 'googleSpreadsheetId',
           'googleDocId', 'dailyWordGoal', 'autoSaveVocab', 'focusModeDefault',
-          'autoReloadSchedule', 'updatedAt'
+          'autoReloadSchedule', 'customCoachPrompt', 'coachPresets',
+          'tactileSoundEnabled', 'vaultLatchEnabled', 'updatedAt'
         ]);
       allow delete: if isValidId(userId) && isVerifiedOwner(userId);
 
@@ -241,7 +275,10 @@ service cloud.firestore {
             'scores', 'totalScore', 'percentage', 'cefrLevel',
             'internationalMetrics', 'toneVerdict', 'flowVerdict',
             'feedbackImplemented', 'whatImproved', 'strictImprovements',
-            'grammarFixes', 'vocabUpgrades', 'evaluationPending',
+            'grammarFixes', 'vocabUpgrades', 'spokenReadinessScore',
+            'signalNoiseRatio', 'audienceReaction', 'audience',
+            'calqueFixes', 'drillType', 'drillMeta', 'drillVerdict',
+            'revisionOfSessionId', 'revisionDelta', 'evaluationPending',
             'modelUsed', 'status', 'updatedAt'
           ]);
         allow delete: if isValidId(userId) && isValidId(sessionId) && isVerifiedOwner(userId);
@@ -268,7 +305,8 @@ service cloud.firestore {
           && incoming().diff(existing()).affectedKeys().hasOnly([
             'slotLabel', 'slotTime', 'mode', 'tone', 'promptCategory', 'topic',
             'topicPrimer', 'pivotRule', 'feedbackReminder', 'targetWords',
-            'completed', 'linkedSessionId', 'suggestions', 'updatedAt'
+            'completed', 'linkedSessionId', 'suggestions', 'recommendedDrill',
+            'isConverseSlot', 'updatedAt'
           ]);
         allow delete: if isValidId(userId) && isValidId(slotId) && isVerifiedOwner(userId);
       }
@@ -292,7 +330,8 @@ service cloud.firestore {
           && incoming().createdAt == existing().createdAt
           && incoming().updatedAt == request.time
           && incoming().diff(existing()).affectedKeys().hasOnly([
-            'mastered', 'explanation', 'contextSnippet', 'updatedAt'
+            'mastered', 'explanation', 'contextSnippet',
+            'category', 'usageCount', 'masteryStage', 'updatedAt'
           ]);
         allow delete: if isValidId(userId) && isValidId(vocabId) && isVerifiedOwner(userId);
       }

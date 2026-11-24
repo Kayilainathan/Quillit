@@ -19,11 +19,15 @@
     <script>
       (function () {
         try {
-          var saved = localStorage.getItem('cadence_theme');
+          var pref = localStorage.getItem('quillit_theme') || localStorage.getItem('cadence_theme') || 'system';
+          if (localStorage.getItem('cadence_theme') && !localStorage.getItem('quillit_theme')) {
+            localStorage.setItem('quillit_theme', pref);
+          }
           var prefersDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
-          var theme = saved === 'light' || saved === 'dark' ? saved : (prefersDark ? 'dark' : 'dark');
-          document.documentElement.setAttribute('data-theme', theme);
-          if (theme === 'dark') {
+          var resolved = pref === 'light' || pref === 'dark' ? pref : (prefersDark ? 'dark' : 'light');
+          document.documentElement.setAttribute('data-theme', resolved);
+          document.documentElement.setAttribute('data-theme-pref', pref);
+          if (resolved === 'dark') {
             document.documentElement.classList.add('dark');
           } else {
             document.documentElement.classList.remove('dark');
