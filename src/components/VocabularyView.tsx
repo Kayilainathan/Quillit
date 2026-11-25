@@ -519,11 +519,11 @@ export function VocabularyView({
       )}
 
       {/* View Switcher + Search + Status Filter */}
-      <div className="flex flex-wrap items-center justify-between gap-3">
+      <div className="flex flex-col sm:flex-row sm:flex-wrap items-stretch sm:items-center justify-between gap-3">
         <div
           role="tablist"
           aria-label="Vocabulary workspace view"
-          className="segmented-track inline-flex items-center gap-0.5"
+          className="segmented-track grid grid-cols-2 sm:inline-flex items-center gap-0.5 w-full sm:w-auto"
         >
           <button
             type="button"
@@ -531,7 +531,7 @@ export function VocabularyView({
             aria-selected={subView === 'lexicon'}
             data-active={subView === 'lexicon' ? 'true' : 'false'}
             onClick={() => setSubView('lexicon')}
-            className="segmented-item px-3 py-1.5 text-xs font-medium whitespace-nowrap"
+            className="segmented-item min-h-[38px] sm:min-h-0 px-3 py-1.5 text-xs font-medium whitespace-nowrap text-center"
           >
             A to Z Lexicon
           </button>
@@ -544,15 +544,15 @@ export function VocabularyView({
               setSubView('recall');
               setDrillRevealed(false);
             }}
-            className="segmented-item px-3 py-1.5 text-xs font-medium whitespace-nowrap"
+            className="segmented-item min-h-[38px] sm:min-h-0 px-3 py-1.5 text-xs font-medium whitespace-nowrap text-center"
           >
             Active Recall ({practicingQueue.length})
           </button>
         </div>
 
         {subView === 'lexicon' && (
-          <div className="flex flex-wrap items-center gap-2.5 flex-1 justify-end min-w-[240px]">
-            <div className="relative flex-1 min-w-[190px] max-w-xs">
+          <div className="flex flex-col sm:flex-row sm:flex-wrap items-stretch sm:items-center gap-2.5 flex-1 justify-end min-w-0">
+            <div className="relative flex-1 min-w-0 sm:max-w-xs">
               <Search
                 className="w-3.5 h-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-ink-muted"
                 aria-hidden="true"
@@ -563,14 +563,14 @@ export function VocabularyView({
                 onChange={(e) => setQuery(e.target.value)}
                 placeholder="Search words, meanings, categories..."
                 aria-label="Search vocabulary lexicon"
-                className="input-tactile w-full pl-8 pr-3 py-1.5 text-xs"
+                className="input-tactile w-full pl-8 pr-3 py-2 sm:py-1.5 text-xs"
               />
             </div>
 
             <div
               role="tablist"
               aria-label="Filter vocabulary mastery status"
-              className="segmented-track inline-flex items-center gap-0.5"
+              className="segmented-track grid grid-cols-3 sm:inline-flex items-center gap-0.5 w-full sm:w-auto"
             >
               {(['all', 'practicing', 'mastered'] as const).map((status) => (
                 <button
@@ -580,7 +580,7 @@ export function VocabularyView({
                   aria-selected={statusFilter === status}
                   data-active={statusFilter === status ? 'true' : 'false'}
                   onClick={() => setStatusFilter(status)}
-                  className="segmented-item px-2.5 py-1 text-xs font-medium capitalize"
+                  className="segmented-item min-h-[36px] sm:min-h-0 px-2.5 py-1 text-xs font-medium capitalize text-center"
                 >
                   {status}
                 </button>
@@ -639,13 +639,13 @@ export function VocabularyView({
           <nav
             aria-label="Alphabetical index"
             data-testid="vocab-az-bar"
-            className="card-surface px-3 py-2.5 flex items-center gap-1 overflow-x-auto"
+            className="card-surface px-3 py-2 flex items-center gap-1 overflow-x-auto scrollbar-none scroll-smooth-touch"
           >
             <button
               type="button"
               onClick={() => setLetterFilter('ALL')}
               aria-pressed={letterFilter === 'ALL'}
-              className={`px-2.5 py-1 rounded-sm text-[11px] font-mono-tabular font-semibold transition-colors shrink-0 cursor-pointer ${
+              className={`min-h-[34px] sm:min-h-0 px-2.5 py-1 rounded-sm text-[11px] font-mono-tabular font-semibold transition-colors shrink-0 cursor-pointer ${
                 letterFilter === 'ALL'
                   ? 'bg-accent text-ink-inverse'
                   : 'text-ink-secondary hover:text-ink-primary hover:bg-subtle'
@@ -665,7 +665,7 @@ export function VocabularyView({
                   onClick={() => setLetterFilter(isActive ? 'ALL' : letter)}
                   aria-pressed={isActive}
                   title={count > 0 ? `${letter} (${count})` : `No words starting with ${letter}`}
-                  className={`w-7 h-7 rounded-sm text-xs font-mono-tabular inline-flex items-center justify-center transition-colors shrink-0 ${
+                  className={`w-8 h-8 sm:w-7 sm:h-7 rounded-sm text-xs font-mono-tabular inline-flex items-center justify-center transition-colors shrink-0 ${
                     isActive
                       ? 'bg-accent text-ink-inverse font-semibold cursor-pointer'
                       : count > 0

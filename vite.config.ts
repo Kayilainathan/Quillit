@@ -52,7 +52,7 @@ export default defineConfig(({ command }) => {
               { name: 'vendor-firebase', test: /node_modules\/(firebase|@firebase)\// },
               { name: 'vendor-charts', test: /node_modules\/(recharts|d3|d3-.*|victory-vendor)\// },
               { name: 'vendor-motion', test: /node_modules\/(motion|framer-motion)\// },
-              { name: 'vendor-react', test: /node_modules\/(react|react-dom|scheduler)\// },
+              { name: 'vendor-react', test: /node_modules\/(react|react-dom|react-is|scheduler)\// },
             ],
           },
         },

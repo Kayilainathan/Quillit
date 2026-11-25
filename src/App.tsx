@@ -92,6 +92,7 @@ import {
   syncVaultToGoogleSheets,
 } from './utils/workspaceSync';
 import { Header, type CloudSyncState } from './components/Header';
+import { MobileBottomNav } from './components/MobileBottomNav';
 import { EntryDesk } from './components/EntryDesk';
 import { WriteStudio } from './components/WriteStudio';
 import { ConverseStudio } from './components/ConverseStudio';
@@ -2898,7 +2899,11 @@ export default function App() {
         </div>
       )}
 
-      <main className="flex-1">
+      <main
+        className={`flex-1 ${
+          activeView === 'write' && focusMode ? '' : 'mobile-main-clearance'
+        }`}
+      >
         {/* Keep WriteStudio persistently mounted so active drafts, cursor context, and in-progress AI evaluations survive tab switches */}
         <div
           className={activeView === 'write' ? 'block' : 'hidden'}
@@ -3072,6 +3077,32 @@ export default function App() {
           />
         )}
       </main>
+
+      <MobileBottomNav
+        activeView={activeView}
+        focusMode={focusMode}
+        tactileSoundEnabled={Boolean(vault.settings.tactileSoundEnabled)}
+        onNavigate={(nextView) => {
+          setActiveView(nextView);
+          if (nextView === 'write') {
+            setWriteEvalHasUnreadResult(false);
+          } else if (nextView === 'converse') {
+            setConverseHasUnreadResult(false);
+          }
+          if (typeof window !== 'undefined' && window.innerWidth < 768) {
+            window.scrollTo({ top: 0, behavior: 'instant' as ScrollBehavior });
+          }
+        }}
+        writeEvaluationState={{
+          inProgress: writeEvalInProgress,
+          hasUnreadResult: writeEvalHasUnreadResult,
+        }}
+        converseStatus={{
+          inProgress: converseInProgress,
+          hasUnreadResult: converseHasUnreadResult,
+          hasActiveChat: converseHasActiveChat,
+        }}
+      />
 
       {showEditProfileModal && (
         <OnboardingProfileModal

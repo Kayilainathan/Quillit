@@ -399,21 +399,22 @@ export function CalendarView({
           </p>
         </div>
 
-        <div className="flex flex-wrap items-center gap-2">
+        <div className="flex flex-wrap items-center gap-1.5 sm:gap-2 w-full sm:w-auto">
           <button
             type="button"
             onClick={() => openAddForDate(selectedDate)}
             data-testid="calendar-add-task-button"
-            className="btn-primary inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-medium whitespace-nowrap"
+            className="btn-primary inline-flex items-center gap-1.5 min-h-[40px] sm:min-h-0 px-3 sm:px-3.5 py-2 text-xs font-medium whitespace-nowrap shrink-0"
           >
             <Plus className="w-3.5 h-3.5" aria-hidden="true" />
-            <span>Schedule Session</span>
+            <span className="sm:hidden">Schedule</span>
+            <span className="hidden sm:inline">Schedule Session</span>
           </button>
 
           <button
             type="button"
             onClick={() => setShowAiPlanBox((v) => !v)}
-            className={`inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium whitespace-nowrap ${
+            className={`inline-flex items-center gap-1.5 min-h-[40px] sm:min-h-0 px-2.5 sm:px-3 py-2 text-xs font-medium whitespace-nowrap shrink-0 ${
               showAiPlanBox ? 'btn-primary' : 'btn-secondary'
             }`}
           >
@@ -429,10 +430,11 @@ export function CalendarView({
                 `Filled remaining upcoming writing days in ${formatMonthLabel(viewYear, viewMonth)} from your 52-week roadmap (past dates skipped).`
               );
             }}
-            className="btn-secondary inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium whitespace-nowrap"
+            className="btn-secondary inline-flex items-center gap-1.5 min-h-[40px] sm:min-h-0 px-2.5 sm:px-3 py-2 text-xs font-medium whitespace-nowrap shrink-0"
           >
             <Wand2 className="w-3.5 h-3.5" aria-hidden="true" />
-            <span>Auto-Fill Month</span>
+            <span className="sm:hidden">Auto-Fill</span>
+            <span className="hidden sm:inline">Auto-Fill Month</span>
           </button>
         </div>
       </header>
@@ -440,10 +442,10 @@ export function CalendarView({
       {/* Whisper-Quiet Summary Ribbon (Streak · Weekly Rhythm · Next Up) */}
       <section
         aria-label="Writing schedule summary"
-        className="grid grid-cols-1 md:grid-cols-3 border-y border-border-subtle divide-y md:divide-y-0 md:divide-x divide-border-subtle bg-surface/55"
+        className="grid grid-cols-2 md:grid-cols-3 border-y border-border-subtle divide-y md:divide-y-0 md:divide-x divide-border-subtle bg-surface/55"
       >
         {/* Streak */}
-        <div className="py-3.5 px-4 flex items-center justify-between gap-3">
+        <div className="py-3 px-3.5 sm:py-3.5 sm:px-4 flex items-center justify-between gap-2 sm:gap-3 border-r md:border-r-0 border-border-subtle">
           <div>
             <div className="text-[11px] uppercase tracking-[0.06em] text-ink-muted">
               Current Streak
@@ -466,13 +468,13 @@ export function CalendarView({
         </div>
 
         {/* This Week Progress */}
-        <div className="py-3.5 px-4 space-y-1.5">
-          <div className="flex items-center justify-between text-[11px]">
+        <div className="py-3 px-3.5 sm:py-3.5 sm:px-4 space-y-1.5">
+          <div className="flex items-center justify-between gap-1 text-[11px]">
             <span className="uppercase tracking-[0.06em] text-ink-muted">
               This Week
             </span>
-            <span className="font-mono-tabular font-medium text-ink-primary">
-              {thisWeekStats.completed} / {thisWeekStats.target} sessions
+            <span className="font-mono-tabular font-medium text-ink-primary whitespace-nowrap">
+              {thisWeekStats.completed}/{thisWeekStats.target}
             </span>
           </div>
           <div className="h-[5px] w-full rounded-full bg-border-subtle overflow-hidden">
@@ -484,7 +486,7 @@ export function CalendarView({
         </div>
 
         {/* Next Writing Slot */}
-        <div className="py-3.5 px-4 flex items-center justify-between gap-3 min-w-0">
+        <div className="col-span-2 md:col-span-1 py-3 px-3.5 sm:py-3.5 sm:px-4 flex items-center justify-between gap-3 min-w-0">
           <div className="min-w-0">
             <div className="text-[11px] uppercase tracking-[0.06em] text-ink-muted">
               Next Session
@@ -837,15 +839,16 @@ export function CalendarView({
                 return (
                   <div
                     key={day}
-                    className={`py-2.5 px-2 text-center text-[11px] font-medium tracking-wide ${
+                    className={`py-2 sm:py-2.5 px-1 sm:px-2 text-center text-[11px] font-medium tracking-wide ${
                       isPreferred ? 'text-ink-primary' : 'text-ink-muted'
                     }`}
                   >
-                    <span>{day}</span>
+                    <span className="sm:hidden">{day.slice(0, 1)}</span>
+                    <span className="hidden sm:inline">{day}</span>
                     {isPreferred && (
                       <span
                         aria-label="Planned writing day"
-                        className="inline-block w-1 h-1 rounded-full bg-accent ml-1 align-middle"
+                        className="inline-block w-1 h-1 rounded-full bg-accent ml-0.5 sm:ml-1 align-middle"
                       />
                     )}
                   </div>
@@ -869,7 +872,7 @@ export function CalendarView({
                     key={cell.dateISO}
                     type="button"
                     onClick={() => setSelectedDate(cell.dateISO)}
-                    className={`relative min-h-[76px] sm:min-h-[86px] p-2 text-left flex flex-col justify-between transition-colors cursor-pointer ${
+                    className={`relative min-h-[54px] sm:min-h-[86px] p-1.5 sm:p-2 text-center sm:text-left flex flex-col items-center sm:items-stretch justify-between transition-colors cursor-pointer ${
                       !cell.inCurrentMonth
                         ? 'bg-subtle/25 text-ink-muted/55'
                         : isPreferred
@@ -881,7 +884,7 @@ export function CalendarView({
                         : 'hover:bg-subtle/60'
                     }`}
                   >
-                    <div className="flex items-center justify-between gap-1">
+                    <div className="flex flex-col sm:flex-row items-center justify-between gap-1 w-full">
                       <span
                         className={`font-mono-tabular text-xs w-6 h-6 rounded-full inline-flex items-center justify-center ${
                           cell.isToday
@@ -897,7 +900,7 @@ export function CalendarView({
                       </span>
 
                       {/* Subtle completion or scheduled ink indicators */}
-                      <div className="flex items-center gap-1">
+                      <div className="flex items-center justify-center gap-1 min-h-[6px]">
                         {hasDone && (
                           <span
                             title="Completed writing session"
@@ -913,7 +916,7 @@ export function CalendarView({
                       </div>
                     </div>
 
-                    <div className="space-y-1 mt-1">
+                    <div className="hidden sm:block space-y-1 mt-1">
                       {daySlots.slice(0, 2).map((slot) => (
                         <div
                           key={slot.id}

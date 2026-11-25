@@ -73,7 +73,7 @@ export function QuickAddVocabModal({
 
   return (
     <div
-      className="modal-scrim fixed inset-0 z-50 flex items-center justify-center p-4"
+      className="modal-scrim fixed inset-0 z-50 flex items-end sm:items-center justify-center p-0 sm:p-4"
       role="dialog"
       aria-modal="true"
       aria-labelledby="quick-add-vocab-title"
@@ -84,7 +84,11 @@ export function QuickAddVocabModal({
         }
       }}
     >
-      <div className="modal-panel w-full max-w-[420px] overflow-hidden">
+      <div className="modal-panel mobile-sheet-panel w-full sm:max-w-[420px] rounded-b-none rounded-t-2xl sm:rounded-2xl max-h-[90dvh] overflow-y-auto safe-area-pb">
+        <div
+          aria-hidden="true"
+          className="sm:hidden w-10 h-1 rounded-full bg-border-strong/70 mx-auto mt-2.5"
+        />
         <div className="px-5 py-4 border-b border-border-subtle flex items-center justify-between gap-3">
           <div className="flex items-center gap-2 min-w-0">
             <BookmarkPlus

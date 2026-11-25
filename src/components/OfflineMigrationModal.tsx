@@ -91,7 +91,7 @@ export function OfflineMigrationModal({
 
   return (
     <div
-      className="modal-scrim fixed inset-0 z-50 flex items-center justify-center p-4"
+      className="modal-scrim fixed inset-0 z-50 flex items-end sm:items-center justify-center p-0 sm:p-4"
       role="dialog"
       aria-modal="true"
       aria-labelledby="offline-migration-title"
@@ -103,7 +103,7 @@ export function OfflineMigrationModal({
       }}
     >
       <div
-        className={`modal-panel w-full max-w-[430px] overflow-hidden ${
+        className={`modal-panel mobile-sheet-panel w-full max-w-[430px] max-h-[92dvh] overflow-y-auto rounded-b-none rounded-t-2xl sm:rounded-2xl safe-area-pb ${
           inkActive ? 'ink-active' : ''
         }`}
         onMouseEnter={() => setInkActive(true)}

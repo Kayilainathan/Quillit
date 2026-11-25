@@ -815,9 +815,11 @@ export function OnboardingProfileModal({
       role="dialog"
       aria-modal="true"
       aria-labelledby="onboarding-profile-title"
-      className="modal-scrim fixed inset-0 z-50 flex items-center justify-center p-4 overflow-y-auto"
+      className="modal-scrim fixed inset-0 z-50 flex items-end sm:items-center justify-center p-0 sm:p-4 overflow-y-auto"
     >
-      {flashcardBody}
+      <div className="w-full sm:w-auto max-h-[92dvh] sm:max-h-none overflow-y-auto mobile-sheet-panel safe-area-pb">
+        {flashcardBody}
+      </div>
     </div>
   );
 }

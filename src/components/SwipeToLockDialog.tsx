@@ -175,7 +175,7 @@ export function SwipeToLockDialog({
 
   return (
     <div
-      className="modal-scrim fixed inset-0 z-50 flex items-center justify-center p-4"
+      className="modal-scrim fixed inset-0 z-50 flex items-end sm:items-center justify-center p-0 sm:p-4"
       role="dialog"
       aria-modal="true"
       aria-labelledby="swipe-lock-title"
@@ -185,7 +185,11 @@ export function SwipeToLockDialog({
         }
       }}
     >
-      <div className="modal-panel w-full max-w-sm p-6 space-y-5">
+      <div className="modal-panel mobile-sheet-panel w-full sm:max-w-sm rounded-b-none rounded-t-2xl sm:rounded-2xl p-5 sm:p-6 safe-area-pb space-y-5">
+        <div
+          aria-hidden="true"
+          className="sm:hidden w-10 h-1 rounded-full bg-border-strong/70 mx-auto -mt-1.5"
+        />
         <div className="flex items-start justify-between gap-3">
           <div className="flex items-start gap-3">
             <div className="w-9 h-9 rounded-lg border border-border-default bg-subtle flex items-center justify-center shrink-0">

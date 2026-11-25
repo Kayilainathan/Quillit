@@ -256,9 +256,9 @@ export function DashboardView({
       {/* Primary KPI Strip */}
       <section
         aria-label="Key writing metrics"
-        className="grid grid-cols-2 lg:grid-cols-5 gap-4"
+        className="grid grid-cols-2 lg:grid-cols-5 gap-2.5 sm:gap-4"
       >
-        <div className="card-surface p-4 sm:p-5">
+        <div className="card-surface p-3.5 sm:p-5">
           <div className="text-xs text-ink-muted">
             Average Score
           </div>
@@ -334,7 +334,7 @@ export function DashboardView({
       >
         <div
           data-testid="dashboard-cadence-ring"
-          className="card-surface lg:col-span-6 p-5 flex items-center justify-between gap-5"
+          className="card-surface lg:col-span-6 p-4 sm:p-5 flex flex-wrap sm:flex-nowrap items-center justify-between gap-4 sm:gap-5"
         >
           <div className="flex items-center gap-4 min-w-0">
             <div className="relative w-14 h-14 shrink-0">
@@ -450,11 +450,11 @@ export function DashboardView({
       </section>
 
       {/* Visual Analytics Grid */}
-      <section className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-        <div className="card-surface lg:col-span-7 p-6">
+      <section className="grid grid-cols-1 lg:grid-cols-12 gap-4 sm:gap-6">
+        <div className="card-surface lg:col-span-7 p-4 sm:p-6">
           <ScoreTrendChart sessions={completed} />
         </div>
-        <div className="card-surface lg:col-span-5 p-6">
+        <div className="card-surface lg:col-span-5 p-4 sm:p-6">
           <RubricProfileChart sessions={completed} />
         </div>
       </section>
@@ -469,7 +469,7 @@ export function DashboardView({
       {/* International Evaluation & Proficiency Standards */}
       <section
         aria-label="International English evaluation standards"
-        className="card-surface p-6 space-y-5"
+        className="card-surface p-4 sm:p-6 space-y-5"
       >
         <div className="flex flex-wrap items-center justify-between gap-4">
           <div>
@@ -482,7 +482,7 @@ export function DashboardView({
             </h2>
           </div>
 
-          <div className="flex flex-wrap items-center gap-6 text-xs font-mono-tabular">
+          <div className="grid grid-cols-2 sm:flex sm:flex-wrap items-center gap-x-5 gap-y-2 sm:gap-6 text-xs font-mono-tabular w-full sm:w-auto">
             <div>
               <span className="text-ink-muted">CEFR </span>
               <span className="text-sm font-semibold text-ink-primary">

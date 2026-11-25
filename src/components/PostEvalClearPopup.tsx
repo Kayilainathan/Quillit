@@ -83,7 +83,7 @@ export const PostEvalClearPopup: React.FC<PostEvalClearPopupProps> = ({
           onPauseChange(false);
         }
       }}
-      className="fixed z-40 bottom-3 left-3 right-3 sm:left-auto sm:right-5 sm:bottom-5 sm:w-[392px] post-eval-popup-enter"
+      className="fixed z-40 mobile-floating-clearance left-3 right-3 sm:left-auto sm:right-5 sm:w-[392px] post-eval-popup-enter"
     >
       <div className="relative overflow-hidden rounded-xl border border-border-default bg-elevated shadow-lg">
         {state.phase === 'countdown' ? (

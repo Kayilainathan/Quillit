@@ -216,7 +216,7 @@ export function Header({
           </nav>
 
           {/* Right Quiet Utility Cluster */}
-          <div className="flex items-center gap-2 shrink-0">
+          <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
             {/* Compact 10-Min Weekly Rhythm Indicator (unboxed tabular text) */}
             <button
               type="button"
@@ -241,7 +241,7 @@ export function Header({
               }}
               aria-label={`Theme: ${themeLabel}. Click to cycle theme`}
               title={`Theme: ${themeLabel} (click to switch)`}
-              className="btn-secondary inline-flex items-center justify-center gap-1.5 px-2.5 py-1.5 text-xs font-medium whitespace-nowrap shrink-0"
+              className="btn-secondary inline-flex items-center justify-center gap-1.5 min-w-[36px] min-h-[36px] sm:min-w-0 sm:min-h-0 px-2 sm:px-2.5 py-1.5 text-xs font-medium whitespace-nowrap shrink-0"
             >
               {themePreference === 'system' ? (
                 <Laptop className="w-3.5 h-3.5 text-ink-secondary" aria-hidden="true" />
@@ -264,7 +264,7 @@ export function Header({
                     ? `Writing reminders (${actionableCount} open)`
                     : 'Writing reminders'
                 }
-                className="btn-secondary relative inline-flex items-center justify-center gap-1.5 px-2.5 py-1.5 text-xs font-medium whitespace-nowrap"
+                className="btn-secondary relative inline-flex items-center justify-center gap-1 min-w-[36px] min-h-[36px] sm:min-w-0 sm:min-h-0 px-2 sm:px-2.5 py-1.5 text-xs font-medium whitespace-nowrap"
               >
                 {actionableCount > 0 ? (
                   <BellRing
@@ -285,7 +285,7 @@ export function Header({
                 <div
                   role="region"
                   aria-label="Day-of writing reminders"
-                  className="popover-panel absolute right-0 mt-2 w-80 sm:w-96 p-4 space-y-3 z-40"
+                  className="popover-panel fixed inset-x-3 top-14 sm:absolute sm:inset-x-auto sm:right-0 sm:top-auto sm:mt-2 sm:w-96 max-h-[75dvh] overflow-y-auto p-4 space-y-3 z-40"
                 >
                   <div className="flex items-start justify-between gap-2 pb-2.5 border-b border-border-subtle">
                     <div>
@@ -400,7 +400,7 @@ export function Header({
                     ? 'Syncing to cloud'
                     : `Cloud synced (${cloudUserEmail})`
                 }
-                className="btn-secondary relative inline-flex items-center justify-center w-8 h-8 p-0 shrink-0"
+                className="btn-secondary relative inline-flex items-center justify-center w-9 h-9 sm:w-8 sm:h-8 p-0 shrink-0"
               >
                 {cloudSyncStatus === 'syncing' ? (
                   <RefreshCw
@@ -435,13 +435,13 @@ export function Header({
                 onClick={onConnectCloud}
                 title="Sign in for Cloud Sync"
                 aria-label="Sign in for Cloud Sync"
-                className="btn-secondary inline-flex items-center justify-center w-8 h-8 p-0 shrink-0"
+                className="btn-secondary hidden sm:inline-flex items-center justify-center w-8 h-8 p-0 shrink-0"
               >
                 <CloudOff className="w-3.5 h-3.5 text-ink-muted" aria-hidden="true" />
               </button>
             )}
 
-            {/* Settings Gear (Desktop only; mobile has Settings in the nav strip) */}
+            {/* Settings Gear (1-tap access on both mobile and desktop) */}
             <button
               type="button"
               data-testid="header-settings-button"
@@ -449,7 +449,7 @@ export function Header({
               aria-label="Coach & Vault Settings"
               aria-current={activeView === 'vault' ? 'page' : undefined}
               title="Settings & Custom Coach"
-              className={`hidden md:inline-flex items-center justify-center w-8 h-8 p-0 shrink-0 ${
+              className={`inline-flex items-center justify-center w-9 h-9 sm:w-8 sm:h-8 p-0 shrink-0 ${
                 activeView === 'vault' ? 'btn-primary' : 'btn-secondary'
               }`}
             >
@@ -470,7 +470,7 @@ export function Header({
                   ? 'Vault Latch armed — click to lock desk'
                   : 'Lock desk & return to Entry'
               }
-              className="btn-secondary inline-flex items-center gap-1.5 px-2 sm:px-2.5 py-1.5 text-xs font-medium whitespace-nowrap shrink-0"
+              className="btn-secondary inline-flex items-center justify-center gap-1.5 min-h-[36px] sm:min-h-0 px-2 sm:px-2.5 py-1.5 text-xs font-medium whitespace-nowrap shrink-0"
             >
               <span
                 className="vault-latch-track"
@@ -489,7 +489,7 @@ export function Header({
         {!cloudUserEmail && localSessionCount > 0 && (
           <div
             data-testid="local-sync-bridge"
-            className="border-t border-border-subtle bg-subtle/65 px-4 sm:px-6 py-1.5"
+            className="hidden sm:block border-t border-border-subtle bg-subtle/65 px-4 sm:px-6 py-1.5"
           >
             <div className="max-w-6xl mx-auto flex items-center justify-between gap-3 text-[11px] text-ink-secondary">
               <span className="font-mono-tabular">
@@ -506,54 +506,6 @@ export function Header({
             </div>
           </div>
         )}
-
-        {/* Compact minimal mobile navigation row */}
-        <nav
-          aria-label="Mobile navigation"
-          className="flex md:hidden items-center gap-1 overflow-x-auto scrollbar-none scroll-smooth-touch snap-x px-3 py-1.5 border-t border-border-subtle"
-        >
-          {[...PRIMARY_NAV_ITEMS, { id: 'vault' as AppView, label: 'Settings' }].map(
-            (item) => {
-              const isActive = activeView === item.id;
-              const showRunning =
-                !isActive &&
-                ((item.id === 'write' && Boolean(writeEvaluationState?.inProgress)) ||
-                  (item.id === 'converse' && Boolean(converseStatus?.inProgress)));
-              const showReady =
-                !isActive &&
-                !showRunning &&
-                ((item.id === 'write' && Boolean(writeEvaluationState?.hasUnreadResult)) ||
-                  (item.id === 'converse' && Boolean(converseStatus?.hasUnreadResult)));
-              return (
-                <button
-                  key={item.id}
-                  type="button"
-                  onClick={() => onNavigate(item.id)}
-                  aria-current={isActive ? 'page' : undefined}
-                  className={`snap-start inline-flex items-center gap-1.5 px-3 py-1.5 min-h-[34px] text-xs font-medium whitespace-nowrap shrink-0 rounded-md transition-all duration-150 ${
-                    isActive
-                      ? 'bg-accent text-ink-inverse shadow-xs'
-                      : 'text-ink-secondary hover:text-ink-primary hover:bg-subtle'
-                  }`}
-                >
-                  <span>{item.label}</span>
-                  {showRunning && (
-                    <span
-                      aria-label="Evaluation in progress"
-                      className="w-1.5 h-1.5 rounded-full bg-accent animate-pulse"
-                    />
-                  )}
-                  {showReady && (
-                    <span
-                      aria-label="Evaluation ready"
-                      className="w-1.5 h-1.5 rounded-full bg-status-success"
-                    />
-                  )}
-                </button>
-              );
-            }
-          )}
-        </nav>
       </header>
 
       <SwipeToLockDialog

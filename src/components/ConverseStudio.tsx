@@ -1106,11 +1106,11 @@ export function ConverseStudio({
             </p>
           </div>
 
-          <div className="flex flex-wrap items-center gap-2.5">
+          <div className="flex flex-col sm:flex-row sm:flex-wrap items-stretch sm:items-center gap-2.5">
             <div
               role="radiogroup"
               aria-label="Conversation pace"
-              className="segmented-track inline-flex items-center gap-0.5"
+              className="segmented-track grid grid-cols-3 sm:inline-flex items-center gap-0.5 w-full sm:w-auto"
             >
               {PACE_OPTIONS.map((opt) => {
                 const selected = pace === opt.id;
@@ -1123,7 +1123,7 @@ export function ConverseStudio({
                     data-active={selected ? 'true' : 'false'}
                     onClick={() => setPace(opt.id)}
                     title={opt.hint}
-                    className="segmented-item px-2.5 py-1.5 text-xs font-medium whitespace-nowrap"
+                    className="segmented-item min-h-[38px] sm:min-h-0 px-2.5 py-1.5 text-xs font-medium whitespace-nowrap text-center"
                   >
                     {opt.label}
                   </button>
@@ -1135,7 +1135,7 @@ export function ConverseStudio({
               <button
                 type="button"
                 onClick={() => setShowRecentDrawer((v) => !v)}
-                className="btn-secondary inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium whitespace-nowrap"
+                className="btn-secondary inline-flex items-center justify-center gap-1.5 min-h-[40px] sm:min-h-0 px-3 py-1.5 text-xs font-medium whitespace-nowrap"
               >
                 <History className="w-3.5 h-3.5 text-ink-secondary" aria-hidden="true" />
                 <span>Recent ({savedThreads.length})</span>
@@ -1295,7 +1295,7 @@ export function ConverseStudio({
       data-testid="converse-stage"
       className={`editorial-enter ${
         showCoachPanel ? 'max-w-6xl' : 'max-w-3xl'
-      } mx-auto px-2.5 sm:px-6 py-2.5 sm:py-6 transition-all duration-300`}
+      } mx-auto px-0 sm:px-6 py-0 sm:py-6 transition-all duration-300`}
     >
       <div
         className={`grid gap-4 sm:gap-5 items-start ${
@@ -1306,7 +1306,7 @@ export function ConverseStudio({
         <div
           className={`${
             showCoachPanel ? 'lg:col-span-7 lg:sticky lg:top-20' : 'col-span-1'
-          } card-surface relative flex flex-col overflow-hidden h-[calc(100dvh-118px)] sm:h-[calc(100dvh-134px)] min-h-[440px] max-h-[820px]`}
+          } card-surface rounded-none sm:rounded-[var(--radius-md)] border-x-0 sm:border-x border-t-0 sm:border-t relative flex flex-col overflow-hidden h-[calc(100dvh-108px-env(safe-area-inset-bottom,0px))] md:h-[calc(100dvh-134px)] min-h-[420px] max-h-[820px]`}
         >
           {/* Chat Stage Header */}
           <div className="px-3 sm:px-5 py-2.5 sm:py-3.5 border-b border-border-subtle flex items-center justify-between gap-1.5 sm:gap-3 bg-surface">
@@ -1416,41 +1416,39 @@ export function ConverseStudio({
           </div>
 
           {/* Subtle Session Metrics & Vocab Targets Bar */}
-          <div className="px-3 sm:px-5 py-2 border-b border-border-subtle bg-subtle/40 flex flex-wrap items-center justify-between gap-2 text-[11px] font-mono-tabular text-ink-muted">
-            <div className="flex flex-wrap items-center gap-2">
+          <div className="px-3 sm:px-5 py-2 border-b border-border-subtle bg-subtle/40 flex flex-wrap items-center justify-between gap-x-3 gap-y-1 text-[11px] font-mono-tabular text-ink-muted">
+            <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
               <span>
                 {metrics.userTurnCount}{' '}
                 {metrics.userTurnCount === 1 ? 'reply' : 'replies'}
               </span>
-              <span>·</span>
+              <span aria-hidden="true">·</span>
               <span>{metrics.totalUserWords} words</span>
               {liveTiming.avgResponseTimeSec !== null && (
                 <>
-                  <span>·</span>
+                  <span aria-hidden="true">·</span>
                   <span data-testid="converse-live-avg-reply">
                     avg {liveTiming.avgResponseTimeSec}s reply
                   </span>
                 </>
               )}
-              {!metrics.canEvaluate && (
-                <>
-                  <span>·</span>
-                  <span className="text-ink-secondary">
-                    {metrics.turnsNeeded > 0
-                      ? `${metrics.turnsNeeded} more ${
-                          metrics.turnsNeeded === 1 ? 'reply' : 'replies'
-                        } to unlock benchmark`
-                      : `${metrics.wordsNeeded} more words to unlock benchmark`}
-                  </span>
-                </>
-              )}
               {offlineModeNote && (
                 <>
-                  <span>·</span>
+                  <span aria-hidden="true">·</span>
                   <span className="text-status-warning">Offline partner</span>
                 </>
               )}
             </div>
+
+            {!metrics.canEvaluate && (
+              <span className="text-ink-secondary">
+                {metrics.turnsNeeded > 0
+                  ? `${metrics.turnsNeeded} more ${
+                      metrics.turnsNeeded === 1 ? 'reply' : 'replies'
+                    } to unlock benchmark`
+                  : `${metrics.wordsNeeded} more words to unlock benchmark`}
+              </span>
+            )}
 
             {practicingWordStrings.length > 0 && (
               <button
@@ -1840,7 +1838,7 @@ export function ConverseStudio({
           <aside
             ref={evalAsideRef}
             aria-label="Conversation evaluation report"
-            className="lg:col-span-5 card-surface editorial-enter p-4 sm:p-5 space-y-4"
+            className="lg:col-span-5 mx-2.5 sm:mx-0 card-surface editorial-enter p-4 sm:p-5 space-y-4"
           >
             {evaluating && (
               <EvaluationLoadingCard

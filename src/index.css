@@ -57,6 +57,7 @@
     color: var(--ink-primary);
     line-height: 1.6;
     overflow-x: clip;
+    overscroll-behavior-y: none;
   }
 
   [data-theme="dark"] body,
@@ -1188,6 +1189,60 @@
 
 .safe-area-pb {
   padding-bottom: max(0.75rem, env(safe-area-inset-bottom, 0px));
+}
+
+.mobile-bottom-nav-safe {
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+
+.mobile-main-clearance {
+  padding-bottom: calc(4.5rem + env(safe-area-inset-bottom, 0px));
+}
+
+@media (min-width: 768px) {
+  .mobile-main-clearance {
+    padding-bottom: 0;
+  }
+}
+
+.mobile-floating-clearance {
+  bottom: calc(4.25rem + env(safe-area-inset-bottom, 0px));
+}
+
+@media (min-width: 768px) {
+  .mobile-floating-clearance {
+    bottom: 1.25rem;
+  }
+}
+
+@keyframes mobileSheetUp {
+  from {
+    opacity: 0;
+    transform: translate3d(0, 20px, 0);
+  }
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0);
+  }
+}
+
+.mobile-sheet-panel {
+  animation: mobileSheetUp 230ms var(--ease-out-expo) both;
+}
+
+@media (min-width: 640px) {
+  .mobile-sheet-panel {
+    animation: surfaceEnter var(--dur-normal) var(--ease-out-expo) both;
+  }
+}
+
+/* Prevent iOS Safari auto-zoom on focused form inputs on mobile screens */
+@media (max-width: 767px) {
+  input.input-tactile:not([type="checkbox"]):not([type="radio"]),
+  textarea.input-tactile,
+  select.input-tactile {
+    font-size: 16px;
+  }
 }
 
 /* Reduced Motion Compliance */

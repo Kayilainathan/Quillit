@@ -140,6 +140,7 @@ import {
   findTimeCapsuleCandidate,
 } from '../utils/timeCapsule';
 import { playTactileClick } from '../utils/tactileSound';
+import { formatMobileStudioSummary } from '../utils/mobileViewport';
 
 const AUDIENCE_OPTIONS: AudienceOption[] = [
   'Interviewer',
@@ -316,6 +317,7 @@ export function WriteStudio({
   const [sprintRunning, setSprintRunning] = useState(false);
   const [sprintAutoPaused, setSprintAutoPaused] = useState(false);
   const [showPrevRoundsDrawer, setShowPrevRoundsDrawer] = useState(false);
+  const [mobileControlsOpen, setMobileControlsOpen] = useState(false);
   const evalAsideRef = useRef<HTMLElement | null>(null);
 
   // Post-Evaluation 3s Smart Clear & Non-Destructive Undo State
@@ -1983,7 +1985,7 @@ export function WriteStudio({
           )}
         </div>
 
-        <div className="flex flex-nowrap sm:flex-wrap items-center gap-1.5 sm:gap-2 w-full sm:w-auto overflow-x-auto scrollbar-none scroll-smooth-touch pb-0.5 sm:pb-0">
+        <div className="flex flex-wrap items-center gap-1.5 sm:gap-2 w-full sm:w-auto">
           {!focusMode && (
             <button
               type="button"
@@ -1991,7 +1993,7 @@ export function WriteStudio({
               onClick={handleSuggestRandomTopic}
               disabled={suggestingTopic}
               title="Pick a fresh, non-repeating random topic to write on"
-              className="btn-secondary inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium whitespace-nowrap"
+              className="btn-secondary inline-flex items-center gap-1.5 min-h-[38px] sm:min-h-0 px-2.5 sm:px-3 py-1.5 sm:py-2 text-xs font-medium whitespace-nowrap"
             >
               {suggestingTopic ? (
                 <Sparkles
@@ -2001,7 +2003,10 @@ export function WriteStudio({
               ) : (
                 <Dices className="w-3.5 h-3.5 text-ink-secondary" aria-hidden="true" />
               )}
-              <span>
+              <span className="sm:hidden">
+                {suggestingTopic ? 'Picking...' : 'Topic'}
+              </span>
+              <span className="hidden sm:inline">
                 {suggestingTopic ? 'Picking...' : 'Random Topic'}
               </span>
             </button>
@@ -2013,7 +2018,7 @@ export function WriteStudio({
               data-testid="quick-add-vocab-button"
               onClick={() => setShowQuickAddVocab(true)}
               title="Quickly save a new word and definition to your vocabulary bank"
-              className="btn-secondary inline-flex items-center gap-1.5 px-2.5 py-2 text-xs font-medium whitespace-nowrap"
+              className="btn-secondary inline-flex items-center gap-1.5 min-h-[38px] sm:min-h-0 px-2.5 py-1.5 sm:py-2 text-xs font-medium whitespace-nowrap"
             >
               <BookmarkPlus className="w-3.5 h-3.5 text-ink-secondary" aria-hidden="true" />
               <span>Quick Add</span>
@@ -2026,7 +2031,7 @@ export function WriteStudio({
               data-testid="drafts-toggle-button"
               onClick={() => setShowDraftsShelf((v) => !v)}
               aria-expanded={showDraftsShelf}
-              className={`inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium whitespace-nowrap ${
+              className={`inline-flex items-center gap-1.5 min-h-[38px] sm:min-h-0 px-2.5 sm:px-3 py-1.5 sm:py-2 text-xs font-medium whitespace-nowrap ${
                 showDraftsShelf ? 'btn-primary' : 'btn-secondary'
               }`}
             >
@@ -2292,12 +2297,49 @@ export function WriteStudio({
           }
         >
           <div className="card-surface overflow-hidden">
-            {/* Top Mode, Audience & Tone Ribbon */}
+            {/* Top Mode, Audience & Tone Ribbon (Auto-Collapsible on Mobile) */}
             {!focusMode && !activeLinkedSlot && (
               <div
                 data-faded={chromeFaded ? 'true' : 'false'}
-                className="vanishing-chrome px-3 sm:px-5 py-2.5 sm:py-3 border-b border-border-subtle bg-subtle/55 space-y-2"
+                className="vanishing-chrome px-3 sm:px-5 py-2 sm:py-3 border-b border-border-subtle bg-subtle/55 space-y-2"
               >
+                {/* Mobile-only 1-Line Studio Setup Summary + Expand Toggle */}
+                <div className="flex sm:hidden items-center justify-between gap-2 min-w-0">
+                  <div className="flex items-center gap-1.5 min-w-0 text-xs">
+                    <span className="font-medium text-ink-primary truncate">
+                      {formatMobileStudioSummary({
+                        modeLabel: MODE_LABELS[mode],
+                        drillLabel:
+                          DRILL_OPTIONS.find((d) => d.id === activeDrill)?.label ??
+                          'Standard',
+                        toneLabel: TONE_LABELS[tone],
+                        constraintShortLabel: activeConstraint?.shortLabel ?? null,
+                        flowLockActive,
+                      })}
+                    </span>
+                  </div>
+                  <button
+                    type="button"
+                    data-testid="mobile-studio-options-toggle"
+                    aria-expanded={mobileControlsOpen}
+                    onClick={() => {
+                      playTactileClick(tactileSoundEnabled);
+                      setMobileControlsOpen((v) => !v);
+                    }}
+                    className={`inline-flex items-center gap-1.5 min-h-[36px] px-2.5 py-1 text-xs font-medium whitespace-nowrap shrink-0 ${
+                      mobileControlsOpen ? 'btn-primary' : 'btn-secondary'
+                    }`}
+                  >
+                    <SlidersHorizontal className="w-3.5 h-3.5" aria-hidden="true" />
+                    <span>{mobileControlsOpen ? 'Done' : 'Options'}</span>
+                  </button>
+                </div>
+
+                <div
+                  className={`${
+                    mobileControlsOpen ? 'flex drawer-reveal' : 'hidden sm:flex'
+                  } flex-col gap-2 min-w-0`}
+                >
                 <div className="flex flex-col sm:flex-row sm:flex-wrap sm:items-center justify-between gap-2 min-w-0">
                   <div
                     role="tablist"
@@ -2497,6 +2539,7 @@ export function WriteStudio({
                     onClose={() => setShowConstraintPicker(false)}
                   />
                 )}
+                </div>
               </div>
             )}
 
@@ -2990,7 +3033,7 @@ export function WriteStudio({
                     }
                   }}
                   placeholder="Give your draft a title (or leave blank to auto-title)..."
-                  className="w-full font-display text-xl sm:text-2xl leading-snug font-medium bg-transparent text-ink-primary placeholder:text-ink-muted focus:outline-none resize-none overflow-hidden"
+                  className="w-full font-display text-lg sm:text-2xl leading-snug font-medium bg-transparent text-ink-primary placeholder:text-ink-muted focus:outline-none resize-none overflow-hidden"
                 />
               </div>
 
@@ -3424,13 +3467,13 @@ export function WriteStudio({
                   )}
                 </div>
 
-                <div className="flex flex-wrap items-center gap-2">
+                <div className="grid grid-cols-2 sm:flex sm:flex-wrap items-center gap-2 w-full sm:w-auto">
                   {onSaveDraft && (
                     <button
                       type="button"
                       data-testid="save-draft-button"
                       onClick={handleSaveDraftClick}
-                      className="btn-secondary inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium whitespace-nowrap"
+                      className="btn-secondary inline-flex items-center justify-center gap-1.5 min-h-[44px] sm:min-h-0 px-3 py-2 text-xs font-medium whitespace-nowrap"
                     >
                       <Save className="w-3.5 h-3.5" aria-hidden="true" />
                       <span>Save Draft</span>
@@ -3442,7 +3485,9 @@ export function WriteStudio({
                     data-testid="evaluate-score-button"
                     onClick={() => handleEvaluateDraft(false)}
                     disabled={evaluating}
-                    className="btn-primary inline-flex items-center gap-1.5 px-4 py-2 text-xs font-medium whitespace-nowrap"
+                    className={`btn-primary inline-flex items-center justify-center gap-1.5 min-h-[44px] sm:min-h-0 px-4 py-2 text-xs font-medium whitespace-nowrap ${
+                      !onSaveDraft ? 'col-span-2' : ''
+                    }`}
                   >
                     <Sparkles
                       className={`w-3.5 h-3.5 ${evaluating ? 'animate-pulse' : ''}`}
@@ -3650,7 +3695,7 @@ export function WriteStudio({
         <div
           role="status"
           data-testid="quick-add-vocab-toast"
-          className="fixed bottom-5 right-5 z-40 inline-flex items-center gap-2 px-3.5 py-2 rounded-md border border-status-success-border bg-surface text-xs text-ink-primary shadow-md"
+          className="fixed mobile-floating-clearance right-3 sm:right-5 z-40 inline-flex items-center gap-2 px-3.5 py-2 rounded-md border border-status-success-border bg-surface text-xs text-ink-primary shadow-md"
         >
           <CheckCircle2
             className="w-3.5 h-3.5 text-status-success shrink-0"

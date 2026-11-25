@@ -33,9 +33,13 @@ export function WorkspaceSyncConfirmModal({
       role="dialog"
       aria-modal="true"
       aria-labelledby="workspace-sync-confirm-title"
-      className="modal-scrim fixed inset-0 z-50 flex items-center justify-center p-4"
+      className="modal-scrim fixed inset-0 z-50 flex items-end sm:items-center justify-center p-0 sm:p-4"
     >
-      <div className="modal-panel max-w-md w-full p-6 space-y-5">
+      <div className="modal-panel mobile-sheet-panel max-w-md w-full max-h-[92dvh] overflow-y-auto rounded-b-none rounded-t-2xl sm:rounded-2xl p-5 sm:p-6 safe-area-pb space-y-5">
+        <div
+          className="sm:hidden w-10 h-1 rounded-full bg-border-strong/80 mx-auto -mt-1 mb-1"
+          aria-hidden="true"
+        />
         <div className="flex items-start justify-between gap-4">
           <div className="space-y-1">
             <div className="inline-flex items-center gap-1.5 text-[11px] font-mono-tabular uppercase tracking-wider text-ink-muted">

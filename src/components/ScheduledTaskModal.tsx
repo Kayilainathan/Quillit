@@ -300,9 +300,13 @@ export function ScheduledTaskModal({
       role="dialog"
       aria-modal="true"
       aria-labelledby="scheduled-popup-title"
-      className="modal-scrim fixed inset-0 z-50 flex items-center justify-center p-4"
+      className="modal-scrim fixed inset-0 z-50 flex items-end sm:items-center justify-center p-0 sm:p-4"
     >
-      <div className="modal-panel max-w-2xl w-full max-h-[90vh] overflow-y-auto p-6 space-y-4">
+      <div className="modal-panel mobile-sheet-panel max-w-2xl w-full max-h-[92dvh] sm:max-h-[90vh] rounded-b-none rounded-t-2xl sm:rounded-2xl overflow-y-auto p-5 sm:p-6 safe-area-pb space-y-4">
+        <div
+          className="sm:hidden w-10 h-1 rounded-full bg-border-strong/80 mx-auto -mt-1 mb-1"
+          aria-hidden="true"
+        />
         <div className="flex items-start justify-between gap-4">
           <div className="flex-1 min-w-0">
             <div className="text-xs text-ink-muted font-medium font-mono-tabular">
