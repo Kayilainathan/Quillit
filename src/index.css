@@ -1033,37 +1033,10 @@
   transition: background-color 140ms var(--ease-snappy);
 }
 
-.vault-latch-track {
-  position: relative;
-  display: inline-flex;
-  align-items: center;
-  width: 34px;
-  height: 18px;
-  border-radius: var(--radius-full);
-  background-color: var(--bg-subtle);
-  border: 1px solid var(--border-default);
-  transition:
-    background-color var(--dur-instant) var(--ease-snappy),
-    border-color var(--dur-instant) var(--ease-snappy);
-}
-
-.vault-latch-track[data-latched="true"] {
-  background-color: var(--accent);
-  border-color: var(--accent);
-}
-
-.vault-latch-thumb {
-  width: 12px;
-  height: 12px;
-  border-radius: var(--radius-full);
-  background-color: var(--bg-surface);
-  box-shadow: var(--shadow-sm);
-  transform: translateX(2px);
-  transition: transform var(--dur-instant) var(--ease-snappy);
-}
-
-.vault-latch-track[data-latched="true"] .vault-latch-thumb {
-  transform: translateX(18px);
+.popup-glass-surface {
+  background-color: color-mix(in srgb, var(--bg-elevated) 92%, transparent);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
 }
 
 /* ==========================================================================
@@ -1121,11 +1094,11 @@
 }
 
 .editorial-enter {
-  animation: editorialEnter 260ms var(--ease-out-expo) both;
+  animation: editorialEnter 280ms var(--ease-out-expo) both;
 }
 
 .drawer-reveal {
-  animation: drawerReveal 210ms var(--ease-out-expo) both;
+  animation: drawerReveal 240ms var(--ease-out-expo) both;
 }
 
 .tab-indicator-slide {
@@ -1159,7 +1132,7 @@
 @keyframes postEvalPopupEnter {
   0% {
     opacity: 0;
-    transform: translate3d(0, 14px, 0) scale(0.975);
+    transform: translate3d(0, 16px, 0) scale(0.968);
   }
   100% {
     opacity: 1;
@@ -1168,7 +1141,7 @@
 }
 
 .post-eval-popup-enter {
-  animation: postEvalPopupEnter 260ms var(--ease-out-expo) both;
+  animation: postEvalPopupEnter 290ms var(--ease-out-expo) both;
 }
 
 /* Smooth momentum touch scrolling & quiet hidden scrollbars for mobile strips */
@@ -1245,6 +1218,367 @@
   }
 }
 
+/* Writing-Inspired Add-On Micro-Animations (Compositor-Only) */
+@keyframes inkNibBreathe {
+  0%, 100% {
+    transform: translateY(0) rotate(0deg);
+  }
+  50% {
+    transform: translateY(-1px) rotate(-8deg);
+  }
+}
+
+@keyframes clueWovenCheck {
+  0% {
+    opacity: 0;
+    transform: scale(0.65);
+  }
+  70% {
+    opacity: 1;
+    transform: scale(1.12);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+.ink-nib-breathe {
+  animation: inkNibBreathe 2.4s ease-in-out infinite;
+}
+
+.clue-woven-check {
+  animation: clueWovenCheck 220ms var(--ease-out-expo) both;
+}
+
+.ink-glide-underline {
+  will-change: transform, opacity;
+  transition:
+    transform 230ms cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 150ms ease-out;
+}
+
+.ink-glide-foil {
+  will-change: transform, width, opacity;
+  transition:
+    transform 240ms cubic-bezier(0.22, 1, 0.36, 1),
+    width 240ms cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 150ms ease-out;
+}
+
+.ink-stream-line {
+  position: relative;
+  overflow: hidden;
+}
+
+.ink-stream-line::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  width: 35%;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    color-mix(in srgb, var(--ink-inverse) 55%, transparent),
+    transparent
+  );
+  animation: inkShimmerSweep 2.1s linear infinite;
+}
+
+/* Smooth Calm Session Header Collapse (Writing-Inspired Motion) */
+.session-header-collapse {
+  display: grid;
+  grid-template-rows: 1fr;
+  opacity: 1;
+  transition:
+    grid-template-rows 300ms cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 220ms ease-out,
+    margin 300ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.session-header-collapse[data-collapsed="true"] {
+  grid-template-rows: 0fr;
+  opacity: 0;
+  margin-top: 0;
+  margin-bottom: 0;
+  pointer-events: none;
+}
+
+.session-header-collapse > div {
+  overflow: hidden;
+}
+
+/* Horological Circular Ink-Dial Timer (4/3/2 Sprint) */
+@keyframes inkDialAura {
+  0%, 100% {
+    opacity: 0.22;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.5;
+    transform: scale(1.045);
+  }
+}
+
+.ink-dial-arc {
+  transition: stroke-dashoffset 940ms linear;
+}
+
+.ink-dial-arc-snappy {
+  transition: stroke-dashoffset 460ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.ink-dial-sweep-hand {
+  transform-box: fill-box;
+  transform-origin: 26px 26px;
+  transition: transform 940ms linear;
+}
+
+.ink-dial-pulse {
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: inkDialAura 2.4s ease-in-out infinite;
+}
+
+/* Subtle Awaiting AI Evaluation Ink Ripple Indicator */
+@keyframes awaitingInkSweep {
+  0% {
+    transform: rotate(0deg);
+  }
+  100% {
+    transform: rotate(360deg);
+  }
+}
+
+.awaiting-ink-spinner {
+  animation: awaitingInkSweep 1.6s linear infinite;
+}
+
+/* Subtle Typing-Driven Writing Flow Pulse & 3-Stroke Ink Cadence Bars */
+@keyframes typingFlowRipple {
+  0% {
+    transform: scale(0.6);
+    opacity: 0.62;
+  }
+  100% {
+    transform: scale(1.9);
+    opacity: 0;
+  }
+}
+
+@keyframes typingFlowBreathe {
+  0%, 100% {
+    transform: scale(1);
+    opacity: 0.85;
+  }
+  50% {
+    transform: scale(1.18);
+    opacity: 1;
+  }
+}
+
+@keyframes wpmCadenceStroke {
+  0%, 100% {
+    transform: scaleY(0.42);
+    opacity: 0.65;
+  }
+  50% {
+    transform: scaleY(1);
+    opacity: 1;
+  }
+}
+
+.typing-flow-ripple {
+  animation: typingFlowRipple 480ms cubic-bezier(0.22, 1, 0.36, 1) forwards;
+}
+
+.typing-flow-core {
+  animation: typingFlowBreathe 1.4s ease-in-out infinite;
+}
+
+.wpm-cadence-bar {
+  transform-origin: bottom center;
+  transition: transform 220ms cubic-bezier(0.22, 1, 0.36, 1), opacity 180ms ease;
+}
+
+.wpm-cadence-bar-active {
+  animation: wpmCadenceStroke 860ms ease-in-out infinite;
+}
+
+.wpm-cadence-bar-2 {
+  animation-delay: 150ms;
+}
+
+.wpm-cadence-bar-3 {
+  animation-delay: 300ms;
+}
+
+/* 4/3/2 Compression Sprint: Clean Minimal 1 -> 2 -> 3 Choreography */
+@keyframes sprintNodeArrive {
+  0% {
+    transform: scale(0.84);
+    opacity: 0.65;
+  }
+  65% {
+    transform: scale(1.06);
+    opacity: 1;
+  }
+  100% {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+
+@keyframes sprintNodeHalo {
+  0% {
+    transform: scale(0.92);
+    opacity: 0.55;
+  }
+  100% {
+    transform: scale(1.55);
+    opacity: 0;
+  }
+}
+
+@keyframes sprintCheckSettle {
+  0% {
+    transform: scale(0.6) rotate(-14deg);
+    opacity: 0;
+  }
+  100% {
+    transform: scale(1) rotate(0deg);
+    opacity: 1;
+  }
+}
+
+@keyframes sprintStageGlide {
+  0% {
+    opacity: 0;
+    transform: translate3d(14px, 0, 0);
+  }
+  100% {
+    opacity: 1;
+    transform: translate3d(0, 0, 0);
+  }
+}
+
+@keyframes sprintDialReset {
+  0% {
+    transform: scale(0.94);
+    opacity: 0.72;
+  }
+  100% {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+
+.sprint-connector-fill {
+  transform-origin: left center;
+  transition: transform 420ms cubic-bezier(0.22, 1, 0.36, 1);
+  will-change: transform;
+}
+
+.sprint-node-arrive {
+  animation: sprintNodeArrive 320ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.sprint-node-halo {
+  animation: sprintNodeHalo 560ms cubic-bezier(0.22, 1, 0.36, 1) forwards;
+}
+
+.sprint-check-settle {
+  animation: sprintCheckSettle 260ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.sprint-stage-glide {
+  animation: sprintStageGlide 320ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.sprint-dial-reset {
+  animation: sprintDialReset 340ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+/* Redesigned Daily Goal Folio Gauge Motion */
+.daily-folio-ring-arc {
+  transition: stroke-dashoffset 480ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.daily-folio-bar {
+  transform-origin: left center;
+  transition: transform 420ms cubic-bezier(0.22, 1, 0.36, 1);
+  will-change: transform;
+}
+
+@keyframes dailyGoalSweepOnce {
+  0% {
+    transform: translateX(-100%);
+    opacity: 0;
+  }
+  30% {
+    opacity: 0.55;
+  }
+  100% {
+    transform: translateX(220%);
+    opacity: 0;
+  }
+}
+
+.daily-goal-sheen {
+  animation: dailyGoalSweepOnce 900ms cubic-bezier(0.22, 1, 0.36, 1) forwards;
+}
+
+/* Skeleton Reconstruction Studio: Curtain Fold & Phase Glide Choreography */
+@keyframes skeletonPhaseEnter {
+  0% {
+    opacity: 0;
+    transform: translate3d(0, 6px, 0);
+  }
+  100% {
+    opacity: 1;
+    transform: translate3d(0, 0, 0);
+  }
+}
+
+@keyframes skeletonCurtainFold {
+  0% {
+    opacity: 0;
+    transform: translate3d(0, -8px, 0) scaleY(0.96);
+  }
+  100% {
+    opacity: 1;
+    transform: translate3d(0, 0, 0) scaleY(1);
+  }
+}
+
+@keyframes skeletonCompareReveal {
+  0% {
+    opacity: 0;
+    transform: translate3d(0, 10px, 0) scale(0.985);
+  }
+  100% {
+    opacity: 1;
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+}
+
+.skeleton-phase-enter {
+  animation: skeletonPhaseEnter 260ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.skeleton-curtain-enter {
+  transform-origin: top center;
+  animation: skeletonCurtainFold 280ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.skeleton-compare-reveal {
+  animation: skeletonCompareReveal 300ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.skeleton-step-arrive {
+  animation: sprintNodeArrive 280ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
 /* Reduced Motion Compliance */
 @media (prefers-reduced-motion: reduce) {
   *,
@@ -1297,7 +1631,25 @@
   .tab-indicator-slide,
   .ink-progress-shimmer::after,
   .quote-highlight-mark,
-  .post-eval-popup-enter {
+  .post-eval-popup-enter,
+  .ink-nib-breathe,
+  .clue-woven-check,
+  .ink-stream-line::after,
+  .ink-dial-pulse,
+  .awaiting-ink-spinner,
+  .typing-flow-ripple,
+  .typing-flow-core,
+  .wpm-cadence-bar-active,
+  .sprint-node-arrive,
+  .sprint-node-halo,
+  .sprint-check-settle,
+  .sprint-stage-glide,
+  .sprint-dial-reset,
+  .daily-goal-sheen,
+  .skeleton-phase-enter,
+  .skeleton-curtain-enter,
+  .skeleton-compare-reveal,
+  .skeleton-step-arrive {
     transform: none !important;
     animation: none !important;
   }

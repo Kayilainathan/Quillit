@@ -1,7 +1,10 @@
 import { Router } from 'express';
 import { Type } from '@google/genai';
 import {
-  pickOfflineSkeletonPassage,
+  extractSentenceSkeletonClues,
+  findBestTopicSkeletonPassage,
+  getInitialSkeletonClues,
+  isCustomUserTopic,
   type SkeletonPassage,
 } from '../../src/utils/skeletonDrill';
 import {
@@ -18,8 +21,10 @@ export function createDrillsRouter(): Router {
 
   /**
    * POST /api/skeleton-passage
-   * Generates a crisp 4-sentence master passage + 4-word skeleton clues + rhetorical moves
-   * using the Flash Lite-first 5-generation cascade (15s timeout) with 12-passage offline bank fallback.
+   * Generates a crisp 3–4 sentence Benjamin Franklin master passage adapted to the user's
+   * active topic & writing mode, plus 1 concise structural keyword clue per sentence (max 4 words)
+   * and 3 signature verb/cadence moves.
+   * Preserves PSR-10 Flash Lite-first 5-generation cascade (15s timeout) with topic-matched offline fallback.
    */
   router.post('/api/skeleton-passage', async (req, res) => {
     const requestId = createRequestId();
@@ -27,9 +32,14 @@ export function createDrillsRouter(): Router {
     const parsedReq = SkeletonPassageRequestSchema.safeParse(req.body ?? {});
 
     const mode = parsedReq.success ? parsedReq.data.mode : 'technical';
+    const rawTopic = parsedReq.success ? parsedReq.data.topic : '';
     const focusTheme = parsedReq.success ? parsedReq.data.focusTheme : '';
+    const domainFilter = parsedReq.success ? parsedReq.data.domain : 'all';
     const excludeIds = parsedReq.success ? parsedReq.data.excludeIds : [];
     const studentProfile = parsedReq.success ? parsedReq.data.studentProfile : undefined;
+
+    const activeTopic = (rawTopic || focusTheme || '').trim();
+    const hasTopic = isCustomUserTopic(activeTopic);
 
     const studentDescriptor =
       studentProfile && typeof studentProfile.collegeDegree === 'string'
@@ -37,9 +47,10 @@ export function createDrillsRouter(): Router {
         : 'Electronics & Instrumentation Engineering student practicing crisp spoken English';
 
     const nonce = `${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
-    const cacheKey = makeCacheKey('skeleton-passage-v1', {
+    const cacheKey = makeCacheKey('skeleton-passage-v2', {
       mode,
-      focusTheme,
+      domainFilter,
+      activeTopic,
       nonce,
     });
 
@@ -54,16 +65,21 @@ export function createDrillsRouter(): Router {
           complexityMetric: 45,
           contents: `Generate ONE Benjamin Franklin Skeleton Reconstruction master passage for a ${studentDescriptor}.
 Mode: ${mode}
-Focus theme: ${focusTheme || 'real-world engineering clarity, builder reflection, or vivid storytelling'}
+Style lens: ${domainFilter === 'all' ? mode : domainFilter}
+${
+  hasTopic
+    ? `Required Topic (write the passage DIRECTLY about this exact subject): "${activeTopic}"`
+    : `Focus theme: ${focusTheme || 'real-world engineering clarity, builder reflection, or vivid storytelling'}`
+}
 Seed: ${nonce}`,
           systemInstruction:
-            'Craft ONE masterfully written 4-sentence English passage (42–65 words total) with crisp active verbs, natural spoken rhythm, and a punchy closing beat. Also return: title (4–8 words), suggestedClues (exactly 4 clues, each <= 4 words, capturing the structural spine without giving away verbatim phrasing), and signatureMoves (3 memorable verb phrases from the passage). Zero thesaurus-slop, zero em-dashes.',
+            'Craft ONE masterfully written 3 to 4 sentence English passage (42–68 words total) with crisp active verbs, natural spoken rhythm, concrete detail, and a punchy closing beat. If a Required Topic is given, the passage MUST explain or illuminate that exact topic concretely. Also return: title (4–8 words), sentenceClues (EXACTLY 1 structural keyword hint per sentence in order, each 2–4 words max, capturing the core causal/structural beat of that sentence without copying full clauses), and signatureMoves (3 memorable active verb/cadence phrases verbatim from the passage). Zero thesaurus-slop, zero em-dashes.',
           responseSchema: {
             type: Type.OBJECT,
             properties: {
               title: { type: Type.STRING },
               text: { type: Type.STRING },
-              suggestedClues: {
+              sentenceClues: {
                 type: Type.ARRAY,
                 items: { type: Type.STRING },
               },
@@ -72,19 +88,21 @@ Seed: ${nonce}`,
                 items: { type: Type.STRING },
               },
             },
-            required: ['title', 'text', 'suggestedClues', 'signatureMoves'],
+            required: ['title', 'text', 'sentenceClues', 'signatureMoves'],
           },
         });
 
       const title = String(parsed.title || '').trim();
       const text = String(parsed.text || '').trim();
-      const suggestedClues = Array.isArray(parsed.suggestedClues)
-        ? parsed.suggestedClues
+      const rawSentenceClues = Array.isArray(parsed.sentenceClues)
+        ? parsed.sentenceClues
             .slice(0, 4)
             .map((c) =>
               String(c || '')
                 .trim()
+                .replace(/[,;•·]+/g, ' ')
                 .split(/\s+/)
+                .filter(Boolean)
                 .slice(0, 4)
                 .join(' ')
             )
@@ -98,29 +116,40 @@ Seed: ${nonce}`,
         throw new Error('Generated skeleton passage too brief');
       }
 
-      const domain: SkeletonPassage['domain'] =
-        mode === 'linkedin'
-          ? 'linkedin'
-          : mode === 'email'
-            ? 'email'
-            : mode === 'creative'
-              ? 'creative'
-              : 'technical';
+      const sentenceClues =
+        rawSentenceClues.length >= 2
+          ? rawSentenceClues
+          : extractSentenceSkeletonClues(text, 4);
+
+      const resolvedDomain: SkeletonPassage['domain'] =
+        domainFilter !== 'all'
+          ? domainFilter
+          : mode === 'linkedin'
+            ? 'linkedin'
+            : mode === 'email'
+              ? 'email'
+              : mode === 'creative'
+                ? 'creative'
+                : 'technical';
 
       const passage: SkeletonPassage = {
         id: `skel-ai-${requestId}`,
-        title: title || 'Master Cadence Passage',
-        domain,
+        title: title || (hasTopic ? activeTopic.slice(0, 64) : 'Master Cadence Passage'),
+        domain: resolvedDomain,
         mode,
         text,
         wordCount: text.split(/\s+/).filter(Boolean).length,
+        sentenceClues,
         signatureMoves,
+        adaptedToTopic: hasTopic ? activeTopic : undefined,
       };
 
       res.json({
         ok: true,
         passage,
-        suggestedClues,
+        suggestedClues: sentenceClues,
+        sentenceClues,
+        adaptedToTopic: hasTopic ? activeTopic : undefined,
         source: 'ai',
         modelUsed,
         thinkingLevelUsed,
@@ -132,24 +161,23 @@ Seed: ${nonce}`,
         },
       });
     } catch {
-      const fallback = pickOfflineSkeletonPassage(mode, excludeIds);
-      const sentences = fallback.text
-        .split(/(?<=[.!?])\s+/)
-        .map((s) => s.trim())
-        .filter(Boolean);
-      const autoClues = sentences.slice(0, 4).map((s) =>
-        s
-          .replace(/[^a-zA-Z0-9\s-]/g, '')
-          .split(/\s+/)
-          .filter((w) => w.length > 2)
-          .slice(0, 4)
-          .join(' ')
-      );
+      const { passage: fallback, topicMatched } = findBestTopicSkeletonPassage({
+        topic: activeTopic,
+        mode,
+        completedIds: excludeIds,
+        domainFilter,
+      });
+      const sentenceClues = getInitialSkeletonClues(fallback);
 
       res.json({
         ok: true,
-        passage: fallback,
-        suggestedClues: autoClues,
+        passage: {
+          ...fallback,
+          sentenceClues,
+        },
+        suggestedClues: sentenceClues,
+        sentenceClues,
+        adaptedToTopic: topicMatched ? activeTopic : undefined,
         source: 'curated-bank',
         modelUsed: 'curated-skeleton-bank',
         thinkingLevelUsed: 'LOCAL',

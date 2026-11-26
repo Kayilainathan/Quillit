@@ -2,6 +2,10 @@ import type { WritingSession } from '../types';
 
 export type InkFillStage = 'empty' | 'starting' | 'flowing' | 'nearing' | 'full';
 
+export const DAILY_WORD_GOAL_PRESETS = [150, 250, 400, 600] as const;
+export const MIN_ADJUSTABLE_WORD_GOAL = 50;
+export const MAX_ADJUSTABLE_WORD_GOAL = 2000;
+
 export interface DailyInkProgressInput {
   todayISO: string;
   sessions: WritingSession[];
@@ -17,14 +21,35 @@ export interface DailyInkProgress {
   totalWordsToday: number;
   goalWords: number;
   ratio: number;
+  /** Fraction (0..1) of the goal already banked in saved sessions today */
+  savedRatio: number;
+  /** Fraction (0..1) of the goal contributed by the current active draft */
+  activeRatio: number;
   percentage: number;
   remainingWords: number;
+  /** Words written beyond the daily target once reached */
+  bonusWords: number;
+  /** Number of 25% folio checkpoints crossed (0..4) */
+  milestonesReached: 0 | 1 | 2 | 3 | 4;
+  /** Completed/draft session entries recorded today (excluding empty drafts) */
+  sessionsTodayCount: number;
   reached: boolean;
   stage: InkFillStage;
 }
 
 const DEFAULT_DAILY_WORD_GOAL = 250;
 const MIN_DAILY_WORD_GOAL = 25;
+
+/**
+ * Clamps a user-adjusted daily word goal to safe, sensible editorial bounds.
+ */
+export function clampDailyWordGoal(value: number): number {
+  if (!Number.isFinite(value)) return DEFAULT_DAILY_WORD_GOAL;
+  return Math.max(
+    MIN_ADJUSTABLE_WORD_GOAL,
+    Math.min(MAX_ADJUSTABLE_WORD_GOAL, Math.round(value))
+  );
+}
 
 /**
  * Computes today's cumulative ink progress toward the writer's daily word goal.
@@ -49,6 +74,7 @@ export function computeDailyInkProgress({
     )
   );
 
+  let sessionsTodayCount = 0;
   const savedWordsToday = sessions.reduce((sum, session) => {
     if (session.date !== todayISO) return sum;
     if (activeDraftId && session.id === activeDraftId) return sum;
@@ -56,6 +82,9 @@ export function computeDailyInkProgress({
     const words = Number.isFinite(session.wordCount)
       ? Math.max(0, Math.round(session.wordCount))
       : 0;
+    if (words > 0) {
+      sessionsTodayCount += 1;
+    }
     return sum + words;
   }, 0);
 
@@ -66,9 +95,22 @@ export function computeDailyInkProgress({
 
   const totalWordsToday = savedWordsToday + activeDraftWords;
   const ratio = Math.min(1, Math.max(0, totalWordsToday / goalWords));
+  const savedRatio = Math.min(1, Math.max(0, savedWordsToday / goalWords));
+  const activeRatio = Math.max(0, Math.min(1 - savedRatio, ratio - savedRatio));
   const percentage = Math.min(100, Math.round(ratio * 100));
   const remainingWords = Math.max(0, goalWords - totalWordsToday);
+  const bonusWords = Math.max(0, totalWordsToday - goalWords);
   const reached = totalWordsToday >= goalWords;
+
+  const milestonesReached: 0 | 1 | 2 | 3 | 4 = reached
+    ? 4
+    : ratio >= 0.75
+      ? 3
+      : ratio >= 0.5
+        ? 2
+        : ratio >= 0.25
+          ? 1
+          : 0;
 
   let stage: InkFillStage = 'empty';
   if (reached) {
@@ -87,27 +129,34 @@ export function computeDailyInkProgress({
     totalWordsToday,
     goalWords,
     ratio,
+    savedRatio,
+    activeRatio,
     percentage,
     remainingWords,
+    bonusWords,
+    milestonesReached,
+    sessionsTodayCount,
     reached,
     stage,
   };
 }
 
 /**
- * Returns calm, pen-and-paper micro-copy describing the current ink well state.
+ * Returns calm, editorial micro-copy describing the current daily goal state.
  */
 export function getInkWellCaption(progress: DailyInkProgress): string {
   switch (progress.stage) {
     case 'empty':
-      return 'Dip your nib to begin filling today\u2019s ink well';
+      return `${progress.goalWords} words planned for today`;
     case 'starting':
-      return 'First ink on the page';
+      return `${progress.remainingWords} ${progress.remainingWords === 1 ? 'word' : 'words'} to go`;
     case 'flowing':
-      return 'Ink flowing steadily';
+      return `${progress.remainingWords} ${progress.remainingWords === 1 ? 'word' : 'words'} remaining`;
     case 'nearing':
       return `${progress.remainingWords} ${progress.remainingWords === 1 ? 'word' : 'words'} to seal today\u2019s goal`;
     case 'full':
-      return 'Daily ink goal reached';
+      return progress.bonusWords > 0
+        ? `Daily goal reached · +${progress.bonusWords} extra`
+        : 'Daily ink goal reached';
   }
 }

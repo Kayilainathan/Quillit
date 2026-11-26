@@ -1,7 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import type { WritingSession } from '../types';
-import { computeTimeCapsuleDelta, findTimeCapsuleCandidate } from './timeCapsule';
+import {
+  computeTimeCapsuleDelta,
+  findTimeCapsuleCandidate,
+  getTimeCapsuleStatus,
+} from './timeCapsule';
 
 function makeSession(overrides: Partial<WritingSession>): WritingSession {
   return {
@@ -56,6 +60,33 @@ test('findTimeCapsuleCandidate prioritizes 30+ day sessions and offers preview a
   assert.ok(preview);
   assert.equal(preview.isFull30Day, false);
   assert.equal(preview.session.id, 'r1');
+});
+
+test('getTimeCapsuleStatus returns natural-language locked progress for new users and unlocked candidates once ready', () => {
+  const emptyStatus = getTimeCapsuleStatus([], '2026-11-23');
+  assert.equal(emptyStatus.state, 'locked');
+  assert.equal(emptyStatus.completedCount, 0);
+  assert.equal(emptyStatus.remainingCount, 3);
+  assert.match(emptyStatus.naturalMessage, /Write 3 completed entries/i);
+
+  const twoSessions = [
+    makeSession({ id: 'r1', date: '2026-11-20' }),
+    makeSession({ id: 'r2', date: '2026-11-21' }),
+  ];
+  const twoStatus = getTimeCapsuleStatus(twoSessions, '2026-11-23');
+  assert.equal(twoStatus.state, 'locked');
+  assert.equal(twoStatus.remainingCount, 1);
+  assert.match(twoStatus.naturalMessage, /Write 1 more entry/i);
+
+  const threeSessions = [
+    ...twoSessions,
+    makeSession({ id: 'r3', date: '2026-11-22', topicDescription: 'Clear technical handover' }),
+  ];
+  const unlocked = getTimeCapsuleStatus(threeSessions, '2026-11-23');
+  assert.equal(unlocked.state, 'ready');
+  assert.ok(unlocked.candidate);
+  assert.equal(unlocked.allEligibleCandidates.length, 3);
+  assert.match(unlocked.naturalMessage, /Unlocked/i);
 });
 
 test('computeTimeCapsuleDelta calculates exact score and percentage growth', () => {

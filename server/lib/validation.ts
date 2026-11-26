@@ -173,6 +173,11 @@ export const SkeletonPassageRequestSchema = z.object({
     .enum(['journal', 'linkedin', 'email', 'friend', 'technical', 'creative'])
     .optional()
     .default('technical'),
+  topic: z.string().max(260).optional().default(''),
+  domain: z
+    .enum(['all', 'technical', 'linkedin', 'email', 'creative'])
+    .optional()
+    .default('all'),
   focusTheme: z.string().max(180).optional().default(''),
   excludeIds: z.array(z.string().max(64)).max(30).optional().default([]),
   studentProfile: z.record(z.string(), z.unknown()).optional(),

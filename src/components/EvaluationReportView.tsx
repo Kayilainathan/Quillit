@@ -36,6 +36,7 @@ import {
 } from '../utils/analytics';
 import { formatDetailedCoachMarkdown } from '../utils/evaluationCalibration';
 import { computeProseDiagnostics } from '../utils/proseDiagnostics';
+import { deriveEieEvaluationMetrics } from '../utils/eieMetrics';
 
 export interface EvaluationReportData {
   topic: string;
@@ -244,6 +245,26 @@ export function EvaluationReportView({
     return localProseDiag?.calqueFixes ?? [];
   }, [report.calqueFixes, localProseDiag]);
 
+  const eieMetrics = useMemo(
+    () =>
+      deriveEieEvaluationMetrics({
+        scores: report.scores,
+        content: draftContent || '',
+        modeLabel: report.modeLabel,
+        spokenReadinessScore,
+        signalNoiseRatio,
+        internationalMetrics: intl,
+      }),
+    [
+      report.scores,
+      draftContent,
+      report.modeLabel,
+      spokenReadinessScore,
+      signalNoiseRatio,
+      intl,
+    ]
+  );
+
   const pinpointedRewrites: PinpointedRewrite[] =
     report.pinpointedRewrites && report.pinpointedRewrites.length > 0
       ? report.pinpointedRewrites
@@ -387,48 +408,76 @@ export function EvaluationReportView({
           </div>
         </div>
 
-        {/* v3.1 High-Signal Diagnostics Strip: Spoken-Readiness · Signal/Noise · Revise & Lift */}
+        {/* EIE 6th-Sem Engineering Readiness Scorecard Strip */}
         <div
           data-testid="high-signal-metrics-strip"
-          className="grid grid-cols-3 divide-x divide-border-subtle border-y border-border-subtle py-2.5 bg-subtle/35 rounded-sm"
+          className="border-y border-border-subtle py-3 bg-subtle/35 rounded-sm space-y-2.5"
         >
-          <div className="px-2.5">
-            <div className="text-[10px] uppercase tracking-[0.05em] text-ink-muted">
-              Spoken-Ready
+          <div className="px-3 flex flex-wrap items-center justify-between gap-2">
+            <div className="text-[11px] font-mono-tabular text-ink-secondary">
+              <span className="font-semibold text-ink-primary">
+                EIE 6th-Sem Readiness
+              </span>
+              <span className="text-ink-muted mx-1.5">·</span>
+              <span
+                className={
+                  eieMetrics.readinessBand === 'Panel Ready'
+                    ? 'text-status-success font-semibold'
+                    : eieMetrics.readinessBand === 'Competitive'
+                      ? 'text-status-info font-semibold'
+                      : 'text-ink-primary font-medium'
+                }
+              >
+                {eieMetrics.readinessBand}
+              </span>
             </div>
-            <div className="font-mono-tabular text-sm font-semibold text-ink-primary mt-0.5">
-              {spokenReadinessScore}%
-            </div>
-          </div>
-          <div className="px-2.5">
-            <div className="text-[10px] uppercase tracking-[0.05em] text-ink-muted">
-              Signal / Noise
-            </div>
-            <div className="font-mono-tabular text-sm font-semibold text-ink-primary mt-0.5">
-              {signalNoiseRatio}%
-            </div>
-          </div>
-          <div className="px-2.5 flex items-center justify-end">
-            {onStartRevision ? (
+
+            {onStartRevision && (
               <button
                 type="button"
                 data-testid="revise-and-lift-button"
                 onClick={onStartRevision}
-                className="btn-secondary inline-flex items-center gap-1 px-2.5 py-1.5 text-[11px] font-medium whitespace-nowrap"
+                className="btn-secondary inline-flex items-center gap-1 px-2.5 py-1 text-[11px] font-medium whitespace-nowrap"
               >
                 <RotateCw className="w-3 h-3" aria-hidden="true" />
                 <span>Revise &amp; Lift</span>
               </button>
-            ) : (
-              <div className="text-right">
-                <div className="text-[10px] uppercase tracking-[0.05em] text-ink-muted">
-                  Audience
-                </div>
-                <div className="text-xs font-medium text-ink-primary mt-0.5 truncate">
-                  {report.audience || 'General'}
-                </div>
-              </div>
             )}
+          </div>
+
+          <div className="grid grid-cols-3 divide-x divide-border-subtle pt-1 border-t border-border-subtle/60">
+            <div className="px-3 pt-1">
+              <div className="text-[10px] text-ink-muted">Panel Ready</div>
+              <div
+                data-testid="eie-metric-panel-ready"
+                className="font-mono-tabular text-sm font-semibold text-ink-primary mt-0.5"
+              >
+                {eieMetrics.placementPanelScore}%
+              </div>
+            </div>
+            <div className="px-3 pt-1">
+              <div className="text-[10px] text-ink-muted">Tech Clarity</div>
+              <div
+                data-testid="eie-metric-tech-clarity"
+                className="font-mono-tabular text-sm font-semibold text-ink-primary mt-0.5"
+              >
+                {eieMetrics.technicalClarityScore}%
+              </div>
+            </div>
+            <div className="px-3 pt-1">
+              <div className="text-[10px] text-ink-muted">IEEE Polish</div>
+              <div
+                data-testid="eie-metric-ieee-polish"
+                className="font-mono-tabular text-sm font-semibold text-ink-primary mt-0.5"
+              >
+                {eieMetrics.ieeeDocPolishScore}%
+              </div>
+            </div>
+          </div>
+
+          <div className="px-3 pt-1.5 border-t border-border-subtle/50 text-[11px] text-ink-secondary leading-relaxed">
+            <span className="font-medium text-ink-primary">Next lever: </span>
+            {eieMetrics.focusLever}
           </div>
         </div>
 
@@ -508,15 +557,18 @@ export function EvaluationReportView({
                 </div>
               )}
 
-            {/* Time Capsule Past You vs Today You Unsealed Drawer */}
+            {/* Time Capsule Past vs Today Writing Aesthetics Comparison */}
             {report.drillType === 'time-capsule' &&
               report.drillMeta?.timeCapsuleOriginScore !== undefined && (
-                <div className="pt-2 border-t border-border-subtle space-y-2">
+                <div
+                  data-testid="time-capsule-comparison-card"
+                  className="pt-2.5 border-t border-border-subtle space-y-2.5"
+                >
                   <div className="flex flex-wrap items-center justify-between gap-2 font-mono-tabular text-[11px]">
                     <span className="text-ink-secondary inline-flex items-center gap-1.5">
-                      <History className="w-3.5 h-3.5" aria-hidden="true" />
+                      <History className="w-3.5 h-3.5 text-ink-primary" aria-hidden="true" />
                       <span>
-                        Past You ({report.drillMeta.timeCapsuleOriginDate || 'earlier'}):{' '}
+                        Past ({report.drillMeta.timeCapsuleOriginDate || 'earlier'}):{' '}
                         <strong className="text-ink-primary">
                           {report.drillMeta.timeCapsuleOriginScore}/60
                         </strong>
@@ -539,20 +591,36 @@ export function EvaluationReportView({
                     </span>
                   </div>
                   {report.drillMeta.timeCapsuleOriginText && (
-                    <div>
+                    <div className="space-y-2">
                       <button
                         type="button"
+                        data-testid="toggle-capsule-comparison"
                         onClick={() => setShowPastCapsuleDraft((v) => !v)}
                         className="inline-link-tactile text-[11px] font-medium cursor-pointer"
                       >
                         {showPastCapsuleDraft
-                          ? 'Hide Past Draft'
-                          : 'Unseal Original Draft'}
+                          ? 'Hide Side-by-Side Comparison'
+                          : 'Compare Past Draft vs. Today’s Rewrite'}
                       </button>
                       {showPastCapsuleDraft && (
-                        <p className="mt-2 p-2.5 rounded-sm bg-subtle text-[11px] text-ink-secondary leading-relaxed whitespace-pre-wrap">
-                          {report.drillMeta.timeCapsuleOriginText}
-                        </p>
+                        <div className="drawer-reveal grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                          <div className="p-3 rounded-md bg-subtle/70 border border-border-subtle space-y-1">
+                            <div className="text-[10px] font-mono-tabular uppercase tracking-[0.04em] text-ink-muted">
+                              Past Draft · {report.drillMeta.timeCapsuleOriginDate || 'Earlier'}
+                            </div>
+                            <p className="text-[11px] text-ink-secondary leading-relaxed whitespace-pre-wrap">
+                              {report.drillMeta.timeCapsuleOriginText}
+                            </p>
+                          </div>
+                          <div className="p-3 rounded-md bg-surface border border-border-default space-y-1">
+                            <div className="text-[10px] font-mono-tabular uppercase tracking-[0.04em] text-ink-primary">
+                              Today’s Rewrite · {totalScore}/60
+                            </div>
+                            <p className="text-[11px] text-ink-primary leading-relaxed whitespace-pre-wrap">
+                              {draftContent || '(Current rewrite)'}
+                            </p>
+                          </div>
+                        </div>
                       )}
                     </div>
                   )}

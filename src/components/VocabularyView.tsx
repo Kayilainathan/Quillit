@@ -1,7 +1,9 @@
-import { useEffect, useMemo, useState, type FormEvent } from 'react';
+import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import {
+  ArrowRight,
   BookMarked,
   Check,
+  PenLine,
   Plus,
   RotateCw,
   Search,
@@ -23,6 +25,7 @@ import {
   computeVocabularyMasteryMap,
   type VocabMasterySummary,
 } from '../utils/vocabMastery';
+import { useSlidingInkIndicator } from './write-addons/useSlidingInkIndicator';
 
 interface VocabularyViewProps {
   vocabulary: VocabEntry[];
@@ -32,9 +35,11 @@ interface VocabularyViewProps {
   onToggleMastered: (id: string) => void;
   onDeleteVocab: (id: string) => void;
   onCategorizeWithAI?: () => Promise<{ updatedCount: number; usedAI: boolean }>;
+  onPracticeWordInWrite?: (word: string) => void;
 }
 
 type VocabSubView = 'lexicon' | 'recall';
+type MasteryStatusFilter = 'all' | 'new' | 'in-progress' | 'mastered';
 
 const MASTERED_CELEBRATED_KEY = 'quillit_vocab_mastered_celebrated_v1';
 
@@ -60,28 +65,66 @@ function saveCelebratedIds(ids: Set<string>): void {
   }
 }
 
+/**
+ * Highlights occurrences of the target vocabulary word right inside its context sentence.
+ */
+function HighlightedContextSentence({
+  sentence,
+  targetWord,
+}: {
+  sentence: string;
+  targetWord: string;
+}) {
+  const cleanTarget = targetWord.split(/[/(,]/)[0]?.trim();
+  if (!cleanTarget || cleanTarget.length < 2) {
+    return <>“{sentence}”</>;
+  }
+  const escaped = cleanTarget.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const regex = new RegExp(`(${escaped}\\w*)`, 'gi');
+  const parts = sentence.split(regex);
+  if (parts.length <= 1) {
+    return <>“{sentence}”</>;
+  }
+  return (
+    <>
+      “
+      {parts.map((part, idx) =>
+        idx % 2 === 1 ? (
+          <mark
+            key={idx}
+            className="bg-accent-soft text-ink-primary not-italic font-medium px-1 rounded-[3px] border-b border-accent/50"
+          >
+            {part}
+          </mark>
+        ) : (
+          <span key={idx}>{part}</span>
+        )
+      )}
+      ”
+    </>
+  );
+}
+
 function MasteryLevelBadge({
   mastery,
 }: {
   mastery: VocabMasterySummary;
 }) {
-  const containerClasses =
-    mastery.tier === 'mastered'
-      ? 'border-status-success-border bg-status-success-soft text-status-success'
-      : mastery.tier === 'familiar'
-        ? 'border-border-strong bg-subtle text-ink-primary'
-        : mastery.tier === 'emerging'
-          ? 'border-border-subtle bg-subtle/60 text-ink-secondary'
-          : 'border-border-subtle bg-transparent text-ink-muted';
-
   const filledPipClass =
     mastery.tier === 'mastered'
       ? mastery.manualMastered
-        ? 'bg-status-success/60'
+        ? 'bg-status-success/65'
         : 'bg-status-success'
       : mastery.tier === 'familiar'
         ? 'bg-accent'
         : 'bg-ink-secondary';
+
+  const labelClass =
+    mastery.tier === 'mastered'
+      ? 'text-status-success'
+      : mastery.tier === 'familiar'
+        ? 'text-ink-primary'
+        : 'text-ink-muted';
 
   const shouldPulse = mastery.reachedUsageThreshold;
 
@@ -93,13 +136,11 @@ function MasteryLevelBadge({
       data-mastery-pulse={shouldPulse ? 'true' : 'false'}
       title={mastery.tooltip}
       aria-label={mastery.tooltip}
-      className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded border text-[11px] leading-none whitespace-nowrap select-none ${containerClasses} ${
-        shouldPulse ? 'vocab-mastered-pulse' : ''
-      }`}
+      className={`inline-flex items-center gap-1.5 text-[11px] leading-none whitespace-nowrap select-none ${labelClass}`}
     >
       <span
         aria-hidden="true"
-        className="inline-flex items-center gap-[2px]"
+        className="inline-flex items-center gap-[2.5px]"
       >
         {[0, 1, 2].map((idx) => (
           <span
@@ -107,21 +148,16 @@ function MasteryLevelBadge({
             className={`w-2 h-1.5 rounded-[1.5px] transition-colors ${
               idx < mastery.filledSegments
                 ? filledPipClass
-                : 'bg-border-default/65'
+                : 'bg-border-default/70'
             }`}
           />
         ))}
       </span>
       <span className="font-medium">{mastery.label}</span>
       {!mastery.manualMastered && (
-        <>
-          <span aria-hidden="true" className="opacity-55">
-            ·
-          </span>
-          <span className="font-mono-tabular font-medium">
-            {mastery.correctUses}×
-          </span>
-        </>
+        <span className="font-mono-tabular opacity-75">
+          {mastery.correctUses}/3
+        </span>
       )}
     </span>
   );
@@ -135,14 +171,19 @@ export function VocabularyView({
   onToggleMastered,
   onDeleteVocab,
   onCategorizeWithAI,
+  onPracticeWordInWrite,
 }: VocabularyViewProps) {
   const [subView, setSubView] = useState<VocabSubView>('lexicon');
   const [query, setQuery] = useState('');
-  const [statusFilter, setStatusFilter] = useState<'all' | 'practicing' | 'mastered'>(
+  const [statusFilter, setStatusFilter] = useState<MasteryStatusFilter>('all');
+  const [categoryFilter, setCategoryFilter] = useState<'all' | VocabCategory>(
     'all'
   );
-  const [categoryFilter, setCategoryFilter] = useState<'all' | VocabCategory>('all');
   const [letterFilter, setLetterFilter] = useState<string>('ALL');
+
+  const searchInputRef = useRef<HTMLInputElement | null>(null);
+  const subViewTabRef = useRef<HTMLDivElement | null>(null);
+  const subViewInk = useSlidingInkIndicator(subViewTabRef, subView);
 
   // AI Categorization feedback state
   const [categorizing, setCategorizing] = useState(false);
@@ -151,6 +192,7 @@ export function VocabularyView({
   // Active Recall Practice Drill state
   const [drillIdx, setDrillIdx] = useState(0);
   const [drillRevealed, setDrillRevealed] = useState(false);
+  const [sessionReviewedCount, setSessionReviewedCount] = useState(0);
 
   // Add Word Drawer state
   const [showAdd, setShowAdd] = useState(false);
@@ -169,6 +211,34 @@ export function VocabularyView({
     () => computeVocabularyMasteryMap(vocabulary, sessions),
     [vocabulary, sessions]
   );
+
+  // 4-Stage Mastery Health Distribution
+  const masteryBreakdown = useMemo(() => {
+    let newCount = 0;
+    let emergingCount = 0;
+    let familiarCount = 0;
+    let masteredCount = 0;
+    for (const entry of vocabulary) {
+      const m = masteryMap.get(entry.id);
+      const tier = m?.tier ?? (entry.mastered ? 'mastered' : 'new');
+      if (tier === 'mastered') masteredCount += 1;
+      else if (tier === 'familiar') familiarCount += 1;
+      else if (tier === 'emerging') emergingCount += 1;
+      else newCount += 1;
+    }
+    const total = Math.max(1, vocabulary.length);
+    return {
+      newCount,
+      emergingCount,
+      familiarCount,
+      inProgressCount: emergingCount + familiarCount,
+      masteredCount,
+      newPct: (newCount / total) * 100,
+      emergingPct: (emergingCount / total) * 100,
+      familiarPct: (familiarCount / total) * 100,
+      masteredPct: (masteredCount / total) * 100,
+    };
+  }, [vocabulary, masteryMap]);
 
   // Celebrate entries the moment they cross the 3x usage threshold into Mastered
   const [newlyMasteredIds, setNewlyMasteredIds] = useState<Set<string>>(
@@ -202,7 +272,6 @@ export function VocabularyView({
     return () => window.clearTimeout(timer);
   }, [masteryMap]);
 
-  // Resolve effective category for every entry (AI category if present, else deterministic local)
   const categorizedEntries = useMemo(
     () =>
       vocabulary.map((entry) => ({
@@ -221,13 +290,23 @@ export function VocabularyView({
     return counts;
   }, [categorizedEntries, vocabulary.length]);
 
-  // Filter by search, status, and category BEFORE computing active A-Z letter index
+  // Filter by search, 4-stage mastery status, and category BEFORE computing A-Z index
   const preLetterFiltered = useMemo(() => {
     const q = query.trim().toLowerCase();
     return categorizedEntries
       .filter(({ entry, category }) => {
-        if (statusFilter === 'mastered' && !entry.mastered) return false;
-        if (statusFilter === 'practicing' && entry.mastered) return false;
+        const tier =
+          masteryMap.get(entry.id)?.tier ??
+          (entry.mastered ? 'mastered' : 'new');
+        if (statusFilter === 'mastered' && tier !== 'mastered') return false;
+        if (statusFilter === 'new' && tier !== 'new') return false;
+        if (
+          statusFilter === 'in-progress' &&
+          tier !== 'emerging' &&
+          tier !== 'familiar'
+        ) {
+          return false;
+        }
         if (categoryFilter !== 'all' && category !== categoryFilter) return false;
         if (!q) return true;
         return (
@@ -239,7 +318,7 @@ export function VocabularyView({
         );
       })
       .map((item) => item.entry);
-  }, [categorizedEntries, query, statusFilter, categoryFilter]);
+  }, [categorizedEntries, masteryMap, query, statusFilter, categoryFilter]);
 
   const { groups: allAlphaGroups, letterCounts } = useMemo(
     () => groupVocabularyAlphabetically(preLetterFiltered),
@@ -252,13 +331,63 @@ export function VocabularyView({
   }, [allAlphaGroups, letterFilter]);
 
   const practicingQueue = useMemo(
-    () => vocabulary.filter((v) => !v.mastered),
-    [vocabulary]
+    () =>
+      vocabulary.filter((v) => {
+        const tier = masteryMap.get(v.id)?.tier ?? (v.mastered ? 'mastered' : 'new');
+        return tier !== 'mastered';
+      }),
+    [vocabulary, masteryMap]
   );
 
   const drillPool = practicingQueue.length > 0 ? practicingQueue : vocabulary;
   const activeDrillCard =
     drillPool.length > 0 ? drillPool[drillIdx % drillPool.length] : null;
+
+  // Keyboard shortcuts: "/" focuses search in Lexicon; Space/1/2/3 drive Active Recall
+  useEffect(() => {
+    function handleKeyDown(e: KeyboardEvent) {
+      const target = e.target as HTMLElement | null;
+      const isInput =
+        target &&
+        (target.tagName === 'INPUT' ||
+          target.tagName === 'TEXTAREA' ||
+          target.tagName === 'SELECT' ||
+          target.isContentEditable);
+      if (isInput) return;
+
+      if (subView === 'lexicon' && e.key === '/') {
+        e.preventDefault();
+        searchInputRef.current?.focus();
+        return;
+      }
+
+      if (subView === 'recall' && activeDrillCard) {
+        if (e.code === 'Space') {
+          e.preventDefault();
+          setDrillRevealed((v) => !v);
+        } else if (e.key === '1' && drillRevealed) {
+          e.preventDefault();
+          setDrillRevealed(false);
+          setDrillIdx((i) => i + 1);
+          setSessionReviewedCount((c) => c + 1);
+        } else if (e.key === '2' && drillRevealed) {
+          e.preventDefault();
+          setDrillRevealed(false);
+          setDrillIdx((i) => i + 1);
+          setSessionReviewedCount((c) => c + 1);
+        } else if (e.key === '3' && drillRevealed && !activeDrillCard.mastered) {
+          e.preventDefault();
+          onToggleMastered(activeDrillCard.id);
+          setDrillRevealed(false);
+          setDrillIdx((i) => i + 1);
+          setSessionReviewedCount((c) => c + 1);
+        }
+      }
+    }
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [subView, activeDrillCard, drillRevealed, onToggleMastered]);
 
   async function handleRunAiCategorize() {
     if (!onCategorizeWithAI || vocabulary.length === 0 || categorizing) return;
@@ -268,7 +397,7 @@ export function VocabularyView({
       const result = await onCategorizeWithAI();
       setAiNotice(
         result.usedAI
-          ? `AI organized ${result.updatedCount} ${result.updatedCount === 1 ? 'word' : 'words'} into editorial categories.`
+          ? `Organized ${result.updatedCount} ${result.updatedCount === 1 ? 'word' : 'words'} into editorial categories.`
           : `Organized ${result.updatedCount} ${result.updatedCount === 1 ? 'word' : 'words'} into editorial categories.`
       );
     } catch {
@@ -287,7 +416,7 @@ export function VocabularyView({
       id: `vocab-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
       used: oldWord,
       betterAlternative: targetWord,
-      explanation: explanation.trim() || 'Added to personal A-Z lexicon.',
+      explanation: explanation.trim() || 'Added to personal A–Z lexicon.',
       contextSnippet: contextSnippet.trim(),
       mode,
       dateAdded: todayISO,
@@ -306,7 +435,7 @@ export function VocabularyView({
   return (
     <div
       data-testid="vocabulary-lexicon-view"
-      className="max-w-6xl mx-auto px-4 sm:px-6 py-8 sm:py-10 space-y-6"
+      className="editorial-enter max-w-6xl mx-auto px-3 sm:px-6 py-6 sm:py-9 space-y-5 sm:space-y-6"
     >
       {/* Editorial Header */}
       <header className="flex flex-wrap items-end justify-between gap-4">
@@ -315,7 +444,8 @@ export function VocabularyView({
             Personal Lexicon
           </h1>
           <p className="text-xs sm:text-sm text-ink-secondary">
-            Alphabetical A to Z word bank. Use any word correctly 3× in Write or Converse to reach Mastered.
+            Alphabetical A–Z word bank. Weave any word correctly 3× in Write or
+            Converse to graduate it to Mastered.
           </p>
         </div>
 
@@ -326,13 +456,13 @@ export function VocabularyView({
               disabled={categorizing}
               data-testid="vocab-ai-categorize-button"
               onClick={() => void handleRunAiCategorize()}
-              className="btn-secondary inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-medium whitespace-nowrap"
+              className="btn-secondary inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium whitespace-nowrap"
             >
               <Sparkles
                 className={`w-3.5 h-3.5 ${categorizing ? 'animate-pulse' : ''}`}
                 aria-hidden="true"
               />
-              <span>{categorizing ? 'Categorizing...' : 'Categorize with AI'}</span>
+              <span>{categorizing ? 'Organizing...' : 'Organize with AI'}</span>
             </button>
           )}
 
@@ -348,42 +478,74 @@ export function VocabularyView({
         </div>
       </header>
 
-      {/* Whisper-Quiet Editorial Metrics Ribbon */}
+      {/* 4-Stage Mastery Health Strip (Web-Informed Lexicon Telemetry) */}
       <section
-        aria-label="Lexicon statistics"
-        className="grid grid-cols-2 sm:grid-cols-4 border-y border-border-subtle divide-y sm:divide-y-0 sm:divide-x divide-border-subtle bg-surface/55"
+        aria-label="Mastery distribution"
+        data-testid="vocab-mastery-health"
+        className="card-surface p-4 sm:p-5 space-y-3"
       >
-        <div className="py-3.5 px-4">
-          <div className="text-[11px] uppercase tracking-[0.06em] text-ink-muted">
-            Total Words
+        <div className="flex flex-wrap items-baseline justify-between gap-2">
+          <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1 text-xs">
+            <span className="font-mono-tabular text-sm font-semibold text-ink-primary">
+              {stats.totalCount} words
+            </span>
+            <span className="text-ink-muted">
+              <strong className="font-mono-tabular text-status-success font-semibold">
+                {masteryBreakdown.masteredCount}
+              </strong>{' '}
+              Mastered
+            </span>
+            <span className="text-ink-muted">
+              <strong className="font-mono-tabular text-ink-primary font-semibold">
+                {masteryBreakdown.inProgressCount}
+              </strong>{' '}
+              In Progress
+            </span>
+            <span className="text-ink-muted">
+              <strong className="font-mono-tabular text-ink-secondary font-semibold">
+                {masteryBreakdown.newCount}
+              </strong>{' '}
+              New
+            </span>
           </div>
-          <div className="mt-0.5 font-mono-tabular text-xl font-semibold text-ink-primary">
-            {stats.totalCount}
-          </div>
+          <span className="font-mono-tabular text-[11px] text-ink-muted">
+            +{stats.monthCount} this month
+          </span>
         </div>
-        <div className="py-3.5 px-4">
-          <div className="text-[11px] uppercase tracking-[0.06em] text-ink-muted">
-            Practicing
-          </div>
-          <div className="mt-0.5 font-mono-tabular text-xl font-semibold text-ink-primary">
-            {stats.totalCount - stats.masteredCount}
-          </div>
-        </div>
-        <div className="py-3.5 px-4">
-          <div className="text-[11px] uppercase tracking-[0.06em] text-ink-muted">
-            Mastered
-          </div>
-          <div className="mt-0.5 font-mono-tabular text-xl font-semibold text-status-success">
-            {stats.masteredCount}
-          </div>
-        </div>
-        <div className="py-3.5 px-4">
-          <div className="text-[11px] uppercase tracking-[0.06em] text-ink-muted">
-            Added This Month
-          </div>
-          <div className="mt-0.5 font-mono-tabular text-xl font-semibold text-ink-primary">
-            {stats.monthCount}
-          </div>
+
+        {/* Hairline Segmented Mastery Health Bar */}
+        <div
+          aria-hidden="true"
+          className="h-1.5 w-full rounded-full bg-subtle overflow-hidden flex gap-[2px]"
+        >
+          {vocabulary.length > 0 && (
+            <>
+              {masteryBreakdown.masteredPct > 0 && (
+                <div
+                  className="h-full bg-status-success transition-all duration-300"
+                  style={{ width: `${masteryBreakdown.masteredPct}%` }}
+                />
+              )}
+              {masteryBreakdown.familiarPct > 0 && (
+                <div
+                  className="h-full bg-accent transition-all duration-300"
+                  style={{ width: `${masteryBreakdown.familiarPct}%` }}
+                />
+              )}
+              {masteryBreakdown.emergingPct > 0 && (
+                <div
+                  className="h-full bg-ink-secondary/65 transition-all duration-300"
+                  style={{ width: `${masteryBreakdown.emergingPct}%` }}
+                />
+              )}
+              {masteryBreakdown.newPct > 0 && (
+                <div
+                  className="h-full bg-border-default transition-all duration-300"
+                  style={{ width: `${masteryBreakdown.newPct}%` }}
+                />
+              )}
+            </>
+          )}
         </div>
       </section>
 
@@ -391,7 +553,7 @@ export function VocabularyView({
         <div
           role="status"
           data-testid="vocab-ai-notice"
-          className="px-3.5 py-2.5 rounded-md border border-status-success-border bg-status-success-soft text-xs text-status-success flex items-center justify-between gap-3"
+          className="drawer-reveal px-3.5 py-2.5 rounded-md border border-status-success-border bg-status-success-soft text-xs text-status-success flex items-center justify-between gap-3"
         >
           <span>{aiNotice}</span>
           <button
@@ -409,7 +571,7 @@ export function VocabularyView({
       {showAdd && (
         <form
           onSubmit={handleAddManual}
-          className="card-surface p-5 space-y-3.5"
+          className="card-surface drawer-reveal p-4 sm:p-5 space-y-3.5"
         >
           <div className="flex items-center justify-between gap-2">
             <h2 className="text-sm font-medium text-ink-primary">
@@ -512,77 +674,108 @@ export function VocabularyView({
               type="submit"
               className="btn-primary px-4 py-1.5 text-xs font-medium"
             >
-              Save to A-Z Lexicon
+              Save to A–Z Lexicon
             </button>
           </div>
         </form>
       )}
 
-      {/* View Switcher + Search + Status Filter */}
-      <div className="flex flex-col sm:flex-row sm:flex-wrap items-stretch sm:items-center justify-between gap-3">
+      {/* Gliding Ink-Underline Sub-View Tabs + Search & Mastery Stage Filter */}
+      <div className="flex flex-col lg:flex-row lg:items-end justify-between gap-3 border-b border-border-subtle pb-0">
         <div
+          ref={subViewTabRef}
           role="tablist"
           aria-label="Vocabulary workspace view"
-          className="segmented-track grid grid-cols-2 sm:inline-flex items-center gap-0.5 w-full sm:w-auto"
+          className="relative flex items-center gap-4 -mb-px"
         >
           <button
             type="button"
             role="tab"
+            data-testid="vocab-tab-lexicon"
             aria-selected={subView === 'lexicon'}
             data-active={subView === 'lexicon' ? 'true' : 'false'}
             onClick={() => setSubView('lexicon')}
-            className="segmented-item min-h-[38px] sm:min-h-0 px-3 py-1.5 text-xs font-medium whitespace-nowrap text-center"
+            className={`px-1 pb-2.5 text-xs sm:text-sm whitespace-nowrap transition-colors cursor-pointer ${
+              subView === 'lexicon'
+                ? 'text-ink-primary font-semibold'
+                : 'text-ink-muted hover:text-ink-secondary font-normal'
+            }`}
           >
-            A to Z Lexicon
+            A–Z Lexicon
           </button>
           <button
             type="button"
             role="tab"
+            data-testid="vocab-tab-recall"
             aria-selected={subView === 'recall'}
             data-active={subView === 'recall' ? 'true' : 'false'}
             onClick={() => {
               setSubView('recall');
               setDrillRevealed(false);
             }}
-            className="segmented-item min-h-[38px] sm:min-h-0 px-3 py-1.5 text-xs font-medium whitespace-nowrap text-center"
+            className={`px-1 pb-2.5 text-xs sm:text-sm whitespace-nowrap transition-colors cursor-pointer ${
+              subView === 'recall'
+                ? 'text-ink-primary font-semibold'
+                : 'text-ink-muted hover:text-ink-secondary font-normal'
+            }`}
           >
             Active Recall ({practicingQueue.length})
           </button>
+
+          <span
+            aria-hidden="true"
+            className="ink-glide-underline pointer-events-none absolute left-0 bottom-0 h-[2px] w-[100px] origin-left rounded-full bg-ink-primary"
+            style={{
+              opacity: subViewInk.ready ? 1 : 0,
+              transform: `translate3d(${subViewInk.left}px, 0, 0) scaleX(${Math.max(
+                0,
+                subViewInk.width / 100
+              )})`,
+            }}
+          />
         </div>
 
         {subView === 'lexicon' && (
-          <div className="flex flex-col sm:flex-row sm:flex-wrap items-stretch sm:items-center gap-2.5 flex-1 justify-end min-w-0">
-            <div className="relative flex-1 min-w-0 sm:max-w-xs">
+          <div className="flex flex-col sm:flex-row sm:items-center gap-2 pb-2.5 min-w-0">
+            <div className="relative flex-1 sm:w-56 min-w-0">
               <Search
                 className="w-3.5 h-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-ink-muted"
                 aria-hidden="true"
               />
               <input
+                ref={searchInputRef}
                 type="search"
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
-                placeholder="Search words, meanings, categories..."
+                placeholder="Search words (press /)..."
                 aria-label="Search vocabulary lexicon"
-                className="input-tactile w-full pl-8 pr-3 py-2 sm:py-1.5 text-xs"
+                className="input-tactile w-full pl-8 pr-3 py-1.5 text-xs"
               />
             </div>
 
             <div
               role="tablist"
-              aria-label="Filter vocabulary mastery status"
-              className="segmented-track grid grid-cols-3 sm:inline-flex items-center gap-0.5 w-full sm:w-auto"
+              aria-label="Filter by mastery stage"
+              className="segmented-track grid grid-cols-4 sm:inline-flex items-center gap-0.5 w-full sm:w-auto"
             >
-              {(['all', 'practicing', 'mastered'] as const).map((status) => (
+              {(
+                [
+                  { id: 'all', label: 'All' },
+                  { id: 'new', label: 'New' },
+                  { id: 'in-progress', label: 'Building' },
+                  { id: 'mastered', label: 'Mastered' },
+                ] as const
+              ).map((tab) => (
                 <button
-                  key={status}
+                  key={tab.id}
                   type="button"
                   role="tab"
-                  aria-selected={statusFilter === status}
-                  data-active={statusFilter === status ? 'true' : 'false'}
-                  onClick={() => setStatusFilter(status)}
-                  className="segmented-item min-h-[36px] sm:min-h-0 px-2.5 py-1 text-xs font-medium capitalize text-center"
+                  aria-selected={statusFilter === tab.id}
+                  data-active={statusFilter === tab.id ? 'true' : 'false'}
+                  onClick={() => setStatusFilter(tab.id)}
+                  className="segmented-item min-h-[32px] sm:min-h-0 px-2.5 py-1 text-[11px] font-medium whitespace-nowrap text-center"
                 >
-                  {status}
+                  {tab.label}
                 </button>
               ))}
             </div>
@@ -592,10 +785,10 @@ export function VocabularyView({
 
       {subView === 'lexicon' ? (
         <div className="space-y-4">
-          {/* Interactive AI Category Filter Bar */}
+          {/* Minimal Editorial Category Strip */}
           <nav
             aria-label="Vocabulary categories"
-            className="flex flex-nowrap sm:flex-wrap items-center gap-1.5 overflow-x-auto scrollbar-none scroll-smooth-touch border-b border-border-subtle pb-3"
+            className="flex items-center gap-1.5 overflow-x-auto scrollbar-none scroll-smooth-touch pb-1"
           >
             <button
               type="button"
@@ -603,16 +796,17 @@ export function VocabularyView({
                 setCategoryFilter('all');
                 setLetterFilter('ALL');
               }}
-              className={`px-3 py-1.5 rounded-md text-xs font-medium transition-colors cursor-pointer whitespace-nowrap ${
+              className={`px-2.5 py-1 rounded-md text-[11px] font-medium transition-colors cursor-pointer whitespace-nowrap shrink-0 ${
                 categoryFilter === 'all'
                   ? 'bg-accent text-ink-inverse'
                   : 'text-ink-secondary hover:text-ink-primary hover:bg-subtle'
               }`}
             >
-              All Categories ({categoryCounts.all ?? 0})
+              All ({categoryCounts.all ?? 0})
             </button>
             {VOCAB_CATEGORIES.map((cat) => {
               const count = categoryCounts[cat] ?? 0;
+              if (count === 0 && categoryFilter !== cat) return null;
               const isActive = categoryFilter === cat;
               return (
                 <button
@@ -622,30 +816,29 @@ export function VocabularyView({
                     setCategoryFilter(cat);
                     setLetterFilter('ALL');
                   }}
-                  className={`px-3 py-1.5 rounded-md text-xs font-medium transition-colors cursor-pointer whitespace-nowrap ${
+                  className={`px-2.5 py-1 rounded-md text-[11px] font-medium transition-colors cursor-pointer whitespace-nowrap shrink-0 ${
                     isActive
                       ? 'bg-accent text-ink-inverse'
                       : 'text-ink-secondary hover:text-ink-primary hover:bg-subtle'
                   }`}
                 >
-                  {cat}
-                  {count > 0 ? ` (${count})` : ''}
+                  {cat} ({count})
                 </button>
               );
             })}
           </nav>
 
-          {/* A-Z Alphabetical Index Strip */}
+          {/* A–Z Alphabetical Index Strip */}
           <nav
             aria-label="Alphabetical index"
             data-testid="vocab-az-bar"
-            className="card-surface px-3 py-2 flex items-center gap-1 overflow-x-auto scrollbar-none scroll-smooth-touch"
+            className="card-surface px-2.5 py-2 flex items-center gap-0.5 sm:gap-1 overflow-x-auto scrollbar-none scroll-smooth-touch"
           >
             <button
               type="button"
               onClick={() => setLetterFilter('ALL')}
               aria-pressed={letterFilter === 'ALL'}
-              className={`min-h-[34px] sm:min-h-0 px-2.5 py-1 rounded-sm text-[11px] font-mono-tabular font-semibold transition-colors shrink-0 cursor-pointer ${
+              className={`min-h-[32px] sm:min-h-0 px-2.5 py-1 rounded-sm text-[11px] font-mono-tabular font-semibold transition-colors shrink-0 cursor-pointer ${
                 letterFilter === 'ALL'
                   ? 'bg-accent text-ink-inverse'
                   : 'text-ink-secondary hover:text-ink-primary hover:bg-subtle'
@@ -653,7 +846,10 @@ export function VocabularyView({
             >
               ALL
             </button>
-            <span aria-hidden="true" className="h-4 w-px bg-border-subtle mx-1 shrink-0" />
+            <span
+              aria-hidden="true"
+              className="h-4 w-px bg-border-subtle mx-1 shrink-0"
+            />
             {ALPHABET_LETTERS.map((letter) => {
               const count = letterCounts[letter] ?? 0;
               const isActive = letterFilter === letter;
@@ -664,13 +860,17 @@ export function VocabularyView({
                   disabled={count === 0}
                   onClick={() => setLetterFilter(isActive ? 'ALL' : letter)}
                   aria-pressed={isActive}
-                  title={count > 0 ? `${letter} (${count})` : `No words starting with ${letter}`}
-                  className={`w-8 h-8 sm:w-7 sm:h-7 rounded-sm text-xs font-mono-tabular inline-flex items-center justify-center transition-colors shrink-0 ${
+                  title={
+                    count > 0
+                      ? `${letter} (${count})`
+                      : `No words starting with ${letter}`
+                  }
+                  className={`w-7 h-7 rounded-sm text-xs font-mono-tabular inline-flex items-center justify-center transition-colors shrink-0 ${
                     isActive
                       ? 'bg-accent text-ink-inverse font-semibold cursor-pointer'
                       : count > 0
                         ? 'text-ink-primary font-medium hover:bg-subtle cursor-pointer'
-                        : 'text-ink-muted/35 cursor-not-allowed'
+                        : 'text-ink-muted/30 cursor-not-allowed'
                   }`}
                 >
                   {letter}
@@ -679,22 +879,22 @@ export function VocabularyView({
             })}
           </nav>
 
-          {/* A-Z Alphabetical Grouped Lexicon */}
+          {/* A–Z Alphabetical Grouped Lexicon */}
           {visibleGroups.length === 0 ? (
-            <div className="card-surface p-12 text-center space-y-3">
+            <div className="card-surface p-10 sm:p-12 text-center space-y-3">
               <div className="flex justify-center" aria-hidden="true">
                 <BookMarked className="w-6 h-6 text-ink-muted" />
               </div>
               <div className="space-y-1">
                 <p className="text-sm font-medium text-ink-primary">
                   {vocabulary.length === 0
-                    ? 'Your A to Z lexicon is ready for its first entry'
+                    ? 'Your A–Z lexicon is open for its first word'
                     : 'No words match your current filter'}
                 </p>
                 <p className="text-xs text-ink-muted max-w-md mx-auto">
                   {vocabulary.length === 0
                     ? 'Add words manually, use Quick Add inside Write Studio, or evaluate a draft to collect tailored upgrades automatically.'
-                    : 'Try clearing the search box, selecting All Categories, or choosing ALL on the A to Z index.'}
+                    : 'Try clearing the search query, switching mastery stage to All, or selecting ALL on the A–Z index.'}
                 </p>
               </div>
               {vocabulary.length === 0 && (
@@ -709,15 +909,15 @@ export function VocabularyView({
               )}
             </div>
           ) : (
-            <div className="space-y-5" data-testid="vocab-az-groups">
+            <div className="space-y-4" data-testid="vocab-az-groups">
               {visibleGroups.map((group) => (
                 <section
                   key={group.letter}
                   aria-label={`Words starting with ${group.letter}`}
                   className="card-surface overflow-hidden"
                 >
-                  {/* Serif Editorial Letter Divider */}
-                  <div className="px-5 py-2.5 border-b border-border-subtle bg-subtle/50 flex items-center justify-between gap-3">
+                  {/* Serif Editorial Letter Header */}
+                  <div className="px-4 sm:px-5 py-2 border-b border-border-subtle bg-subtle/45 flex items-center justify-between gap-3">
                     <div className="flex items-baseline gap-2.5">
                       <span className="font-display text-lg font-semibold text-ink-primary leading-none">
                         {group.letter}
@@ -732,7 +932,7 @@ export function VocabularyView({
                   <div className="divide-y divide-border-subtle">
                     {group.entries.map((item) => {
                       const category = classifyVocabEntryLocally(item);
-                      const headword = getVocabHeadword(item);
+                      const headword = item.betterAlternative || getVocabHeadword(item);
                       const mastery = masteryMap.get(item.id) ?? {
                         tier: item.mastered ? 'mastered' : 'new',
                         label: item.mastered ? 'Mastered' : 'New',
@@ -754,14 +954,14 @@ export function VocabularyView({
                           key={item.id}
                           data-testid={`vocab-entry-${item.id}`}
                           data-mastery-celebrating={isCelebrating ? 'true' : 'false'}
-                          className={`row-tactile px-5 py-4 flex flex-col sm:flex-row sm:items-start justify-between gap-4 ${
+                          className={`row-tactile px-4 sm:px-5 py-3.5 flex flex-col sm:flex-row sm:items-start justify-between gap-3.5 ${
                             isCelebrating ? 'vocab-row-mastered-celebrate' : ''
                           }`}
                         >
-                          <div className="space-y-1.5 min-w-0">
-                            <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1">
-                              <span className="font-display text-base font-medium text-ink-primary">
-                                {item.betterAlternative || headword}
+                          <div className="space-y-1.5 min-w-0 flex-1">
+                            <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+                              <span className="font-display text-base sm:text-[17px] font-medium text-ink-primary">
+                                {headword}
                               </span>
                               <MasteryLevelBadge mastery={mastery} />
                               {showReplacement && (
@@ -773,75 +973,76 @@ export function VocabularyView({
                             </div>
 
                             {item.explanation && (
-                              <p className="text-xs sm:text-sm text-ink-secondary leading-relaxed">
+                              <p className="text-xs sm:text-[13px] text-ink-secondary leading-relaxed">
                                 {item.explanation}
                               </p>
                             )}
 
                             {item.contextSnippet.trim() && (
                               <p className="text-xs italic text-ink-muted leading-relaxed">
-                                &ldquo;{item.contextSnippet}&rdquo;
+                                <HighlightedContextSentence
+                                  sentence={item.contextSnippet}
+                                  targetWord={headword}
+                                />
                               </p>
                             )}
 
-                            {/* Unboxed Editorial Metadata Row */}
                             <div className="pt-0.5 text-[11px] text-ink-muted flex flex-wrap items-center gap-x-2 gap-y-0.5">
                               <span className="font-medium text-ink-secondary">
                                 {category}
                               </span>
                               <span aria-hidden="true">·</span>
-                              <span>{MODE_LABELS[item.mode]}</span>
-                              <span aria-hidden="true">·</span>
                               <span className="font-mono-tabular">
                                 {item.dateAdded}
                               </span>
-                              <span aria-hidden="true">·</span>
-                              <span
-                                className={
-                                  mastery.reachedUsageThreshold
-                                    ? 'font-mono-tabular font-medium text-status-success'
-                                    : mastery.correctUses > 0
-                                      ? 'font-mono-tabular text-ink-secondary'
-                                      : 'text-ink-muted'
-                                }
-                              >
-                                {mastery.correctUses > 0
-                                  ? `Used correctly ${mastery.correctUses}×${
-                                      mastery.sessionCount > 0
-                                        ? ` across ${mastery.sessionCount} ${
-                                            mastery.sessionCount === 1
-                                              ? 'session'
-                                              : 'sessions'
-                                          }`
-                                        : ''
-                                    }`
-                                  : mastery.manualMastered
-                                    ? 'Marked mastered manually · 0 session uses'
-                                    : 'Use correctly 3× in Write or Converse to master'}
-                              </span>
+                              {mastery.correctUses > 0 && (
+                                <>
+                                  <span aria-hidden="true">·</span>
+                                  <span
+                                    className={
+                                      mastery.reachedUsageThreshold
+                                        ? 'font-mono-tabular font-medium text-status-success'
+                                        : 'font-mono-tabular text-ink-secondary'
+                                    }
+                                  >
+                                    Used {mastery.correctUses}× cleanly
+                                  </span>
+                                </>
+                              )}
                             </div>
                           </div>
 
-                          <div className="flex items-center gap-2 shrink-0 sm:pt-0.5">
+                          <div className="flex flex-wrap items-center gap-1.5 shrink-0 sm:pt-0.5">
+                            {onPracticeWordInWrite && (
+                              <button
+                                type="button"
+                                data-testid={`vocab-use-in-write-${item.id}`}
+                                onClick={() => onPracticeWordInWrite(headword)}
+                                className="btn-ghost inline-flex items-center gap-1 px-2.5 py-1.5 text-[11px] font-medium whitespace-nowrap"
+                              >
+                                <PenLine className="w-3 h-3" aria-hidden="true" />
+                                <span>Use in Write</span>
+                              </button>
+                            )}
                             <button
                               type="button"
                               onClick={() => onToggleMastered(item.id)}
-                              className={`inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md border transition-colors whitespace-nowrap cursor-pointer ${
+                              className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 text-[11px] font-medium rounded-md border transition-colors whitespace-nowrap cursor-pointer ${
                                 item.mastered
                                   ? 'border-status-success-border bg-status-success-soft text-status-success'
                                   : 'btn-secondary'
                               }`}
                             >
-                              <Check className="w-3.5 h-3.5" aria-hidden="true" />
+                              <Check className="w-3 h-3" aria-hidden="true" />
                               <span>
-                                {item.mastered ? 'Mastered' : 'Mark Mastered'}
+                                {item.mastered ? 'Mastered' : 'Master'}
                               </span>
                             </button>
                             <button
                               type="button"
                               onClick={() => onDeleteVocab(item.id)}
                               aria-label={`Remove ${item.betterAlternative}`}
-                              className="btn-ghost p-2 hover:text-status-danger"
+                              className="btn-ghost p-1.5 hover:text-status-danger"
                             >
                               <Trash2 className="w-3.5 h-3.5" aria-hidden="true" />
                             </button>
@@ -856,87 +1057,110 @@ export function VocabularyView({
           )}
         </div>
       ) : activeDrillCard ? (
-        /* Active Recall Practice Flashcard */
+        /* Keyboard-Driven Tactile Active Recall Studio */
         <section
           aria-label="Active recall flashcard"
+          data-testid="vocab-recall-studio"
           className="card-surface overflow-hidden max-w-2xl mx-auto"
         >
-          <div className="stationery-band px-6 py-4 border-b border-border-subtle bg-subtle/45 flex flex-wrap items-center justify-between gap-2 text-xs font-mono-tabular text-ink-muted">
+          <div className="stationery-band px-5 sm:px-6 py-3.5 border-b border-border-subtle bg-subtle/45 flex flex-wrap items-center justify-between gap-2 text-xs font-mono-tabular text-ink-muted">
             <span>
               Card {(drillIdx % drillPool.length) + 1} of {drillPool.length} ·{' '}
               {classifyVocabEntryLocally(activeDrillCard)}
+              {sessionReviewedCount > 0 ? ` · ${sessionReviewedCount} reviewed` : ''}
             </span>
             {(() => {
               const activeMastery = masteryMap.get(activeDrillCard.id);
               return activeMastery ? (
                 <MasteryLevelBadge mastery={activeMastery} />
-              ) : (
-                <span>
-                  {activeDrillCard.mastered ? 'Mastered' : 'In Practice Queue'}
-                </span>
-              );
+              ) : null;
             })()}
           </div>
 
-          <div className="p-6 sm:p-8 space-y-5">
+          <div className="p-5 sm:p-8 space-y-5">
             <div className="space-y-2">
               <div className="text-xs text-ink-muted">
                 {activeDrillCard.used.trim().toLowerCase() !==
                 activeDrillCard.betterAlternative.trim().toLowerCase()
                   ? 'Recall the sharper upgrade for this phrase:'
-                  : 'Recall the definition and natural usage:'}
+                  : 'Recall the meaning and craft a quick mental sentence:'}
               </div>
-              <div className="font-display text-2xl font-medium text-ink-primary">
-                &ldquo;
+              <div className="font-display text-2xl sm:text-3xl font-medium text-ink-primary">
+                “
                 {activeDrillCard.used.trim().toLowerCase() !==
                 activeDrillCard.betterAlternative.trim().toLowerCase()
                   ? activeDrillCard.used
                   : activeDrillCard.betterAlternative}
-                &rdquo;
+                ”
               </div>
               {activeDrillCard.explanation && (
-                <p className="text-xs text-ink-secondary">
+                <p className="text-xs text-ink-secondary leading-relaxed">
                   Clue: {activeDrillCard.explanation}
                 </p>
               )}
             </div>
 
             {drillRevealed && (
-              <div className="p-4 rounded-lg border border-border-subtle bg-subtle/50 space-y-1.5 page-glide-enter">
-                <div className="text-xs font-semibold text-ink-primary">
-                  {activeDrillCard.betterAlternative}
+              <div className="p-4 rounded-md border border-border-default bg-subtle/50 space-y-2 page-glide-enter">
+                <div className="flex items-center justify-between gap-2">
+                  <div className="font-display text-lg font-medium text-ink-primary">
+                    {activeDrillCard.betterAlternative}
+                  </div>
+                  {onPracticeWordInWrite && (
+                    <button
+                      type="button"
+                      onClick={() =>
+                        onPracticeWordInWrite(activeDrillCard.betterAlternative)
+                      }
+                      className="inline-link-tactile inline-flex items-center gap-1 text-[11px] font-medium cursor-pointer"
+                    >
+                      <span>Use in Write</span>
+                      <ArrowRight className="w-3 h-3" aria-hidden="true" />
+                    </button>
+                  )}
                 </div>
                 {activeDrillCard.contextSnippet && (
-                  <p className="text-xs italic text-ink-secondary">
-                    &ldquo;{activeDrillCard.contextSnippet}&rdquo;
+                  <p className="text-xs italic text-ink-secondary leading-relaxed">
+                    <HighlightedContextSentence
+                      sentence={activeDrillCard.contextSnippet}
+                      targetWord={activeDrillCard.betterAlternative}
+                    />
                   </p>
                 )}
               </div>
             )}
 
-            <div className="pt-2 border-t border-border-subtle flex flex-wrap items-center justify-between gap-2">
+            <div className="pt-3 border-t border-border-subtle flex flex-wrap items-center justify-between gap-2">
               <button
                 type="button"
+                data-testid="vocab-recall-reveal"
                 onClick={() => setDrillRevealed((v) => !v)}
                 className="btn-secondary inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-medium"
               >
                 <RotateCw className="w-3.5 h-3.5" aria-hidden="true" />
-                <span>{drillRevealed ? 'Hide Answer' : 'Reveal Answer'}</span>
+                <span>{drillRevealed ? 'Hide' : 'Reveal'}</span>
+                <kbd className="hidden sm:inline font-mono-tabular text-[10px] text-ink-muted ml-1">
+                  Space
+                </kbd>
               </button>
 
-              <div className="flex items-center gap-2">
-                {!activeDrillCard.mastered && (
+              <div className="flex flex-wrap items-center gap-2">
+                {drillRevealed && !activeDrillCard.mastered && (
                   <button
                     type="button"
                     onClick={() => {
                       onToggleMastered(activeDrillCard.id);
                       setDrillRevealed(false);
                       setDrillIdx((i) => i + 1);
+                      setSessionReviewedCount((c) => c + 1);
                     }}
-                    className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-medium rounded-md border border-status-success-border bg-status-success-soft text-status-success hover:border-border-strong transition-colors cursor-pointer"
+                    className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium rounded-md border border-status-success-border bg-status-success-soft text-status-success hover:border-border-strong transition-colors cursor-pointer"
                   >
                     <Check className="w-3.5 h-3.5" aria-hidden="true" />
-                    <span>Mark Mastered</span>
+                    <span>Mastered</span>
+                    <kbd className="hidden sm:inline font-mono-tabular text-[10px] opacity-75">
+                      3
+                    </kbd>
                   </button>
                 )}
                 <button
@@ -944,6 +1168,7 @@ export function VocabularyView({
                   onClick={() => {
                     setDrillRevealed(false);
                     setDrillIdx((i) => i + 1);
+                    setSessionReviewedCount((c) => c + 1);
                   }}
                   className="btn-primary px-4 py-2 text-xs font-medium"
                 >
@@ -954,8 +1179,13 @@ export function VocabularyView({
           </div>
         </section>
       ) : (
-        <div className="card-surface p-12 text-center text-sm text-ink-muted">
-          Add a few words to begin Active Recall practice.
+        <div className="card-surface p-12 text-center space-y-2">
+          <p className="font-display text-lg text-ink-primary">
+            All caught up
+          </p>
+          <p className="text-xs text-ink-muted">
+            Add a few words to your A–Z Lexicon to begin Active Recall practice.
+          </p>
         </div>
       )}
     </div>

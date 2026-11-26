@@ -1,6 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { computeDailyInkProgress, getInkWellCaption } from './inkGoal';
+import {
+  clampDailyWordGoal,
+  computeDailyInkProgress,
+  getInkWellCaption,
+} from './inkGoal';
 import type { WritingSession } from '../types';
 
 function makeSession(
@@ -52,13 +56,17 @@ test('returns empty stage when no words have been written today', () => {
 
   assert.equal(result.totalWordsToday, 0);
   assert.equal(result.ratio, 0);
+  assert.equal(result.savedRatio, 0);
+  assert.equal(result.activeRatio, 0);
   assert.equal(result.percentage, 0);
   assert.equal(result.remainingWords, 250);
+  assert.equal(result.bonusWords, 0);
+  assert.equal(result.milestonesReached, 0);
   assert.equal(result.reached, false);
   assert.equal(result.stage, 'empty');
 });
 
-test('combines today saved sessions and live draft words without double-counting active draft', () => {
+test('combines today saved sessions and live draft words with split ratios and milestones', () => {
   const sessions = [
     makeSession('completed-today', '2026-11-21', 100, false),
     makeSession('draft-active', '2026-11-21', 45, true),
@@ -77,12 +85,17 @@ test('combines today saved sessions and live draft words without double-counting
   assert.equal(result.activeDraftWords, 90);
   assert.equal(result.totalWordsToday, 190);
   assert.equal(result.remainingWords, 60);
+  assert.equal(result.bonusWords, 0);
   assert.equal(result.percentage, 76);
+  assert.ok(Math.abs(result.savedRatio - 0.4) < 0.001);
+  assert.ok(Math.abs(result.activeRatio - 0.36) < 0.001);
+  assert.equal(result.milestonesReached, 3);
+  assert.equal(result.sessionsTodayCount, 1);
   assert.equal(result.stage, 'nearing');
   assert.equal(result.reached, false);
 });
 
-test('clamps ratio and percentage at 100% when exceeding daily goal', () => {
+test('clamps ratio and percentage at 100% and computes bonus words when exceeding daily goal', () => {
   const result = computeDailyInkProgress({
     todayISO: '2026-11-21',
     sessions: [makeSession('today-1', '2026-11-21', 210)],
@@ -94,12 +107,23 @@ test('clamps ratio and percentage at 100% when exceeding daily goal', () => {
   assert.equal(result.ratio, 1);
   assert.equal(result.percentage, 100);
   assert.equal(result.remainingWords, 0);
+  assert.equal(result.bonusWords, 80);
+  assert.equal(result.milestonesReached, 4);
   assert.equal(result.reached, true);
   assert.equal(result.stage, 'full');
-  assert.equal(getInkWellCaption(result), 'Daily ink goal reached');
+  assert.equal(getInkWellCaption(result), 'Daily goal reached · +80 extra');
+
+  const exactGoal = computeDailyInkProgress({
+    todayISO: '2026-11-21',
+    sessions: [],
+    currentWordCount: 250,
+    dailyWordGoal: 250,
+  });
+  assert.equal(exactGoal.bonusWords, 0);
+  assert.equal(getInkWellCaption(exactGoal), 'Daily ink goal reached');
 });
 
-test('handles invalid or missing dailyWordGoal safely', () => {
+test('handles invalid or missing dailyWordGoal safely and clamps adjustable targets', () => {
   const result = computeDailyInkProgress({
     todayISO: '2026-11-21',
     sessions: [],
@@ -110,4 +134,9 @@ test('handles invalid or missing dailyWordGoal safely', () => {
   assert.equal(result.goalWords, 250);
   assert.equal(result.percentage, 10);
   assert.equal(result.stage, 'starting');
+
+  assert.equal(clampDailyWordGoal(10), 50);
+  assert.equal(clampDailyWordGoal(400), 400);
+  assert.equal(clampDailyWordGoal(9999), 2000);
+  assert.equal(clampDailyWordGoal(Number.NaN), 250);
 });

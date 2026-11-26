@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ArrowRight,
   BookmarkPlus,
@@ -10,22 +10,18 @@ import {
   Clock,
   Dices,
   ExternalLink,
-  EyeOff,
+  Feather,
   FileText,
-  Flame,
-  History,
   Layers,
   Lock,
   Maximize2,
   Minimize2,
   Moon,
-  Pause,
-  Play,
+  Plus,
   RefreshCw,
-  RotateCcw,
+  RotateCw,
   Save,
   Shuffle,
-  SlidersHorizontal,
   Sparkles,
   Sun,
   Trash2,
@@ -68,7 +64,13 @@ import {
   getVisibleWritePageTasks,
   type CoachPerformanceContext,
 } from '../utils/analytics';
-import { drawNextCurriculumRandomTopic } from '../utils/topicDeck';
+import {
+  drawNextCurriculumRandomTopic,
+  loadRefinedTopicsCache,
+  saveRefinedTopicsCache,
+  shouldRefreshPeriodicTopics,
+  type CuratedRandomTopic,
+} from '../utils/topicDeck';
 import { buildAdaptivePromptContext } from '../utils/adaptivePromptProfile';
 import { getApiUrl, safeParseJsonResponse } from '../utils/apiBase';
 import { QuickAddVocabModal } from './QuickAddVocabModal';
@@ -94,15 +96,23 @@ import {
 import { computeProseDiagnostics } from '../utils/proseDiagnostics';
 import {
   COMPRESSION_ROUNDS,
+  canAdvanceCompressionRound,
   computeCompressionMetrics,
   countSprintWords,
   formatCountdownMMSS,
 } from '../utils/compressionSprint';
 import {
+  isCurrentDraftEvaluatedClean,
+  resolveStudioFooterAction,
+} from '../utils/writeStudioLifecycle';
+import {
   compareSkeletonReconstruction,
-  parseSkeletonClues,
-  pickOfflineSkeletonPassage,
+  extractSentenceSkeletonClues,
+  findBestTopicSkeletonPassage,
+  getInitialSkeletonClues,
+  isCustomUserTopic,
   type SkeletonPassage,
+  type SkeletonPhase,
 } from '../utils/skeletonDrill';
 import {
   checkRoomAJargon,
@@ -113,10 +123,31 @@ import {
   pickRandomConstraint,
   type ConstraintChallenge,
 } from '../utils/constraintChallenges';
+import { LiveConstraintRail } from './ConstraintStudioPanel';
+import { DeskControlRibbon } from './write-addons/DeskControlRibbon';
+import { PracticeAddonStage } from './write-addons/PracticeAddonStage';
+import { TextAnalysisDrawer } from './write-addons/TextAnalysisDrawer';
+import { ThreeRoomsDesk } from './write-addons/ThreeRoomsDesk';
+import { WritingFlowMeter } from './write-addons/WritingFlowMeter';
 import {
-  ConstraintPickerDrawer,
-  LiveConstraintRail,
-} from './ConstraintStudioPanel';
+  analyzeWritingSample,
+  type ProfessionalVocabAlternative,
+} from '../utils/textAnalysis';
+import {
+  TYPING_ROLLING_WINDOW_MS,
+  computeTypingFlowMetrics,
+  createInitialTypingFlowState,
+  recordTypingProgress,
+  type TypingFlowTrackerState,
+} from '../utils/typingFlow';
+import {
+  SLOW_EVAL_THRESHOLD_MS,
+  addSkeletonClue,
+  computeTimerRemainingRatio,
+  removeSkeletonClueAt,
+  shouldCollapseWriteHeader,
+  updateSkeletonClueAt,
+} from '../utils/writeStudioAddons';
 import {
   createIdlePostEvalClearState,
   dismissPostEvalClear,
@@ -137,25 +168,9 @@ import {
 } from '../utils/noBackspaceGuard';
 import {
   computeTimeCapsuleDelta,
-  findTimeCapsuleCandidate,
+  getTimeCapsuleStatus,
 } from '../utils/timeCapsule';
 import { playTactileClick } from '../utils/tactileSound';
-import { formatMobileStudioSummary } from '../utils/mobileViewport';
-
-const AUDIENCE_OPTIONS: AudienceOption[] = [
-  'Interviewer',
-  'Hiring Manager',
-  'Professor',
-  'LinkedIn Reader',
-  'Friend',
-];
-
-const DRILL_OPTIONS: Array<{ id: DrillType; label: string; duration: string }> = [
-  { id: 'standard', label: 'Standard', duration: '10m' },
-  { id: 'compression-432', label: '4/3/2 Sprint', duration: '6m' },
-  { id: 'skeleton', label: 'Skeleton', duration: '8m' },
-  { id: 'three-rooms', label: '3 Rooms', duration: '10m' },
-];
 
 interface EvaluationPayload {
   evaluationStatus?: 'completed' | 'queued_for_reset';
@@ -212,6 +227,7 @@ interface WriteStudioProps {
   activeAiModelLabel?: string;
   pendingEvalSessionsCount?: number;
   dailyWordGoal?: number;
+  onChangeDailyWordGoal?: (nextGoal: number) => void;
   liveOfflineCheckEnabled?: boolean;
   onToggleLiveOfflineCheck?: () => void;
   onRefreshTriWeeklySchedule: () => void;
@@ -243,6 +259,28 @@ interface WriteStudioProps {
     inProgress: boolean;
     hasCompletedResult: boolean;
   }) => void;
+  requestedPracticeWord?: string | null;
+  onClearRequestedPracticeWord?: () => void;
+  requestedDrillToken?: {
+    drill: DrillType;
+    nonce: number;
+    originSession?: WritingSession | null;
+  } | null;
+}
+
+const COMPLETED_SKELETON_IDS_KEY = 'quillit_completed_skeleton_ids_v1';
+
+function loadCompletedSkeletonIds(): string[] {
+  try {
+    const raw = localStorage.getItem(COMPLETED_SKELETON_IDS_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed)
+      ? parsed.filter((x): x is string => typeof x === 'string')
+      : [];
+  } catch {
+    return [];
+  }
 }
 
 export function WriteStudio({
@@ -261,6 +299,7 @@ export function WriteStudio({
   tactileSoundEnabled = false,
   pendingEvalSessionsCount = 0,
   dailyWordGoal,
+  onChangeDailyWordGoal,
   liveOfflineCheckEnabled = true,
   onToggleLiveOfflineCheck,
   onUpdateSlot,
@@ -279,6 +318,9 @@ export function WriteStudio({
   onAddVocabEntry,
   onOpenScheduledPopup,
   onEvaluationStateChange,
+  requestedPracticeWord = null,
+  onClearRequestedPracticeWord,
+  requestedDrillToken = null,
 }: WriteStudioProps) {
   const [mode, setMode] = useState<WritingMode>(initialMode);
   const [tone, setTone] = useState<ToneSetting>(initialTone);
@@ -316,9 +358,16 @@ export function WriteStudio({
   );
   const [sprintRunning, setSprintRunning] = useState(false);
   const [sprintAutoPaused, setSprintAutoPaused] = useState(false);
+  const [sprintAutoArmed, setSprintAutoArmed] = useState(true);
+  const sprintAutoArmedRef = useRef(true);
+  const [sprintEmptyGuardMessage, setSprintEmptyGuardMessage] = useState<string | null>(null);
+  const [sprintEmptyGuardTick, setSprintEmptyGuardTick] = useState(0);
+  const [sprintCompleted, setSprintCompleted] = useState(false);
   const [showPrevRoundsDrawer, setShowPrevRoundsDrawer] = useState(false);
   const [mobileControlsOpen, setMobileControlsOpen] = useState(false);
+  const [slowEvalNotice, setSlowEvalNotice] = useState<string | null>(null);
   const evalAsideRef = useRef<HTMLElement | null>(null);
+  const topicTextareaRef = useRef<HTMLTextAreaElement | null>(null);
 
   // Post-Evaluation 3s Smart Clear & Non-Destructive Undo State
   const [clearPopupState, setClearPopupState] = useState<PostEvalClearState>(() =>
@@ -338,16 +387,35 @@ export function WriteStudio({
     activeDraftId: string | null;
     activeSlotId: string | undefined;
     loggedSessionId: string | null;
+    sprintRoundIdx: 0 | 1 | 2;
+    sprintRounds: [string, string, string];
+    sprintCompleted: boolean;
   } | null>(null);
 
-  // Skeleton Reconstruction State
+  // Skeleton Reconstruction State (editable anchor keywords + auto-rotating passages)
+  const [completedSkeletonIds, setCompletedSkeletonIds] = useState<string[]>(() =>
+    loadCompletedSkeletonIds()
+  );
+  const [skeletonDomainFilter, setSkeletonDomainFilter] = useState<
+    SkeletonPassage['domain'] | 'all'
+  >('all');
   const [skeletonPassage, setSkeletonPassage] = useState<SkeletonPassage>(() =>
-    pickOfflineSkeletonPassage(initialMode)
+    findBestTopicSkeletonPassage({
+      topic: initialTopic,
+      mode: initialMode,
+      completedIds: loadCompletedSkeletonIds(),
+    }).passage
   );
-  const [skeletonPhase, setSkeletonPhase] = useState<'study' | 'reconstruct'>(
-    'study'
+  const [skeletonPhase, setSkeletonPhase] = useState<SkeletonPhase>('study');
+  const [skeletonClues, setSkeletonClues] = useState<string[]>(() =>
+    getInitialSkeletonClues(
+      findBestTopicSkeletonPassage({
+        topic: initialTopic,
+        mode: initialMode,
+        completedIds: loadCompletedSkeletonIds(),
+      }).passage
+    )
   );
-  const [skeletonCluesInput, setSkeletonCluesInput] = useState('');
   const [skeletonLoading, setSkeletonLoading] = useState(false);
   const [seenSkeletonIds, setSeenSkeletonIds] = useState<string[]>([]);
 
@@ -373,6 +441,40 @@ export function WriteStudio({
   // 2-Second Vanishing Desk (fades non-essential chrome during continuous typing)
   const [chromeFaded, setChromeFaded] = useState(false);
   const typingFadeTimerRef = useRef<number | null>(null);
+
+  // Real-Time WPM & Typing Flow Cadence Tracker
+  const [typingFlowState, setTypingFlowState] = useState<TypingFlowTrackerState>(
+    () => createInitialTypingFlowState()
+  );
+  const [typingFlowNowMs, setTypingFlowNowMs] = useState<number>(() => Date.now());
+
+  useEffect(() => {
+    if (typingFlowState.lastKeystrokeAt === null) return;
+    const interval = window.setInterval(() => {
+      const now = Date.now();
+      setTypingFlowNowMs(now);
+      if (
+        typingFlowState.lastKeystrokeAt !== null &&
+        now - typingFlowState.lastKeystrokeAt > TYPING_ROLLING_WINDOW_MS + 1200
+      ) {
+        window.clearInterval(interval);
+      }
+    }, 900);
+    return () => window.clearInterval(interval);
+  }, [typingFlowState.lastKeystrokeAt]);
+
+  const typingFlowMetrics = useMemo(
+    () => computeTypingFlowMetrics(typingFlowState, typingFlowNowMs),
+    [typingFlowState, typingFlowNowMs]
+  );
+
+  const trackEditorTyping = useCallback((prevText: string, nextText: string) => {
+    const now = Date.now();
+    setTypingFlowNowMs(now);
+    setTypingFlowState((prev) =>
+      recordTypingProgress(prev, prevText, nextText, now)
+    );
+  }, []);
 
   // Revise & Lift (Pass 2) State
   const [revisionContext, setRevisionContext] = useState<{
@@ -427,6 +529,7 @@ export function WriteStudio({
   const [pivoting, setPivoting] = useState(false);
 
   const [showOfflinePanel, setShowOfflinePanel] = useState(true);
+  const [showTextAnalysis, setShowTextAnalysis] = useState(false);
   const [showAllDueTasks, setShowAllDueTasks] = useState(false);
 
   const [liveAppliedNotice, setLiveAppliedNotice] = useState<string | null>(null);
@@ -454,10 +557,27 @@ export function WriteStudio({
   const [resetCountdown, setResetCountdown] = useState<number>(0);
   const [initialResetTotal, setInitialResetTotal] = useState<number>(30);
 
-  // Sync latest topic ref
+  // Sync latest topic ref and auto-size #draft-topic so long multi-line prompts are never clipped
   useEffect(() => {
     latestTopicRef.current = topic;
-  }, [topic]);
+    const el = topicTextareaRef.current;
+    if (el) {
+      el.style.height = 'auto';
+      el.style.height = `${el.scrollHeight}px`;
+    }
+  }, [topic, focusMode]);
+
+  useEffect(() => {
+    function handleResize() {
+      const el = topicTextareaRef.current;
+      if (el) {
+        el.style.height = 'auto';
+        el.style.height = `${el.scrollHeight}px`;
+      }
+    }
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
 
   // Report evaluation progress to Header (PSR-08)
   useEffect(() => {
@@ -607,55 +727,143 @@ export function WriteStudio({
     window.setTimeout(() => document.getElementById('writing-editor')?.focus(), 40);
   }
 
+  // Sync external drill launch requests (e.g., from Daily Practice Suggestion popup)
+  useEffect(() => {
+    if (!requestedDrillToken) return;
+    if (requestedDrillToken.drill === 'time-capsule') {
+      if (requestedDrillToken.originSession) {
+        setTimeCapsuleOrigin(requestedDrillToken.originSession);
+        setActiveDrill('time-capsule');
+        setMode(requestedDrillToken.originSession.mode);
+        setTone(requestedDrillToken.originSession.tone);
+        setTopic(requestedDrillToken.originSession.topicDescription);
+        setContent('');
+        setEvaluation(null);
+        setSavedSuccess(false);
+        setRevisionContext(null);
+      } else {
+        handleLaunchTimeCapsuleFromStudio();
+      }
+      return;
+    }
+    handleSelectDrill(requestedDrillToken.drill);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [requestedDrillToken?.nonce]);
+
+  function applySkeletonPassage(
+    picked: SkeletonPassage,
+    options?: { preserveUserTopic?: boolean; explicitClues?: string[] }
+  ) {
+    const resolvedClues =
+      options?.explicitClues && options.explicitClues.length > 0
+        ? options.explicitClues.slice(0, 4)
+        : getInitialSkeletonClues(picked);
+    setSkeletonPassage({
+      ...picked,
+      sentenceClues: resolvedClues,
+    });
+    setSkeletonClues(resolvedClues);
+    const keepUserTopic = options?.preserveUserTopic ?? isCustomUserTopic(topic);
+    if (!keepUserTopic) {
+      setTopic(`Skeleton: ${picked.title}`);
+    }
+    setSkeletonPhase('study');
+  }
+
   function handleSelectDrill(nextDrill: DrillType) {
     playTactileClick(tactileSoundEnabled);
     setActiveDrill(nextDrill);
     setErrorMessage(null);
+    setSlowEvalNotice(null);
     setEvaluation(null);
+    setLastEvaluatedSnapshot(null);
     setSavedSuccess(false);
     setRevisionContext(null);
+    setSprintCompleted(false);
 
     if (nextDrill === 'compression-432') {
       setSprintRoundIdx(0);
       setSprintRounds(['', '', '']);
       setSprintSecondsLeft(COMPRESSION_ROUNDS[0].durationSec);
       setSprintRunning(false);
+      setSprintAutoPaused(false);
+      setSprintEmptyGuardMessage(null);
+      sprintAutoArmedRef.current = true;
+      setSprintAutoArmed(true);
       setShowPrevRoundsDrawer(false);
     } else if (nextDrill === 'skeleton') {
-      setSkeletonPhase('study');
-      const picked = pickOfflineSkeletonPassage(mode, seenSkeletonIds);
-      setSkeletonPassage(picked);
-      setSkeletonCluesInput(picked.signatureMoves.join(', '));
-      setTopic(`Skeleton: ${picked.title}`);
+      const hasTopic = isCustomUserTopic(topic);
+      const { passage: picked } = findBestTopicSkeletonPassage({
+        topic: hasTopic ? topic : '',
+        mode,
+        completedIds: [...completedSkeletonIds, ...seenSkeletonIds],
+        currentId: skeletonPassage.id,
+        domainFilter: skeletonDomainFilter,
+      });
+      setSeenSkeletonIds((prev) => Array.from(new Set([...prev, picked.id])));
+      applySkeletonPassage(picked, { preserveUserTopic: hasTopic });
     } else if (nextDrill === 'three-rooms') {
       if (!topic.trim()) {
-        setTopic('Explain PID feedback loops in two contrasting registers');
+        setTopic('Explain one tricky idea simply, then defend it to an expert');
       }
     }
   }
 
-  async function handleNextSkeletonPassage() {
+  function handleChangeSkeletonDomainFilter(
+    nextDomain: SkeletonPassage['domain'] | 'all'
+  ) {
+    playTactileClick(tactileSoundEnabled);
+    setSkeletonDomainFilter(nextDomain);
+    const hasTopic = isCustomUserTopic(topic);
+    const { passage: picked } = findBestTopicSkeletonPassage({
+      topic: hasTopic ? topic : '',
+      mode,
+      completedIds: completedSkeletonIds,
+      currentId: skeletonPassage.id,
+      domainFilter: nextDomain,
+    });
+    applySkeletonPassage(picked, { preserveUserTopic: hasTopic });
+  }
+
+  async function requestSkeletonPassage(options: { adaptToActiveTopic: boolean }) {
     playTactileClick(tactileSoundEnabled);
     setSkeletonLoading(true);
     const nextSeen = Array.from(new Set([...seenSkeletonIds, skeletonPassage.id]));
     setSeenSkeletonIds(nextSeen);
+    const activeTopicStr = isCustomUserTopic(topic) ? topic.trim() : '';
+    const shouldUseTopic = options.adaptToActiveTopic || Boolean(activeTopicStr);
+
     try {
       const res = await fetch(getApiUrl('/api/skeleton-passage'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           mode,
-          focusTheme: topic.trim() || undefined,
-          excludeIds: nextSeen,
+          topic: shouldUseTopic ? activeTopicStr : undefined,
+          domain: skeletonDomainFilter,
+          focusTheme: activeTopicStr || undefined,
+          excludeIds: options.adaptToActiveTopic
+            ? completedSkeletonIds
+            : [...completedSkeletonIds, ...nextSeen],
           studentProfile,
         }),
       });
       const data = await safeParseJsonResponse<{
         passage?: Partial<SkeletonPassage> & { passage?: string };
+        sentenceClues?: string[];
+        suggestedClues?: string[];
+        adaptedToTopic?: string;
       }>(res);
       const rawPassage = data?.passage;
       const resolvedText = rawPassage?.text || rawPassage?.passage;
       if (res.ok && rawPassage && resolvedText) {
+        const aiClues = Array.isArray(data?.sentenceClues)
+          ? data.sentenceClues
+          : Array.isArray(rawPassage.sentenceClues)
+            ? rawPassage.sentenceClues
+            : Array.isArray(data?.suggestedClues)
+              ? data.suggestedClues
+              : [];
         const normalized: SkeletonPassage = {
           id: rawPassage.id || `skel-ai-${Date.now()}`,
           title: rawPassage.title || 'High-Craft Passage',
@@ -663,15 +871,24 @@ export function WriteStudio({
           mode: rawPassage.mode || mode,
           text: resolvedText,
           wordCount:
-            rawPassage.wordCount || resolvedText.trim().split(/\s+/).filter(Boolean).length,
+            rawPassage.wordCount ||
+            resolvedText.trim().split(/\s+/).filter(Boolean).length,
+          sentenceClues:
+            aiClues.length > 0
+              ? aiClues
+              : extractSentenceSkeletonClues(resolvedText, 4),
           signatureMoves: Array.isArray(rawPassage.signatureMoves)
             ? rawPassage.signatureMoves
             : [],
+          adaptedToTopic:
+            data?.adaptedToTopic ||
+            rawPassage.adaptedToTopic ||
+            (shouldUseTopic && activeTopicStr ? activeTopicStr : undefined),
         };
-        setSkeletonPassage(normalized);
-        setSkeletonCluesInput(normalized.signatureMoves.join(', '));
-        setTopic(`Skeleton: ${normalized.title}`);
-        setSkeletonPhase('study');
+        applySkeletonPassage(normalized, {
+          preserveUserTopic: Boolean(activeTopicStr),
+          explicitClues: normalized.sentenceClues,
+        });
         return;
       }
     } catch {
@@ -679,15 +896,48 @@ export function WriteStudio({
     } finally {
       setSkeletonLoading(false);
     }
-    const localPick = pickOfflineSkeletonPassage(mode, nextSeen);
-    setSkeletonPassage(localPick);
-    setSkeletonCluesInput(localPick.signatureMoves.join(', '));
-    setTopic(`Skeleton: ${localPick.title}`);
-    setSkeletonPhase('study');
+
+    const { passage: localPick } = findBestTopicSkeletonPassage({
+      topic: shouldUseTopic ? activeTopicStr : '',
+      mode,
+      completedIds: options.adaptToActiveTopic
+        ? completedSkeletonIds
+        : [...completedSkeletonIds, ...nextSeen],
+      currentId: options.adaptToActiveTopic ? null : skeletonPassage.id,
+      domainFilter: skeletonDomainFilter,
+    });
+    applySkeletonPassage(localPick, {
+      preserveUserTopic: Boolean(activeTopicStr),
+    });
+  }
+
+  function handleNextSkeletonPassage() {
+    void requestSkeletonPassage({ adaptToActiveTopic: false });
+  }
+
+  function handleAdaptSkeletonToTopic() {
+    void requestSkeletonPassage({ adaptToActiveTopic: true });
   }
 
   function handleAdvanceCompressionRound() {
     playTactileClick(tactileSoundEnabled);
+    const guard = canAdvanceCompressionRound(
+      content,
+      (sprintRoundIdx + 1) as 1 | 2 | 3
+    );
+    if (!guard.allowed) {
+      setSprintEmptyGuardMessage(
+        guard.reason || 'Write at least a few words before moving to the next stage.'
+      );
+      setSprintEmptyGuardTick((t) => t + 1);
+      window.setTimeout(
+        () => document.getElementById('writing-editor')?.focus(),
+        40
+      );
+      return;
+    }
+    setSprintEmptyGuardMessage(null);
+
     const updated: [string, string, string] = [...sprintRounds] as [
       string,
       string,
@@ -702,11 +952,83 @@ export function WriteStudio({
       setContent(updated[nextIdx] || '');
       setSprintSecondsLeft(COMPRESSION_ROUNDS[nextIdx].durationSec);
       setSprintRunning(false);
+      setSprintAutoPaused(false);
+      sprintAutoArmedRef.current = true;
+      setSprintAutoArmed(true);
       window.setTimeout(
         () => document.getElementById('writing-editor')?.focus(),
         40
       );
     }
+  }
+
+  function handleEvaluateSprintFinal() {
+    playTactileClick(tactileSoundEnabled);
+    setSprintRunning(false);
+    sprintAutoArmedRef.current = false;
+    setSprintAutoArmed(false);
+    setSprintEmptyGuardMessage(null);
+    const updated: [string, string, string] = [...sprintRounds] as [
+      string,
+      string,
+      string,
+    ];
+    updated[2] = content.trim();
+    setSprintRounds(updated);
+    void handleEvaluateDraft(false);
+  }
+
+  function handleStartNewSprint() {
+    playTactileClick(tactileSoundEnabled);
+    setClearPopupState((prev) => dismissPostEvalClear(prev));
+    setTopic('');
+    setContent('');
+    setDebouncedContent('');
+    setEvaluation(null);
+    setLastEvaluatedSnapshot(null);
+    setSavedSuccess(false);
+    setDraftSavedLabel(null);
+    setAutoTitledBanner(null);
+    setErrorMessage(null);
+    setSlowEvalNotice(null);
+    setRevisionContext(null);
+    setActiveDraftId(null);
+    setActiveSlotId(undefined);
+    activeLoggedSessionIdRef.current = null;
+    setSprintCompleted(false);
+    setSprintRoundIdx(0);
+    setSprintRounds(['', '', '']);
+    setSprintSecondsLeft(COMPRESSION_ROUNDS[0].durationSec);
+    setSprintRunning(false);
+    setSprintAutoPaused(false);
+    setSprintEmptyGuardMessage(null);
+    sprintAutoArmedRef.current = true;
+    setSprintAutoArmed(true);
+    setShowPrevRoundsDrawer(false);
+    window.setTimeout(() => document.getElementById('writing-editor')?.focus(), 40);
+  }
+
+  function handleStartNewEntry() {
+    playTactileClick(tactileSoundEnabled);
+    setClearPopupState((prev) => dismissPostEvalClear(prev));
+    setTopic('');
+    setContent('');
+    setDebouncedContent('');
+    setRoomAText('');
+    setRoomBText('');
+    setEvaluation(null);
+    setLastEvaluatedSnapshot(null);
+    setSavedSuccess(false);
+    setDraftSavedLabel(null);
+    setAutoTitledBanner(null);
+    setErrorMessage(null);
+    setSlowEvalNotice(null);
+    setRevisionContext(null);
+    setActiveDraftId(null);
+    setActiveSlotId(undefined);
+    activeLoggedSessionIdRef.current = null;
+    setSprintCompleted(false);
+    window.setTimeout(() => document.getElementById('writing-editor')?.focus(), 40);
   }
 
   const diagnostics = useMemo(
@@ -718,6 +1040,19 @@ export function WriteStudio({
   const liveProseDiagnostics = useMemo(
     () => computeProseDiagnostics(debouncedContent),
     [debouncedContent]
+  );
+
+  // Live EIE Text Analysis & Vocabulary Library Comparison
+  const liveTextAnalysis = useMemo(
+    () =>
+      analyzeWritingSample({
+        text: debouncedContent,
+        vocabulary,
+        mode,
+        tone,
+        topic,
+      }),
+    [debouncedContent, vocabulary, mode, tone, topic]
   );
 
   // Live Deterministic Constraint Evaluation
@@ -741,11 +1076,12 @@ export function WriteStudio({
     [roomBText]
   );
 
-  // Eligible Time Capsule candidate from user history
-  const timeCapsuleCandidate = useMemo(
-    () => findTimeCapsuleCandidate(sessions, todayISO),
+  // Time Capsule natural-language readiness & eligible past topics
+  const timeCapsuleStatus = useMemo(
+    () => getTimeCapsuleStatus(sessions, todayISO),
     [sessions, todayISO]
   );
+  const timeCapsuleCandidate = timeCapsuleStatus.candidate;
 
   const effectiveDailyWordGoal =
     dailyWordGoal || studentProfile?.targetWordGoal || 250;
@@ -815,17 +1151,41 @@ export function WriteStudio({
   }, [todayISO]);
 
   function handleLaunchTimeCapsuleFromStudio() {
-    if (!timeCapsuleCandidate) return;
     playTactileClick(tactileSoundEnabled);
-    setTimeCapsuleOrigin(timeCapsuleCandidate.session);
     setActiveDrill('time-capsule');
-    setMode(timeCapsuleCandidate.session.mode);
-    setTone(timeCapsuleCandidate.session.tone);
-    setTopic(timeCapsuleCandidate.session.topicDescription);
-    setContent('');
+    setErrorMessage(null);
+    setSlowEvalNotice(null);
     setEvaluation(null);
     setSavedSuccess(false);
     setRevisionContext(null);
+
+    if (timeCapsuleStatus.state === 'ready' && timeCapsuleStatus.candidate) {
+      const origin = timeCapsuleStatus.candidate.session;
+      setTimeCapsuleOrigin(origin);
+      setMode(origin.mode);
+      setTone(origin.tone);
+      setTopic(origin.topicDescription);
+      setContent('');
+    } else {
+      setTimeCapsuleOrigin(null);
+    }
+  }
+
+  function handleSwitchTimeCapsuleTopic() {
+    const candidates = timeCapsuleStatus.allEligibleCandidates;
+    if (candidates.length <= 1) return;
+    playTactileClick(tactileSoundEnabled);
+    const currentIdx = candidates.findIndex(
+      (c) => c.session.id === timeCapsuleOrigin?.id
+    );
+    const next = candidates[(currentIdx + 1) % candidates.length] ?? candidates[0];
+    setTimeCapsuleOrigin(next.session);
+    setMode(next.session.mode);
+    setTone(next.session.tone);
+    setTopic(next.session.topicDescription);
+    setContent('');
+    setEvaluation(null);
+    setSavedSuccess(false);
   }
 
   function handleLocateConstraintSpan(start: number, end: number) {
@@ -848,6 +1208,9 @@ export function WriteStudio({
       activeDraftId,
       activeSlotId,
       loggedSessionId: activeLoggedSessionIdRef.current,
+      sprintRoundIdx,
+      sprintRounds,
+      sprintCompleted,
     };
     setTopic('');
     setContent('');
@@ -862,9 +1225,12 @@ export function WriteStudio({
     setErrorMessage(null);
     setSprintRunning(false);
     setSprintAutoPaused(false);
+    setSprintCompleted(false);
     setSprintRoundIdx(0);
     setSprintRounds(['', '', '']);
     setSprintSecondsLeft(COMPRESSION_ROUNDS[0].durationSec);
+    sprintAutoArmedRef.current = true;
+    setSprintAutoArmed(true);
     setFlowLockActive(false);
     setFlowSecondsLeft(DEFAULT_FLOW_SPRINT_SECONDS);
     setRevisionContext(null);
@@ -885,6 +1251,13 @@ export function WriteStudio({
     setRoomBText(snap.roomBText);
     setActiveDraftId(snap.activeDraftId);
     setActiveSlotId(snap.activeSlotId);
+    setSprintRoundIdx(snap.sprintRoundIdx);
+    setSprintRounds(snap.sprintRounds);
+    setSprintCompleted(snap.sprintCompleted);
+    if (snap.sprintCompleted) {
+      sprintAutoArmedRef.current = false;
+      setSprintAutoArmed(false);
+    }
     activeLoggedSessionIdRef.current = snap.loggedSessionId;
     lastClearedDraftRef.current = null;
     setClearPopupState((prev) => dismissPostEvalClear(prev));
@@ -937,6 +1310,13 @@ export function WriteStudio({
       if (lastEvaluatedSnapshot.roomBText) {
         setRoomBText(lastEvaluatedSnapshot.roomBText);
       }
+    }
+    if (activeDrill === 'compression-432') {
+      setSprintRoundIdx(2);
+      setSprintCompleted(true);
+      setSprintRunning(false);
+      sprintAutoArmedRef.current = false;
+      setSprintAutoArmed(false);
     }
     setClearPopupState((prev) => dismissPostEvalClear(prev));
     const pass1Id =
@@ -994,14 +1374,80 @@ export function WriteStudio({
     ];
 
     topicTimerRef.current = window.setTimeout(() => {
+      const cache = loadRefinedTopicsCache();
       const draw = drawNextCurriculumRandomTopic({
         usedCurriculumIds,
         usedTopicTitles: usedTitles,
         lastShownId: lastDrawnCurriculumIdRef.current,
+        refinedTopics: cache.topics,
       });
       lastDrawnCurriculumIdRef.current = draw.id;
       if (draw.curriculumId && onRecordUsedCurriculumId) {
         onRecordUsedCurriculumId(draw.curriculumId);
+      }
+
+      const nextCache = {
+        ...cache,
+        drawsSinceRefresh: cache.drawsSinceRefresh + 1,
+      };
+      saveRefinedTopicsCache(nextCache);
+
+      // Periodically refine and add fresh topics quietly in the background
+      if (shouldRefreshPeriodicTopics(nextCache, todayISO)) {
+        void (async () => {
+          try {
+            const adaptiveWritingProfile = buildAdaptivePromptContext(
+              studentProfile,
+              sessions,
+              vocabulary,
+              todayISO
+            );
+            const res = await fetch(getApiUrl('/api/topics'), {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                mode: MODE_LABELS[draw.mode],
+                tone: TONE_LABELS[draw.tone],
+                existingTopics: usedTitles.slice(0, 14),
+                studentProfile,
+                adaptiveWritingProfile,
+              }),
+            });
+            const data = await safeParseJsonResponse<{
+              topics?: { title?: string; guidance?: string; category?: string }[];
+            }>(res);
+            if (res.ok && Array.isArray(data?.topics) && data.topics.length > 0) {
+              const incoming: CuratedRandomTopic[] = data.topics
+                .filter((t) => typeof t?.title === 'string' && t.title.trim().length > 6)
+                .slice(0, 4)
+                .map((t, idx) => ({
+                  id: `refined-${Date.now()}-${idx}`,
+                  title: String(t.title).trim(),
+                  hint:
+                    typeof t.guidance === 'string' && t.guidance.trim()
+                      ? t.guidance.trim()
+                      : 'Open with one concrete observation and keep sentences crisp.',
+                  category:
+                    typeof t.category === 'string' && t.category.trim()
+                      ? t.category.trim()
+                      : 'Fresh Prompt',
+                  mode: draw.mode,
+                  tone: draw.tone,
+                  targetWords: 200,
+                }));
+              if (incoming.length > 0) {
+                const latest = loadRefinedTopicsCache();
+                saveRefinedTopicsCache({
+                  updatedAtISO: todayISO,
+                  drawsSinceRefresh: 0,
+                  topics: [...latest.topics, ...incoming].slice(-18),
+                });
+              }
+            }
+          } catch {
+            // Silent background topic refinement — never interrupt the writer
+          }
+        })();
       }
 
       if (activeSlotId) {
@@ -1019,7 +1465,7 @@ export function WriteStudio({
         isAi: false,
       });
       setSuggestingTopic(false);
-    }, 220);
+    }, 200);
   }
 
   async function handleAskAiForFreshTopic() {
@@ -1409,6 +1855,27 @@ export function WriteStudio({
     setSavedVocabKeys((prev) => new Set(prev).add(key));
   }
 
+  function handleSaveAnalysisAlternativeToLibrary(
+    alt: ProfessionalVocabAlternative
+  ) {
+    handleSaveVocabItem({
+      used: alt.original,
+      betterAlternative: alt.professionalAlternative,
+      explanation: alt.educationalNote,
+      contextSnippet: topic || 'EIE Text Analysis',
+      contextTag: alt.registerTag,
+    });
+    setQuickVocabToast(
+      `Saved "${alt.professionalAlternative}" to your Vocabulary Library.`
+    );
+    if (quickVocabToastTimerRef.current !== null) {
+      window.clearTimeout(quickVocabToastTimerRef.current);
+    }
+    quickVocabToastTimerRef.current = window.setTimeout(() => {
+      setQuickVocabToast(null);
+    }, 3200);
+  }
+
   function buildCurrentDrillContextAndMeta(submittedText: string): {
     drillContext: Record<string, unknown>;
     drillMeta: DrillMeta;
@@ -1465,7 +1932,7 @@ export function WriteStudio({
     }
 
     if (activeDrill === 'skeleton') {
-      const clues = parseSkeletonClues(skeletonCluesInput);
+      const clues = skeletonClues.filter((c) => c.trim().length > 0);
       const diff = compareSkeletonReconstruction(
         skeletonPassage.text,
         submittedText
@@ -1704,11 +2171,25 @@ export function WriteStudio({
     if (promoted && promoted.length > 0) {
       setPromotedVocabBanner(promoted);
     }
-    if (activeDraftId && onDeleteDraft) {
+    if (activeDraftId && onDeleteDraft && activeDraftId !== stableSessionId) {
       onDeleteDraft(activeDraftId);
       setActiveDraftId(null);
       setDraftSavedLabel(null);
     }
+
+    // Mark completed Skeleton passage so the next Skeleton session rotates fresh
+    if (activeDrill === 'skeleton' && skeletonPassage?.id) {
+      setCompletedSkeletonIds((prev) => {
+        const next = Array.from(new Set([...prev, skeletonPassage.id]));
+        try {
+          localStorage.setItem(COMPLETED_SKELETON_IDS_KEY, JSON.stringify(next));
+        } catch {
+          // ignore storage quota errors
+        }
+        return next;
+      });
+    }
+
     setSavedSuccess(true);
   }
 
@@ -1767,9 +2248,63 @@ export function WriteStudio({
     });
     setEvaluatingTierLabel(predictedRoute.primary.tierLabel);
 
-    // Single-pass atomic evaluation (PSR-01: zero provisional score jump)
+    // Single-pass atomic evaluation with slow-API draft resilience (>9s saves to Draft + unlocks UI)
     setClearPopupState((prev) => dismissPostEvalClear(prev));
+    setSlowEvalNotice(null);
     setEvaluating(true);
+
+    let deferredToDraft = false;
+    const slowTimerId = window.setTimeout(() => {
+      deferredToDraft = true;
+      const pendingDraft: WritingSession = {
+        id: stableSessionId,
+        date: todayISO,
+        daySlot: daySlot || 'Studio Session',
+        mode,
+        promptCategory: MODE_LABELS[mode],
+        tone,
+        topicDescription: fallbackTopic,
+        content: submittedDraft,
+        wordCount: draftDiag.wordCount,
+        scores: {
+          naturalVoiceFlow: 0,
+          claritySimplicity: 0,
+          grammarMechanics: 0,
+          toneEngagement: 0,
+          sentenceVarietyCadence: 0,
+          concisenessDirectness: 0,
+        },
+        totalScore: 0,
+        percentage: 0,
+        cefrLevel: 'B2',
+        toneVerdict: 'Awaiting AI Evaluation',
+        flowVerdict: 'Awaiting AI Evaluation',
+        feedbackImplemented: 'Baseline',
+        whatImproved: 'Saved to Drafts while AI completes your evaluation.',
+        strictImprovements: 'Evaluation in progress.',
+        grammarFixes: [],
+        vocabUpgrades: [],
+        audience,
+        drillType: activeDrill,
+        drillMeta,
+        status: 'Draft',
+        evaluationPending: true,
+        queuedAt: new Date().toISOString(),
+        createdAt: new Date().toISOString(),
+      };
+      if (onSaveDraft) {
+        onSaveDraft(pendingDraft);
+      } else {
+        onSaveSession(pendingDraft, [], activeSlotId);
+      }
+      setActiveDraftId(stableSessionId);
+      setDraftSavedLabel('Saved to Drafts · Awaiting AI');
+      setSlowEvalNotice(
+        'AI is taking longer than usual — your entry is saved to Drafts and awaiting AI evaluation in the background. You can explore Dashboard or keep using Quillit freely.'
+      );
+      setEvaluating(false);
+    }, SLOW_EVAL_THRESHOLD_MS);
+
     try {
       const res = await fetch(getApiUrl('/api/evaluate'), {
         method: 'POST',
@@ -1793,6 +2328,7 @@ export function WriteStudio({
           drillContext,
         }),
       });
+      window.clearTimeout(slowTimerId);
       const data = await safeParseJsonResponse<
         EvaluationPayload & { error?: string }
       >(res);
@@ -1823,6 +2359,7 @@ export function WriteStudio({
         drillVerdict: data.drillVerdict ?? localDrillVerdict,
         isProvisionalInstant: false,
       };
+      setSlowEvalNotice(null);
       setEvaluation(finalEval);
       setLastEvaluatedSnapshot({
         topic: finalTopic,
@@ -1846,16 +2383,30 @@ export function WriteStudio({
         setResetCountdown(secs);
       } else {
         setResetCountdown(0);
-        setClearPopupState((prev) => startPostEvalClearPrompt(prev));
+        if (activeDrill === 'compression-432' && sprintRoundIdx === 2) {
+          setSprintCompleted(true);
+          setSprintRunning(false);
+          sprintAutoArmedRef.current = false;
+          setSprintAutoArmed(false);
+        }
+        if (!deferredToDraft) {
+          setClearPopupState((prev) => startPostEvalClearPrompt(prev));
+        }
       }
     } catch {
+      window.clearTimeout(slowTimerId);
+      if (deferredToDraft) {
+        // Already saved safely to Drafts with evaluationPending=true; let App background worker retry cleanly
+        return;
+      }
       const currentOfflineIssues = runOfflineProofread(submittedDraft);
       const offlineEval = buildInstantLocalEvaluation(
         submittedDraft,
         mode,
         tone,
         currentOfflineIssues,
-        fallbackTopic
+        fallbackTopic,
+        vocabulary
       );
       const localProse = computeProseDiagnostics(submittedDraft);
       const mergedOffline: EvaluationPayload = {
@@ -1886,8 +2437,15 @@ export function WriteStudio({
         localDrillVerdict
       );
       setResetCountdown(0);
+      if (activeDrill === 'compression-432' && sprintRoundIdx === 2) {
+        setSprintCompleted(true);
+        setSprintRunning(false);
+        sprintAutoArmedRef.current = false;
+        setSprintAutoArmed(false);
+      }
       setClearPopupState((prev) => startPostEvalClearPrompt(prev));
     } finally {
+      window.clearTimeout(slowTimerId);
       setEvaluating(false);
     }
   }
@@ -1899,6 +2457,55 @@ export function WriteStudio({
         internationalMetrics: evaluation.internationalMetrics,
       })
     : null;
+
+  const hasCompletedEvaluation = Boolean(
+    evaluation && evaluation.evaluationStatus !== 'queued_for_reset'
+  );
+  const draftEvaluatedClean = isCurrentDraftEvaluatedClean({
+    activeDrill,
+    content,
+    roomAText,
+    roomBText,
+    lastEvaluatedSnapshot,
+    hasCompletedEvaluation,
+    evaluating,
+  });
+  const footerActionUi = resolveStudioFooterAction({
+    activeDrill,
+    sprintRoundIdx,
+    sprintCompleted,
+    currentWordCount: diagnostics.wordCount,
+    minFinalWords: COMPRESSION_ROUNDS[2].minWords,
+    evaluating,
+    hasRevisionContext: Boolean(revisionContext),
+    isDraftEvaluatedClean: draftEvaluatedClean,
+    hasCompletedEvaluation,
+    hasDraftText: effectiveDraftText.trim().length > 0,
+  });
+
+  function handleFooterPrimaryAction() {
+    switch (footerActionUi.primaryAction.kind) {
+      case 'advance-sprint':
+        handleAdvanceCompressionRound();
+        break;
+      case 'submit-sprint':
+        handleEvaluateSprintFinal();
+        break;
+      case 'new-sprint':
+        handleStartNewSprint();
+        break;
+      case 'new-entry':
+        handleStartNewEntry();
+        break;
+      case 'evaluate':
+      case 're-evaluate':
+      case 'score-revision':
+        void handleEvaluateDraft(false);
+        break;
+      default:
+        break;
+    }
+  }
 
   const hasRightCoachingDrawer = !focusMode && (evaluating || Boolean(evaluation));
   const studioGreeting = useMemo(
@@ -1941,145 +2548,222 @@ export function WriteStudio({
       : 50;
 
   const currentSprintSpec = COMPRESSION_ROUNDS[sprintRoundIdx];
-  const parsedSkeletonClues = useMemo(
-    () => parseSkeletonClues(skeletonCluesInput),
-    [skeletonCluesInput]
-  );
+  const isWriteSessionActive = shouldCollapseWriteHeader({
+    wordCount: diagnostics.wordCount,
+    sprintRunning,
+    flowLockActive,
+    focusMode,
+  });
 
   return (
     <div
+      data-session-active={isWriteSessionActive ? 'true' : 'false'}
       className={
         focusMode
           ? 'min-h-screen bg-canvas px-3 sm:px-4 py-4 sm:py-10'
-          : `${hasRightCoachingDrawer ? 'max-w-6xl' : 'max-w-4xl'} mx-auto px-3 sm:px-6 py-4 sm:py-9 space-y-3.5 sm:space-y-5`
+          : `${hasRightCoachingDrawer ? 'max-w-6xl' : 'max-w-4xl'} mx-auto px-3 sm:px-6 py-4 sm:py-8 space-y-3 sm:space-y-4`
       }
     >
-      {/* Minimal Editorial Studio Header (fades quietly during continuous typing) */}
+      {/* Calm Collapsible Editorial Studio Header — smoothly tucks away once drafting begins */}
       <div
-        data-faded={chromeFaded ? 'true' : 'false'}
-        className={`vanishing-chrome flex flex-wrap items-end justify-between gap-4 ${
-          focusMode ? 'max-w-3xl mx-auto mb-8' : ''
-        }`}
+        data-testid="studio-header-collapse"
+        data-collapsed={isWriteSessionActive && !focusMode ? 'true' : 'false'}
+        className={`session-header-collapse ${focusMode ? 'max-w-3xl mx-auto mb-6' : ''}`}
       >
-        <div className="min-w-0">
-          <div className="flex flex-wrap items-center gap-2.5">
-            <h1
-              data-testid="studio-greeting-headline"
-              className="font-display text-2xl sm:text-3xl font-medium tracking-tight text-ink-primary"
-            >
-              {focusMode ? 'Focused Manuscript' : studioGreeting.headline}
-            </h1>
-            {pendingEvalSessionsCount > 0 && (
-              <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-sm text-[11px] font-mono-tabular border border-status-warning-border bg-status-warning-soft text-status-warning">
-                <Clock className="w-3 h-3" aria-hidden="true" />
-                <span>{pendingEvalSessionsCount} queued</span>
-              </span>
-            )}
-          </div>
-          {!focusMode && (
-            <p className="text-xs text-ink-muted mt-1 flex flex-wrap items-center gap-x-2">
-              <span>{studioGreeting.sublinePrefix}</span>
-              <span aria-hidden="true">·</span>
-              <span className="font-mono-tabular">{formattedToday}</span>
-            </p>
-          )}
-        </div>
-
-        <div className="flex flex-wrap items-center gap-1.5 sm:gap-2 w-full sm:w-auto">
-          {!focusMode && (
-            <button
-              type="button"
-              data-testid="random-topic-button"
-              onClick={handleSuggestRandomTopic}
-              disabled={suggestingTopic}
-              title="Pick a fresh, non-repeating random topic to write on"
-              className="btn-secondary inline-flex items-center gap-1.5 min-h-[38px] sm:min-h-0 px-2.5 sm:px-3 py-1.5 sm:py-2 text-xs font-medium whitespace-nowrap"
-            >
-              {suggestingTopic ? (
-                <Sparkles
-                  className="w-3.5 h-3.5 text-ink-primary animate-pulse"
-                  aria-hidden="true"
-                />
-              ) : (
-                <Dices className="w-3.5 h-3.5 text-ink-secondary" aria-hidden="true" />
-              )}
-              <span className="sm:hidden">
-                {suggestingTopic ? 'Picking...' : 'Topic'}
-              </span>
-              <span className="hidden sm:inline">
-                {suggestingTopic ? 'Picking...' : 'Random Topic'}
-              </span>
-            </button>
-          )}
-
-          {!focusMode && (
-            <button
-              type="button"
-              data-testid="quick-add-vocab-button"
-              onClick={() => setShowQuickAddVocab(true)}
-              title="Quickly save a new word and definition to your vocabulary bank"
-              className="btn-secondary inline-flex items-center gap-1.5 min-h-[38px] sm:min-h-0 px-2.5 py-1.5 sm:py-2 text-xs font-medium whitespace-nowrap"
-            >
-              <BookmarkPlus className="w-3.5 h-3.5 text-ink-secondary" aria-hidden="true" />
-              <span>Quick Add</span>
-            </button>
-          )}
-
-          {!focusMode && (
-            <button
-              type="button"
-              data-testid="drafts-toggle-button"
-              onClick={() => setShowDraftsShelf((v) => !v)}
-              aria-expanded={showDraftsShelf}
-              className={`inline-flex items-center gap-1.5 min-h-[38px] sm:min-h-0 px-2.5 sm:px-3 py-1.5 sm:py-2 text-xs font-medium whitespace-nowrap ${
-                showDraftsShelf ? 'btn-primary' : 'btn-secondary'
-              }`}
-            >
-              <FileText className="w-3.5 h-3.5" aria-hidden="true" />
-              <span>
-                Drafts{savedDrafts.length > 0 ? ` (${savedDrafts.length})` : ''}
-              </span>
-            </button>
-          )}
-
-          {focusMode && (
-            <button
-              type="button"
-              onClick={onToggleTheme}
-              aria-label={
-                theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'
-              }
-              className="btn-secondary inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium"
-            >
-              {theme === 'dark' ? (
-                <Sun className="w-3.5 h-3.5 text-status-warning" aria-hidden="true" />
-              ) : (
-                <Moon className="w-3.5 h-3.5" aria-hidden="true" />
-              )}
-              <span>{theme === 'dark' ? 'Light' : 'Dark'}</span>
-            </button>
-          )}
-
-          <button
-            type="button"
-            onClick={onToggleFocusMode}
-            aria-pressed={focusMode}
-            className="btn-ghost inline-flex items-center gap-1.5 px-2.5 py-2 text-xs font-medium whitespace-nowrap"
+        <div>
+          <div
+            data-faded={chromeFaded ? 'true' : 'false'}
+            className="vanishing-chrome flex flex-wrap items-end justify-between gap-4 pb-1"
           >
-            {focusMode ? (
-              <>
-                <Minimize2 className="w-3.5 h-3.5" aria-hidden="true" />
-                <span>Exit Focus</span>
-              </>
-            ) : (
-              <>
-                <Maximize2 className="w-3.5 h-3.5" aria-hidden="true" />
-                <span>Focus</span>
-              </>
-            )}
-          </button>
+            <div className="min-w-0">
+              <div className="flex flex-wrap items-center gap-2.5">
+                <h1
+                  data-testid="studio-greeting-headline"
+                  className="font-display text-2xl sm:text-3xl font-medium tracking-tight text-ink-primary"
+                >
+                  {focusMode ? 'Focused Manuscript' : studioGreeting.headline}
+                </h1>
+                {pendingEvalSessionsCount > 0 && (
+                  <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-sm text-[11px] font-mono-tabular border border-status-warning-border bg-status-warning-soft text-status-warning">
+                    <Clock className="w-3 h-3" aria-hidden="true" />
+                    <span>{pendingEvalSessionsCount} awaiting AI</span>
+                  </span>
+                )}
+              </div>
+              {!focusMode && (
+                <p className="text-xs text-ink-muted mt-1 flex flex-wrap items-center gap-x-2">
+                  <span>{studioGreeting.sublinePrefix}</span>
+                  <span aria-hidden="true">·</span>
+                  <span className="font-mono-tabular">{formattedToday}</span>
+                </p>
+              )}
+            </div>
+
+            <div className="flex flex-wrap items-center gap-1.5 sm:gap-2 w-full sm:w-auto">
+              {!focusMode && (
+                <button
+                  type="button"
+                  data-testid="random-topic-button"
+                  onClick={handleSuggestRandomTopic}
+                  disabled={suggestingTopic}
+                  title="Pick a fresh, non-repeating random topic to write on"
+                  className="btn-secondary inline-flex items-center gap-1.5 min-h-[38px] sm:min-h-0 px-2.5 sm:px-3 py-1.5 sm:py-2 text-xs font-medium whitespace-nowrap"
+                >
+                  {suggestingTopic ? (
+                    <Sparkles
+                      className="w-3.5 h-3.5 text-ink-primary animate-pulse"
+                      aria-hidden="true"
+                    />
+                  ) : (
+                    <Dices className="w-3.5 h-3.5 text-ink-secondary" aria-hidden="true" />
+                  )}
+                  <span className="sm:hidden">
+                    {suggestingTopic ? 'Picking...' : 'Topic'}
+                  </span>
+                  <span className="hidden sm:inline">
+                    {suggestingTopic ? 'Picking...' : 'Random Topic'}
+                  </span>
+                </button>
+              )}
+
+              {!focusMode && (
+                <button
+                  type="button"
+                  data-testid="quick-add-vocab-button"
+                  onClick={() => setShowQuickAddVocab(true)}
+                  title="Quickly save a new word and definition to your vocabulary bank"
+                  className="btn-ghost inline-flex items-center gap-1.5 min-h-[38px] sm:min-h-0 px-2.5 py-1.5 sm:py-2 text-xs font-medium whitespace-nowrap"
+                >
+                  <BookmarkPlus className="w-3.5 h-3.5 text-ink-secondary" aria-hidden="true" />
+                  <span>Word</span>
+                </button>
+              )}
+
+              {!focusMode && (
+                <button
+                  type="button"
+                  data-testid="drafts-toggle-button"
+                  onClick={() => setShowDraftsShelf((v) => !v)}
+                  aria-expanded={showDraftsShelf}
+                  className={`inline-flex items-center gap-1.5 min-h-[38px] sm:min-h-0 px-2.5 py-1.5 sm:py-2 text-xs font-medium whitespace-nowrap ${
+                    showDraftsShelf ? 'btn-secondary text-ink-primary' : 'btn-ghost'
+                  }`}
+                >
+                  <FileText className="w-3.5 h-3.5" aria-hidden="true" />
+                  <span>
+                    Drafts{savedDrafts.length > 0 ? ` (${savedDrafts.length})` : ''}
+                  </span>
+                </button>
+              )}
+
+              {focusMode && (
+                <button
+                  type="button"
+                  onClick={onToggleTheme}
+                  aria-label={
+                    theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'
+                  }
+                  className="btn-secondary inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium"
+                >
+                  {theme === 'dark' ? (
+                    <Sun className="w-3.5 h-3.5 text-status-warning" aria-hidden="true" />
+                  ) : (
+                    <Moon className="w-3.5 h-3.5" aria-hidden="true" />
+                  )}
+                  <span>{theme === 'dark' ? 'Light' : 'Dark'}</span>
+                </button>
+              )}
+
+              <button
+                type="button"
+                onClick={onToggleFocusMode}
+                aria-pressed={focusMode}
+                className="btn-ghost inline-flex items-center gap-1.5 px-2.5 py-2 text-xs font-medium whitespace-nowrap"
+              >
+                {focusMode ? (
+                  <>
+                    <Minimize2 className="w-3.5 h-3.5" aria-hidden="true" />
+                    <span>Exit Focus</span>
+                  </>
+                ) : (
+                  <>
+                    <Maximize2 className="w-3.5 h-3.5" aria-hidden="true" />
+                    <span>Focus</span>
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
         </div>
       </div>
+
+      {/* Whisper-quiet 1-line active writing strip when header collapses */}
+      {isWriteSessionActive && !focusMode && (
+        <div
+          data-testid="active-session-bar"
+          data-faded={chromeFaded ? 'true' : 'false'}
+          className="vanishing-chrome drawer-reveal flex items-center justify-between gap-2 text-[11px] text-ink-muted px-0.5"
+        >
+          <span className="font-mono-tabular whitespace-nowrap truncate">
+            <span className="hidden sm:inline">{formattedToday}</span>
+            <span className="sm:hidden">Today</span> · {diagnostics.wordCount}w
+            {pendingEvalSessionsCount > 0 ? ` · ${pendingEvalSessionsCount} awaiting AI` : ''}
+          </span>
+          <div className="flex items-center gap-1 shrink-0">
+            <button
+              type="button"
+              onClick={handleSuggestRandomTopic}
+              disabled={suggestingTopic}
+              className="btn-ghost inline-flex items-center gap-1 px-2 py-1 text-[11px]"
+            >
+              <Dices className="w-3 h-3" aria-hidden="true" />
+              <span>Topic</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setShowDraftsShelf((v) => !v)}
+              className="btn-ghost inline-flex items-center gap-1 px-2 py-1 text-[11px]"
+            >
+              <FileText className="w-3 h-3" aria-hidden="true" />
+              <span>Drafts{savedDrafts.length > 0 ? ` (${savedDrafts.length})` : ''}</span>
+            </button>
+            <button
+              type="button"
+              onClick={onToggleFocusMode}
+              className="btn-ghost inline-flex items-center gap-1 px-2 py-1 text-[11px]"
+            >
+              <Maximize2 className="w-3 h-3" aria-hidden="true" />
+              <span>Focus</span>
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Optional Practice Word Nudge (from Vocabulary "Use in Write") */}
+      {requestedPracticeWord && !focusMode && (
+        <div
+          data-testid="vocab-practice-nudge"
+          className="drawer-reveal px-3.5 py-2.5 rounded-md border border-border-default bg-surface flex items-center justify-between gap-3 text-xs"
+        >
+          <span className="text-ink-secondary">
+            Practice weaving{' '}
+            <strong className="font-display text-ink-primary font-semibold">
+              “{requestedPracticeWord}”
+            </strong>{' '}
+            naturally into today’s entry.
+          </span>
+          {onClearRequestedPracticeWord && (
+            <button
+              type="button"
+              onClick={onClearRequestedPracticeWord}
+              aria-label="Dismiss practice word reminder"
+              className="btn-ghost p-1 shrink-0"
+            >
+              <X className="w-3.5 h-3.5" aria-hidden="true" />
+            </button>
+          )}
+        </div>
+      )}
 
       {/* Collapsible Saved Drafts Shelf */}
       {!focusMode && showDraftsShelf && (
@@ -2215,7 +2899,7 @@ export function WriteStudio({
                       <span className="text-ink-muted" aria-hidden="true">
                         ·
                       </span>
-                      <span className="font-medium text-ink-primary truncate max-w-md sm:max-w-lg">
+                      <span className="font-medium text-ink-primary leading-snug break-words">
                         {slot.topic}
                       </span>
                     </div>
@@ -2297,249 +2981,72 @@ export function WriteStudio({
           }
         >
           <div className="card-surface overflow-hidden">
-            {/* Top Mode, Audience & Tone Ribbon (Auto-Collapsible on Mobile) */}
+            {/* Minimal Animated Writing-Inspired Desk Control Ribbon */}
             {!focusMode && !activeLinkedSlot && (
               <div
                 data-faded={chromeFaded ? 'true' : 'false'}
-                className="vanishing-chrome px-3 sm:px-5 py-2 sm:py-3 border-b border-border-subtle bg-subtle/55 space-y-2"
+                className="vanishing-chrome"
               >
-                {/* Mobile-only 1-Line Studio Setup Summary + Expand Toggle */}
-                <div className="flex sm:hidden items-center justify-between gap-2 min-w-0">
-                  <div className="flex items-center gap-1.5 min-w-0 text-xs">
-                    <span className="font-medium text-ink-primary truncate">
-                      {formatMobileStudioSummary({
-                        modeLabel: MODE_LABELS[mode],
-                        drillLabel:
-                          DRILL_OPTIONS.find((d) => d.id === activeDrill)?.label ??
-                          'Standard',
-                        toneLabel: TONE_LABELS[tone],
-                        constraintShortLabel: activeConstraint?.shortLabel ?? null,
-                        flowLockActive,
-                      })}
-                    </span>
-                  </div>
-                  <button
-                    type="button"
-                    data-testid="mobile-studio-options-toggle"
-                    aria-expanded={mobileControlsOpen}
-                    onClick={() => {
-                      playTactileClick(tactileSoundEnabled);
-                      setMobileControlsOpen((v) => !v);
-                    }}
-                    className={`inline-flex items-center gap-1.5 min-h-[36px] px-2.5 py-1 text-xs font-medium whitespace-nowrap shrink-0 ${
-                      mobileControlsOpen ? 'btn-primary' : 'btn-secondary'
-                    }`}
-                  >
-                    <SlidersHorizontal className="w-3.5 h-3.5" aria-hidden="true" />
-                    <span>{mobileControlsOpen ? 'Done' : 'Options'}</span>
-                  </button>
-                </div>
-
-                <div
-                  className={`${
-                    mobileControlsOpen ? 'flex drawer-reveal' : 'hidden sm:flex'
-                  } flex-col gap-2 min-w-0`}
-                >
-                <div className="flex flex-col sm:flex-row sm:flex-wrap sm:items-center justify-between gap-2 min-w-0">
-                  <div
-                    role="tablist"
-                    aria-label="Writing practice mode"
-                    className="segmented-track flex flex-nowrap sm:flex-wrap items-center gap-0.5 overflow-x-auto scrollbar-none scroll-smooth-touch w-full sm:w-auto min-w-0"
-                  >
-                    {(Object.keys(MODE_LABELS) as WritingMode[]).map((m) => (
-                      <button
-                        key={m}
-                        type="button"
-                        role="tab"
-                        aria-selected={mode === m}
-                        data-active={mode === m ? 'true' : 'false'}
-                        onClick={() => {
-                          setMode(m);
-                          if (m === 'friend') {
-                            setTone('conversational');
-                            setAudience('Friend');
-                          } else if (m === 'email') {
-                            setTone('formal-executive');
-                            setAudience('Hiring Manager');
-                          } else if (m === 'technical') {
-                            setTone('academic-technical');
-                            setAudience('Interviewer');
-                          } else if (m === 'linkedin') {
-                            setTone('professional-warm');
-                            setAudience('LinkedIn Reader');
-                          } else if (m === 'creative') {
-                            setTone('narrative-vivid');
-                            setAudience('Friend');
-                          }
-                        }}
-                        className="segmented-item px-2.5 py-1 text-xs whitespace-nowrap"
-                      >
-                        {MODE_LABELS[m]}
-                      </button>
-                    ))}
-                  </div>
-
-                  <div className="grid grid-cols-2 sm:flex sm:flex-wrap items-center gap-2 w-full sm:w-auto min-w-0">
-                    <label htmlFor="audience-select" className="sr-only">
-                      Target audience
-                    </label>
-                    <select
-                      id="audience-select"
-                      data-testid="audience-select"
-                      value={audience}
-                      title="Target reader for Audience Gut-Reaction"
-                      onChange={(e) =>
-                        setAudience(e.target.value as AudienceOption)
-                      }
-                      className="input-tactile w-full sm:w-auto min-w-0 px-2 py-1 text-xs font-medium truncate"
-                    >
-                      {AUDIENCE_OPTIONS.map((aud) => (
-                        <option key={aud} value={aud}>
-                          For: {aud}
-                        </option>
-                      ))}
-                    </select>
-
-                    <label htmlFor="tone-select" className="sr-only">
-                      Target tone
-                    </label>
-                    <select
-                      id="tone-select"
-                      value={tone}
-                      title="Select target writing tone"
-                      onChange={(e) => setTone(e.target.value as ToneSetting)}
-                      className="input-tactile w-full sm:w-auto min-w-0 px-2 py-1 text-xs font-medium truncate"
-                    >
-                      {Object.entries(TONE_LABELS).map(([val, label]) => (
-                        <option key={val} value={val}>
-                          {label}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                </div>
-
-                {/* Practice Mechanic Selector + Constraint Chip + 3-Min Flow Toggle */}
-                <div className="flex flex-col sm:flex-row sm:flex-wrap sm:items-center justify-between gap-2 pt-2 border-t border-border-subtle/70 min-w-0">
-                  <div
-                    role="tablist"
-                    aria-label="10-minute practice mechanic"
-                    className="segmented-track flex sm:inline-flex flex-nowrap sm:flex-wrap items-center gap-0.5 overflow-x-auto scrollbar-none scroll-smooth-touch w-full sm:w-auto min-w-0"
-                  >
-                    {DRILL_OPTIONS.map((opt) => (
-                      <button
-                        key={opt.id}
-                        type="button"
-                        role="tab"
-                        data-testid={`drill-tab-${opt.id}`}
-                        aria-selected={activeDrill === opt.id}
-                        data-active={activeDrill === opt.id ? 'true' : 'false'}
-                        onClick={() => handleSelectDrill(opt.id)}
-                        className="segmented-item inline-flex items-center gap-1 px-2.5 py-1 text-[11px] font-medium whitespace-nowrap"
-                      >
-                        <span>{opt.label}</span>
-                        <span className="font-mono-tabular text-[10px] opacity-65">
-                          {opt.duration}
-                        </span>
-                      </button>
-                    ))}
-                    {timeCapsuleCandidate && (
-                      <button
-                        type="button"
-                        role="tab"
-                        data-testid="drill-tab-time-capsule"
-                        aria-selected={activeDrill === 'time-capsule'}
-                        data-active={
-                          activeDrill === 'time-capsule' ? 'true' : 'false'
-                        }
-                        onClick={handleLaunchTimeCapsuleFromStudio}
-                        className="segmented-item inline-flex items-center gap-1 px-2.5 py-1 text-[11px] font-medium whitespace-nowrap"
-                      >
-                        <History className="w-3 h-3" aria-hidden="true" />
-                        <span>Time Capsule</span>
-                      </button>
-                    )}
-                  </div>
-
-                  <div className="flex flex-wrap items-center gap-1.5">
-                    <button
-                      type="button"
-                      data-testid="constraint-picker-toggle"
-                      data-active={activeConstraint ? 'true' : 'false'}
-                      onClick={() => setShowConstraintPicker((v) => !v)}
-                      className="btn-chip inline-flex items-center gap-1.5 px-2.5 py-1 text-[11px] font-medium whitespace-nowrap"
-                    >
-                      <SlidersHorizontal className="w-3 h-3" aria-hidden="true" />
-                      <span>
-                        {activeConstraint
-                          ? activeConstraint.shortLabel
-                          : '+ Constraint'}
-                      </span>
-                      {activeConstraint && constraintResult && (
-                        <span
-                          className={`font-mono-tabular text-[10px] ${
-                            constraintResult.passed
-                              ? 'text-status-success'
-                              : 'text-status-warning'
-                          }`}
-                        >
-                          · {constraintResult.adherenceScore}%
-                        </span>
-                      )}
-                    </button>
-                    {activeConstraint && (
-                      <button
-                        type="button"
-                        onClick={() => setActiveConstraint(null)}
-                        aria-label="Clear active constraint"
-                        className="btn-ghost p-1"
-                      >
-                        <X className="w-3 h-3" aria-hidden="true" />
-                      </button>
-                    )}
-
-                    <button
-                      type="button"
-                      data-testid="flow-sprint-toggle"
-                      data-active={flowLockActive ? 'true' : 'false'}
-                      aria-pressed={flowLockActive}
-                      onClick={handleToggleFlowSprint}
-                      title="3-Minute No-Backspace Flow Sprint: disables deleting so you draft forward without self-editing"
-                      className="btn-chip inline-flex items-center gap-1 px-2.5 py-1 text-[11px] font-medium whitespace-nowrap"
-                    >
-                      <Flame className="w-3 h-3" aria-hidden="true" />
-                      <span className="font-mono-tabular">
-                        {flowLockActive
-                          ? `Flow ${formatCountdownMMSS(flowSecondsLeft)}`
-                          : '3m Flow'}
-                      </span>
-                    </button>
-                  </div>
-                </div>
-
-                {/* QuillBot-Inspired Categorized Constraint Studio Drawer */}
-                {showConstraintPicker && (
-                  <ConstraintPickerDrawer
-                    mode={mode}
-                    modeLabel={MODE_LABELS[mode]}
-                    draftText={effectiveDraftText}
-                    activeConstraint={activeConstraint}
-                    onSelect={(ch) => {
-                      playTactileClick(tactileSoundEnabled);
-                      setActiveConstraint(ch);
-                      setShowConstraintPicker(false);
-                    }}
-                    onRollRandom={() => {
-                      playTactileClick(tactileSoundEnabled);
-                      setActiveConstraint(
-                        pickRandomConstraint(activeConstraint?.id, mode)
-                      );
-                      setShowConstraintPicker(false);
-                    }}
-                    onClose={() => setShowConstraintPicker(false)}
-                  />
-                )}
-                </div>
+                <DeskControlRibbon
+                  mode={mode}
+                  audience={audience}
+                  tone={tone}
+                  activeDrill={activeDrill}
+                  timeCapsuleStatus={timeCapsuleStatus}
+                  activeConstraint={activeConstraint}
+                  constraintResult={constraintResult}
+                  showConstraintPicker={showConstraintPicker}
+                  flowLockActive={flowLockActive}
+                  flowSecondsLabel={formatCountdownMMSS(flowSecondsLeft)}
+                  mobileControlsOpen={mobileControlsOpen}
+                  draftText={effectiveDraftText}
+                  onSelectMode={(m) => {
+                    playTactileClick(tactileSoundEnabled);
+                    setMode(m);
+                    if (m === 'friend') {
+                      setTone('conversational');
+                      setAudience('Friend');
+                    } else if (m === 'email') {
+                      setTone('formal-executive');
+                      setAudience('Hiring Manager');
+                    } else if (m === 'technical') {
+                      setTone('academic-technical');
+                      setAudience('Interviewer');
+                    } else if (m === 'linkedin') {
+                      setTone('professional-warm');
+                      setAudience('LinkedIn Reader');
+                    } else if (m === 'creative') {
+                      setTone('narrative-vivid');
+                      setAudience('Friend');
+                    }
+                  }}
+                  onChangeAudience={setAudience}
+                  onChangeTone={setTone}
+                  onSelectDrill={handleSelectDrill}
+                  onLaunchTimeCapsule={handleLaunchTimeCapsuleFromStudio}
+                  onToggleConstraintPicker={() => {
+                    playTactileClick(tactileSoundEnabled);
+                    setShowConstraintPicker((v) => !v);
+                  }}
+                  onSelectConstraint={(ch) => {
+                    playTactileClick(tactileSoundEnabled);
+                    setActiveConstraint(ch);
+                    setShowConstraintPicker(false);
+                  }}
+                  onRollConstraint={() => {
+                    playTactileClick(tactileSoundEnabled);
+                    setActiveConstraint(
+                      pickRandomConstraint(activeConstraint?.id, mode)
+                    );
+                    setShowConstraintPicker(false);
+                  }}
+                  onCloseConstraintPicker={() => setShowConstraintPicker(false)}
+                  onToggleFlowSprint={handleToggleFlowSprint}
+                  onToggleMobileControls={() => {
+                    playTactileClick(tactileSoundEnabled);
+                    setMobileControlsOpen((v) => !v);
+                  }}
+                />
               </div>
             )}
 
@@ -2703,270 +3210,114 @@ export function WriteStudio({
             )}
 
             {/* ======================================================= */}
-            {/* CONTEXTUAL DRILL SURFACES (Only active mechanic renders) */}
+            {/* CONTEXTUAL DRILL SURFACES (Animated Editorial Workbenches) */}
             {/* ======================================================= */}
-
-            {/* 1. 4/3/2 COMPRESSION SPRINT BAR */}
-            {activeDrill === 'compression-432' && !focusMode && (
-              <div
-                data-testid="compression-sprint-panel"
-                className="px-5 py-3.5 border-b border-border-subtle bg-subtle/45 space-y-2.5"
-              >
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <div className="flex items-center gap-2 text-xs">
-                    <span className="font-semibold text-ink-primary">
-                      {currentSprintSpec.label}
-                    </span>
-                    <span className="text-ink-muted">·</span>
-                    <span className="font-mono-tabular text-ink-secondary">
-                      Target {currentSprintSpec.minWords}–
-                      {currentSprintSpec.maxWords}w
-                    </span>
-                  </div>
-
-                  <div className="flex items-center gap-2">
-                    {sprintAutoPaused && !sprintRunning && (
-                      <span
-                        data-testid="sprint-paused-pill"
-                        className="px-1.5 py-0.5 rounded-sm border border-border-default bg-surface text-[10px] font-mono-tabular text-ink-secondary"
-                      >
-                        Paused
-                      </span>
-                    )}
-                    <span
-                      data-testid="sprint-timer-clock"
-                      className="font-mono-tabular text-sm font-semibold text-ink-primary"
-                    >
-                      {formatCountdownMMSS(sprintSecondsLeft)}
-                    </span>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setSprintAutoPaused(false);
-                        setSprintRunning((r) => !r);
-                      }}
-                      aria-label={sprintRunning ? 'Pause timer' : 'Start timer'}
-                      className="btn-secondary p-1.5"
-                    >
-                      {sprintRunning ? (
-                        <Pause className="w-3 h-3" aria-hidden="true" />
-                      ) : (
-                        <Play className="w-3 h-3" aria-hidden="true" />
-                      )}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setSprintRunning(false);
-                        setSprintAutoPaused(false);
-                        setSprintSecondsLeft(currentSprintSpec.durationSec);
-                      }}
-                      aria-label="Reset round timer"
-                      className="btn-ghost p-1.5"
-                    >
-                      <RotateCcw className="w-3 h-3" aria-hidden="true" />
-                    </button>
-                    {sprintRoundIdx < 2 && (
-                      <button
-                        type="button"
-                        data-testid="sprint-next-round-button"
-                        onClick={handleAdvanceCompressionRound}
-                        className="btn-primary inline-flex items-center gap-1 px-2.5 py-1 text-[11px] font-medium"
-                      >
-                        <span>Next Round</span>
-                        <ArrowRight className="w-3 h-3" aria-hidden="true" />
-                      </button>
-                    )}
-                  </div>
-                </div>
-
-                <div className="flex flex-wrap items-center justify-between gap-2 text-[11px]">
-                  <span className="text-ink-secondary">
-                    {currentSprintSpec.guidance}
-                  </span>
-                  {sprintRoundIdx > 0 && (
-                    <button
-                      type="button"
-                      onClick={() => setShowPrevRoundsDrawer((v) => !v)}
-                      className="inline-link-tactile font-medium cursor-pointer whitespace-nowrap"
-                    >
-                      {showPrevRoundsDrawer
-                        ? 'Hide Earlier Rounds'
-                        : `Peek Round${sprintRoundIdx === 2 ? 's 1–2' : ' 1'}`}
-                    </button>
-                  )}
-                </div>
-
-                {showPrevRoundsDrawer && sprintRoundIdx > 0 && (
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-1.5 border-t border-border-subtle">
-                    {sprintRounds.slice(0, sprintRoundIdx).map((txt, idx) => (
-                      <div
-                        key={idx}
-                        className="p-2.5 rounded-sm bg-surface border border-border-subtle text-[11px] space-y-1"
-                      >
-                        <div className="font-mono-tabular font-semibold text-ink-muted">
-                          Round {idx + 1} · {analyzeDraftLocally(txt).wordCount}w
-                        </div>
-                        <p className="text-ink-secondary leading-relaxed line-clamp-4">
-                          {txt || '(empty)'}
-                        </p>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-            )}
-
-            {/* 2. SKELETON RECONSTRUCTION STUDY / CLUE RAIL */}
-            {activeDrill === 'skeleton' && !focusMode && (
-              <div
-                key={`skeleton-${skeletonPhase}`}
-                data-testid="skeleton-drill-panel"
-                className="drawer-reveal px-4 sm:px-5 py-3.5 sm:py-4 border-b border-border-subtle bg-subtle/45 space-y-3"
-              >
-                {skeletonPhase === 'study' ? (
-                  <>
-                    <div className="flex flex-wrap items-center justify-between gap-2">
-                      <div className="text-xs font-semibold text-ink-primary">
-                        Study Phase · Read for connectors &amp; cadence, jot 4 skeleton clues
-                      </div>
-                      <button
-                        type="button"
-                        disabled={skeletonLoading}
-                        onClick={() => void handleNextSkeletonPassage()}
-                        className="btn-secondary inline-flex items-center gap-1 px-2.5 py-1 text-[11px] font-medium"
-                      >
-                        <Shuffle className="w-3 h-3" aria-hidden="true" />
-                        <span>
-                          {skeletonLoading ? 'Loading...' : 'Next Passage'}
-                        </span>
-                      </button>
-                    </div>
-
-                    <blockquote
-                      data-testid="skeleton-master-passage"
-                      className="p-3.5 rounded-md border border-border-default bg-surface text-xs sm:text-[13px] text-ink-primary leading-relaxed"
-                    >
-                      {skeletonPassage.text}
-                    </blockquote>
-
-                    <div className="flex flex-wrap items-center gap-2">
-                      <input
-                        type="text"
-                        value={skeletonCluesInput}
-                        onChange={(e) => setSkeletonCluesInput(e.target.value)}
-                        aria-label="4 skeleton clue phrases separated by commas"
-                        placeholder="4 short clues separated by commas (e.g. sensor drift, moving average, real fault, noise filter)"
-                        className="input-tactile flex-1 min-w-[220px] px-3 py-1.5 text-xs"
-                      />
-                      <button
-                        type="button"
-                        data-testid="skeleton-hide-reconstruct-button"
-                        onClick={() => {
-                          playTactileClick(tactileSoundEnabled);
-                          setSkeletonPhase('reconstruct');
-                          window.setTimeout(
-                            () =>
-                              document.getElementById('writing-editor')?.focus(),
-                            40
-                          );
-                        }}
-                        className="btn-primary inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium whitespace-nowrap"
-                      >
-                        <EyeOff className="w-3.5 h-3.5" aria-hidden="true" />
-                        <span>Hide &amp; Reconstruct</span>
-                      </button>
-                    </div>
-                  </>
-                ) : (
-                  <div className="flex flex-wrap items-center justify-between gap-3">
-                    <div className="space-y-1">
-                      <div className="text-[11px] font-medium text-ink-muted">
-                        Pinned Skeleton Rail · Rebuild in your own natural words
-                      </div>
-                      <div
-                        data-testid="skeleton-clue-rail"
-                        className="flex flex-wrap items-center gap-x-2.5 gap-y-1 text-xs font-mono-tabular font-semibold text-ink-primary"
-                      >
-                        {parsedSkeletonClues.map((clue, idx) => (
-                          <span key={idx}>
-                            {idx + 1}. {clue}
-                          </span>
-                        ))}
-                      </div>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => setSkeletonPhase('study')}
-                      className="btn-ghost text-[11px] font-medium"
-                    >
-                      Peek Master
-                    </button>
-                  </div>
-                )}
-              </div>
-            )}
-
-            {/* 3. TIME CAPSULE SEALED BANNER */}
-            {activeDrill === 'time-capsule' && timeCapsuleOrigin && !focusMode && (
-              <div
-                data-testid="time-capsule-seal-banner"
-                className="px-5 py-3 border-b border-border-subtle bg-subtle/50 flex flex-wrap items-center justify-between gap-2 text-xs"
-              >
-                <div className="flex items-center gap-2">
-                  <History className="w-3.5 h-3.5 text-accent shrink-0" aria-hidden="true" />
-                  <span className="text-ink-secondary">
-                    <strong className="text-ink-primary">Blind Retest</strong> ·
-                    Your {timeCapsuleOrigin.date} draft is sealed until you submit.
-                  </span>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setActiveDrill('standard');
-                    setTimeCapsuleOrigin(null);
-                  }}
-                  className="btn-ghost text-[11px]"
-                >
-                  Exit Retest
-                </button>
-              </div>
-            )}
-
-            {/* 4. REVISE & LIFT (PASS 2) PINNED FOCUS BANNER */}
-            {revisionContext && !focusMode && (
-              <div
-                data-testid="revision-focus-banner"
-                className="px-5 py-3 border-b border-border-subtle bg-accent-soft/35 space-y-1.5 text-xs"
-              >
-                <div className="flex items-center justify-between gap-2">
-                  <span className="font-semibold text-ink-primary font-mono-tabular">
-                    Pass 2 · Revise &amp; Lift (Target: beat {revisionContext.pass1Score}/60)
-                  </span>
-                  <button
-                    type="button"
-                    onClick={() => setRevisionContext(null)}
-                    aria-label="Cancel revision pass"
-                    className="btn-ghost p-0.5"
-                  >
-                    <X className="w-3 h-3" aria-hidden="true" />
-                  </button>
-                </div>
-                <ul className="space-y-0.5 text-[11px] text-ink-secondary">
-                  {revisionContext.focusItems.map((item, i) => (
-                    <li key={i}>· {item}</li>
-                  ))}
-                </ul>
-              </div>
+            {!focusMode && (
+              <PracticeAddonStage
+                activeDrill={activeDrill}
+                compressionRoundsSpec={COMPRESSION_ROUNDS}
+                sprintRoundIdx={sprintRoundIdx}
+                sprintSecondsLeft={sprintSecondsLeft}
+                sprintRunning={sprintRunning}
+                sprintAutoPaused={sprintAutoPaused}
+                sprintAutoArmed={sprintAutoArmed}
+                sprintRounds={sprintRounds}
+                showPrevRoundsDrawer={showPrevRoundsDrawer}
+                currentWordCount={diagnostics.wordCount}
+                sprintEmptyGuardMessage={sprintEmptyGuardMessage}
+                sprintEmptyGuardTick={sprintEmptyGuardTick}
+                sprintCompleted={sprintCompleted}
+                isDraftEvaluatedClean={draftEvaluatedClean}
+                evaluating={evaluating}
+                onToggleSprintTimer={() => {
+                  setSprintAutoPaused(false);
+                  setSprintRunning((r) => {
+                    const next = !r;
+                    // Respect explicit manual pause so typing doesn't immediately override user pause
+                    if (!next) {
+                      sprintAutoArmedRef.current = false;
+                      setSprintAutoArmed(false);
+                    }
+                    return next;
+                  });
+                }}
+                onResetSprintTimer={() => {
+                  setSprintRunning(false);
+                  setSprintAutoPaused(false);
+                  setSprintEmptyGuardMessage(null);
+                  sprintAutoArmedRef.current = true;
+                  setSprintAutoArmed(true);
+                  setSprintSecondsLeft(currentSprintSpec.durationSec);
+                }}
+                onAdvanceSprintRound={handleAdvanceCompressionRound}
+                onEvaluateSprintFinal={handleEvaluateSprintFinal}
+                onStartNewSprint={handleStartNewSprint}
+                onStartSprintRevision={handleStartRevisionPass}
+                onTogglePrevRounds={() => setShowPrevRoundsDrawer((v) => !v)}
+                skeletonPhase={skeletonPhase}
+                skeletonPassage={skeletonPassage}
+                skeletonDomainFilter={skeletonDomainFilter}
+                skeletonClues={skeletonClues}
+                skeletonLoading={skeletonLoading}
+                skeletonCompletedCount={completedSkeletonIds.length}
+                activeTopic={topic}
+                draftText={effectiveDraftText}
+                onChangeSkeletonDomainFilter={handleChangeSkeletonDomainFilter}
+                onUpdateSkeletonClue={(idx, val) =>
+                  setSkeletonClues((prev) => updateSkeletonClueAt(prev, idx, val))
+                }
+                onAddSkeletonClue={(val) =>
+                  setSkeletonClues((prev) => addSkeletonClue(prev, val))
+                }
+                onRemoveSkeletonClue={(idx) =>
+                  setSkeletonClues((prev) => removeSkeletonClueAt(prev, idx))
+                }
+                onAutoDistillSkeletonClues={() => {
+                  playTactileClick(tactileSoundEnabled);
+                  setSkeletonClues(
+                    extractSentenceSkeletonClues(skeletonPassage.text, 4)
+                  );
+                }}
+                onNextSkeletonPassage={handleNextSkeletonPassage}
+                onAdaptSkeletonToTopic={handleAdaptSkeletonToTopic}
+                onSetSkeletonPhase={(nextPhase) => {
+                  playTactileClick(tactileSoundEnabled);
+                  setSkeletonPhase(nextPhase);
+                }}
+                onEnterReconstruct={() => {
+                  playTactileClick(tactileSoundEnabled);
+                  setSkeletonPhase('reconstruct');
+                  window.setTimeout(
+                    () => document.getElementById('writing-editor')?.focus(),
+                    40
+                  );
+                }}
+                timeCapsuleStatus={timeCapsuleStatus}
+                selectedTimeCapsuleOrigin={timeCapsuleOrigin}
+                onSwitchTimeCapsuleTopic={handleSwitchTimeCapsuleTopic}
+                onStartWritingFromLockedCapsule={() => {
+                  handleSelectDrill('standard');
+                  window.setTimeout(
+                    () => document.getElementById('writing-editor')?.focus(),
+                    40
+                  );
+                }}
+                onExitTimeCapsule={() => {
+                  setActiveDrill('standard');
+                  setTimeCapsuleOrigin(null);
+                }}
+                revisionContext={revisionContext}
+                onCancelRevision={() => setRevisionContext(null)}
+              />
             )}
 
             {/* Manuscript Body */}
-            <div className="p-3.5 sm:p-8 space-y-4 sm:space-y-5">
+            <div className="p-4 sm:p-7 space-y-4 sm:space-y-5">
               {/* Quiet Random Topic Starter Hint */}
               {!activeLinkedSlot && !focusMode && suggestedTopicMeta && (
                 <div
                   data-testid="random-topic-hint"
-                  className="flex flex-wrap items-center justify-between gap-2 pb-3 border-b border-border-subtle text-xs"
+                  className="drawer-reveal flex flex-wrap items-center justify-between gap-2 pb-3 border-b border-border-subtle text-xs"
                 >
                   <div className="text-ink-secondary leading-relaxed">
                     <span className="font-medium text-ink-primary">
@@ -3011,17 +3362,21 @@ export function WriteStudio({
                 </div>
               )}
 
-              {/* Draft Title */}
+              {/* Draft Title (Auto-resizes vertically so long topics never clip) */}
               <div className="border-b border-border-subtle pb-3">
                 <label htmlFor="draft-topic" className="sr-only">
                   Session topic or title
                 </label>
                 <textarea
+                  ref={topicTextareaRef}
                   id="draft-topic"
-                  rows={topic.length > 58 ? 2 : 1}
+                  rows={1}
                   value={topic}
                   onChange={(e) => {
-                    setTopic(e.target.value.replace(/\r?\n/g, ' '));
+                    const nextVal = e.target.value.replace(/\r?\n/g, ' ');
+                    setTopic(nextVal);
+                    e.currentTarget.style.height = 'auto';
+                    e.currentTarget.style.height = `${e.currentTarget.scrollHeight}px`;
                     autoTitledSessionRef.current = false;
                     setAutoTitledBanner(null);
                     setDraftSavedLabel(null);
@@ -3037,161 +3392,129 @@ export function WriteStudio({
                 />
               </div>
 
-              {/* 3-Minute No-Backspace Flow Sprint Active Bar */}
+              {/* 3-Minute No-Backspace Flow Sprint Active Ink-Stream Ribbon */}
               {flowLockActive && (
                 <div
                   data-testid="flow-lock-banner"
-                  className="flex flex-wrap items-center justify-between gap-2 px-3 py-2 rounded-md border border-border-default bg-subtle/60 text-[11px]"
+                  className="drawer-reveal relative overflow-hidden rounded-md border border-border-default bg-subtle/45 px-3.5 py-2.5 text-[11px]"
                 >
-                  <span className="inline-flex items-center gap-1.5 font-mono-tabular text-ink-primary font-medium">
-                    <Flame className="w-3.5 h-3.5 text-accent" aria-hidden="true" />
-                    <span>
-                      {flowHintVisible
-                        ? `Keep moving — editing unlocks in ${formatCountdownMMSS(flowSecondsLeft)}`
-                        : `Flow Sprint active · ${formatCountdownMMSS(flowSecondsLeft)} remaining`}
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="inline-flex items-center gap-2 font-mono-tabular text-ink-primary font-medium min-w-0">
+                      <Feather
+                        className="w-3.5 h-3.5 text-ink-primary ink-nib-breathe shrink-0"
+                        aria-hidden="true"
+                      />
+                      <span className="sm:hidden truncate">
+                        {flowHintVisible
+                          ? `Keep flowing · ${formatCountdownMMSS(flowSecondsLeft)}`
+                          : `Flow · ${formatCountdownMMSS(flowSecondsLeft)} · draft forward`}
+                      </span>
+                      <span className="hidden sm:inline truncate">
+                        {flowHintVisible
+                          ? `Keep ink flowing — editing unlocks in ${formatCountdownMMSS(flowSecondsLeft)}`
+                          : `Flow Sprint · ${formatCountdownMMSS(flowSecondsLeft)} remaining · draft forward`}
+                      </span>
                     </span>
-                  </span>
-                  <button
-                    type="button"
-                    data-testid="flow-unlock-early-button"
-                    onClick={() => {
-                      setFlowLockActive(false);
-                      setFlowHintVisible(false);
-                    }}
-                    className="inline-link-tactile font-medium cursor-pointer"
+                    <button
+                      type="button"
+                      data-testid="flow-unlock-early-button"
+                      onClick={() => {
+                        setFlowLockActive(false);
+                        setFlowHintVisible(false);
+                      }}
+                      className="inline-link-tactile font-medium cursor-pointer shrink-0 whitespace-nowrap"
+                    >
+                      <span className="sm:hidden">Unlock</span>
+                      <span className="hidden sm:inline">Unlock Editing</span>
+                    </button>
+                  </div>
+                  <div
+                    aria-hidden="true"
+                    className="absolute inset-x-0 bottom-0 h-[2px] bg-border-subtle overflow-hidden"
                   >
-                    End Early &amp; Unlock Editing
-                  </button>
+                    <div
+                      className="h-full w-full origin-left bg-accent ink-stream-line transition-transform duration-300 ease-linear"
+                      style={{
+                        transform: `scaleX(${computeTimerRemainingRatio(
+                          flowSecondsLeft,
+                          DEFAULT_FLOW_SPRINT_SECONDS
+                        )})`,
+                      }}
+                    />
+                  </div>
                 </div>
               )}
 
-              {/* EDITOR SURFACE: Dual Canvas for 3 Rooms OR Clean 66ch Single Canvas */}
-              {activeDrill === 'three-rooms' ? (
-                <div data-testid="three-rooms-editor" className="space-y-3">
-                  {/* Mobile Room Switcher */}
-                  <div className="flex md:hidden items-center justify-between">
-                    <div className="segmented-track inline-flex gap-0.5">
-                      <button
-                        type="button"
-                        data-active={mobileRoomTab === 'roomA' ? 'true' : 'false'}
-                        onClick={() => setMobileRoomTab('roomA')}
-                        className="segmented-item px-3 py-1 text-xs font-medium"
-                      >
-                        Room A · 10-Yr-Old
-                      </button>
-                      <button
-                        type="button"
-                        data-active={mobileRoomTab === 'roomB' ? 'true' : 'false'}
-                        onClick={() => setMobileRoomTab('roomB')}
-                        className="segmented-item px-3 py-1 text-xs font-medium"
-                      >
-                        Room B · Interviewer
-                      </button>
-                    </div>
-                  </div>
-
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                    {/* Room A */}
-                    <div
-                      className={`p-4 rounded-md border border-border-subtle bg-subtle/30 space-y-2 ${
-                        mobileRoomTab === 'roomB' ? 'hidden md:block' : 'block'
-                      }`}
-                    >
-                      <div className="flex items-center justify-between gap-2 text-xs">
-                        <span className="font-semibold text-ink-primary">
-                          Room A · Curious 10-Year-Old
-                        </span>
-                        <span className="font-mono-tabular text-[11px] text-ink-muted">
-                          {roomAWordCount}w (50–90w)
-                        </span>
-                      </div>
-                      <p className="text-[11px] text-ink-muted">
-                        Plain everyday analogy — zero acronyms or jargon.
-                      </p>
-                      <textarea
-                        id="room-a-editor"
-                        data-testid="room-a-editor"
-                        rows={7}
-                        value={roomAText}
-                        onChange={(e) => {
-                          setRoomAText(e.target.value);
-                          setSavedSuccess(false);
-                        }}
-                        placeholder="Explain it with a kitchen or playground analogy. Zero jargon..."
-                        className="w-full bg-transparent text-[16px] sm:text-sm leading-[1.8] text-ink-primary placeholder:text-ink-muted focus:outline-none resize-y"
-                      />
-                      <div
-                        data-testid="room-a-jargon-status"
-                        className="pt-2 border-t border-border-subtle text-[11px] font-mono-tabular"
-                      >
-                        {!roomAJargonCheck || roomAJargonCheck.jargonHits.length === 0 ? (
-                          <span className="text-status-success">
-                            Jargon check clean
-                          </span>
-                        ) : (
-                          <span className="text-status-warning">
-                            Jargon in Room A: {roomAJargonCheck.jargonHits.join(', ')}
-                          </span>
-                        )}
-                      </div>
-                    </div>
-
-                    {/* Room B */}
-                    <div
-                      className={`p-4 rounded-md border border-border-subtle bg-subtle/30 space-y-2 ${
-                        mobileRoomTab === 'roomA' ? 'hidden md:block' : 'block'
-                      }`}
-                    >
-                      <div className="flex items-center justify-between gap-2 text-xs">
-                        <span className="font-semibold text-ink-primary">
-                          Room B · Skeptical Senior Interviewer
-                        </span>
-                        <span className="font-mono-tabular text-[11px] text-ink-muted">
-                          {roomBWordCount}w (70–120w)
-                        </span>
-                      </div>
-                      <p className="text-[11px] text-ink-muted">
-                        Crisp executive defense — name failure modes and trade-offs.
-                      </p>
-                      <textarea
-                        id="room-b-editor"
-                        data-testid="room-b-editor"
-                        rows={7}
-                        value={roomBText}
-                        onChange={(e) => {
-                          setRoomBText(e.target.value);
-                          setSavedSuccess(false);
-                        }}
-                        placeholder="State the failure mode, trade-off, and concrete fix sharply..."
-                        className="w-full bg-transparent text-[16px] sm:text-sm leading-[1.8] text-ink-primary placeholder:text-ink-muted focus:outline-none resize-y"
-                      />
-                      <div className="pt-2 border-t border-border-subtle text-[11px] font-mono-tabular text-ink-muted">
-                        Target: sharp engineering register
-                      </div>
-                    </div>
-                  </div>
+              {/* EDITOR SURFACE: Open-Book Dual Spread for 3 Rooms OR Clean 66ch Single Canvas */}
+              <div className="space-y-1.5">
+                {/* Real-Time WPM & Subtle Typing Flow Indicator in the Editor Corner */}
+                <div className="flex justify-end">
+                  <WritingFlowMeter
+                    metrics={typingFlowMetrics}
+                    pulseSeq={typingFlowState.pulseSeq}
+                    wordCount={diagnostics.wordCount}
+                  />
                 </div>
-              ) : (
-                <div
-                  key={flowShakeTick}
-                  className={flowShakeTick > 0 && flowHintVisible ? 'flow-shake' : ''}
-                >
-                  <label htmlFor="writing-editor" className="sr-only">
-                    Writing editor
-                  </label>
-                  <textarea
-                    id="writing-editor"
-                    value={content}
-                    onChange={(e) => {
-                      setContent(e.target.value);
-                      setSavedSuccess(false);
-                      setDraftSavedLabel(null);
-                      setPromotedVocabBanner(null);
-                      if (!revisionContext) {
-                        activeLoggedSessionIdRef.current = null;
-                      }
-                      scheduleVanishingDesk();
-                    }}
+
+                {activeDrill === 'three-rooms' ? (
+                  <ThreeRoomsDesk
+                      roomAText={roomAText}
+                      roomBText={roomBText}
+                      roomAWordCount={roomAWordCount}
+                      roomBWordCount={roomBWordCount}
+                      jargonHits={roomAJargonCheck?.jargonHits ?? []}
+                      mobileRoomTab={mobileRoomTab}
+                      onChangeMobileRoomTab={setMobileRoomTab}
+                      onChangeRoomA={(val) => {
+                        trackEditorTyping(roomAText, val);
+                        setRoomAText(val);
+                        setSavedSuccess(false);
+                      }}
+                      onChangeRoomB={(val) => {
+                        trackEditorTyping(roomBText, val);
+                        setRoomBText(val);
+                        setSavedSuccess(false);
+                      }}
+                    />
+                ) : (
+                  <div
+                    key={flowShakeTick}
+                    className={flowShakeTick > 0 && flowHintVisible ? 'flow-shake' : ''}
+                  >
+                    <label htmlFor="writing-editor" className="sr-only">
+                      Writing editor
+                    </label>
+                    <textarea
+                      id="writing-editor"
+                      value={content}
+                      onChange={(e) => {
+                        const nextVal = e.target.value;
+                        trackEditorTyping(content, nextVal);
+                        setContent(nextVal);
+                        setSavedSuccess(false);
+                        setDraftSavedLabel(null);
+                        setPromotedVocabBanner(null);
+                        if (nextVal.trim().length > 0 && sprintEmptyGuardMessage) {
+                          setSprintEmptyGuardMessage(null);
+                        }
+                        if (!revisionContext) {
+                          activeLoggedSessionIdRef.current = null;
+                        }
+                        // 4/3/2 Sprint: auto-start timer on first keystroke when armed & not yet completed
+                        if (
+                          activeDrill === 'compression-432' &&
+                          !sprintCompleted &&
+                          !evaluating &&
+                          !sprintRunning &&
+                          sprintSecondsLeft > 0 &&
+                          sprintAutoArmedRef.current &&
+                          nextVal.trim().length > 0
+                        ) {
+                          setSprintRunning(true);
+                          setSprintAutoPaused(false);
+                        }
+                        scheduleVanishingDesk();
+                      }}
                     onBeforeInput={(e) => {
                       const nativeEvt = e.nativeEvent as InputEvent;
                       if (
@@ -3223,7 +3546,7 @@ export function WriteStudio({
                     rows={focusMode ? 17 : 9}
                     placeholder={
                       activeDrill === 'skeleton'
-                        ? 'Reconstruct the passage from your 4 skeleton clues in your own natural words...'
+                        ? `Reconstruct the passage from your ${skeletonClues.length || 3} skeleton beats in your own natural words...`
                         : activeDrill === 'compression-432'
                           ? `${currentSprintSpec.label}: ${currentSprintSpec.guidance}`
                           : mode === 'linkedin'
@@ -3242,6 +3565,7 @@ export function WriteStudio({
                   />
                 </div>
               )}
+              </div>
 
               {/* Live Constraint Adherence Rail (QuillBot-style inline inspector + click-to-locate) */}
               {activeConstraint && constraintResult && (
@@ -3313,11 +3637,48 @@ export function WriteStudio({
                       </span>
                     )}
                   </div>
+
+                  <button
+                    type="button"
+                    data-testid="toggle-text-analysis-btn"
+                    aria-expanded={showTextAnalysis}
+                    onClick={() => {
+                      playTactileClick(tactileSoundEnabled);
+                      setShowTextAnalysis((prev) => !prev);
+                    }}
+                    className={`px-2.5 py-1 rounded-sm border text-[11px] font-mono-tabular whitespace-nowrap shrink-0 transition-colors inline-flex items-center gap-1.5 ${
+                      showTextAnalysis
+                        ? 'bg-accent text-ink-inverse border-accent'
+                        : 'bg-surface text-ink-primary border-border-default hover:border-border-strong'
+                    }`}
+                  >
+                    <span>
+                      Analysis {liveTextAnalysis.overallScore}/100 ·{' '}
+                      {liveTextAnalysis.suggestions.length}{' '}
+                      {liveTextAnalysis.suggestions.length === 1 ? 'tip' : 'tips'}
+                    </span>
+                    {showTextAnalysis ? (
+                      <ChevronUp className="w-3 h-3" />
+                    ) : (
+                      <ChevronDown className="w-3 h-3" />
+                    )}
+                  </button>
                 </div>
               )}
 
-              {/* Tactile Pen-and-Paper Daily Word Goal Ink-Drop Well */}
-              <InkDropGoalWell progress={dailyInkProgress} />
+              {diagnostics.wordCount >= 8 && showTextAnalysis && (
+                <TextAnalysisDrawer
+                  report={liveTextAnalysis}
+                  onClose={() => setShowTextAnalysis(false)}
+                  onSaveAlternativeToLibrary={handleSaveAnalysisAlternativeToLibrary}
+                />
+              )}
+
+              {/* Editorial Daily Word Goal Folio Gauge */}
+              <InkDropGoalWell
+                progress={dailyInkProgress}
+                onChangeDailyWordGoal={onChangeDailyWordGoal}
+              />
 
               {/* Instant Live Offline Proofreader Strip */}
               {liveOfflineCheckEnabled &&
@@ -3468,43 +3829,86 @@ export function WriteStudio({
                 </div>
 
                 <div className="grid grid-cols-2 sm:flex sm:flex-wrap items-center gap-2 w-full sm:w-auto">
-                  {onSaveDraft && (
+                  {footerActionUi.secondaryMode === 'revise' ? (
                     <button
                       type="button"
-                      data-testid="save-draft-button"
-                      onClick={handleSaveDraftClick}
+                      data-testid="footer-revise-button"
+                      onClick={handleStartRevisionPass}
                       className="btn-secondary inline-flex items-center justify-center gap-1.5 min-h-[44px] sm:min-h-0 px-3 py-2 text-xs font-medium whitespace-nowrap"
                     >
-                      <Save className="w-3.5 h-3.5" aria-hidden="true" />
-                      <span>Save Draft</span>
+                      <RotateCw className="w-3.5 h-3.5" aria-hidden="true" />
+                      <span>Revise</span>
                     </button>
+                  ) : (
+                    onSaveDraft && (
+                      <button
+                        type="button"
+                        data-testid="save-draft-button"
+                        onClick={handleSaveDraftClick}
+                        className="btn-secondary inline-flex items-center justify-center gap-1.5 min-h-[44px] sm:min-h-0 px-3 py-2 text-xs font-medium whitespace-nowrap"
+                      >
+                        <Save className="w-3.5 h-3.5" aria-hidden="true" />
+                        <span>Save Draft</span>
+                      </button>
+                    )
                   )}
 
                   <button
                     type="button"
                     data-testid="evaluate-score-button"
-                    onClick={() => handleEvaluateDraft(false)}
-                    disabled={evaluating}
+                    data-action-kind={footerActionUi.primaryAction.kind}
+                    onClick={handleFooterPrimaryAction}
+                    disabled={footerActionUi.primaryAction.disabled}
                     className={`btn-primary inline-flex items-center justify-center gap-1.5 min-h-[44px] sm:min-h-0 px-4 py-2 text-xs font-medium whitespace-nowrap ${
-                      !onSaveDraft ? 'col-span-2' : ''
+                      footerActionUi.secondaryMode !== 'revise' && !onSaveDraft
+                        ? 'col-span-2'
+                        : ''
                     }`}
                   >
-                    <Sparkles
-                      className={`w-3.5 h-3.5 ${evaluating ? 'animate-pulse' : ''}`}
-                      aria-hidden="true"
-                    />
-                    <span>
-                      {evaluating
-                        ? 'Evaluating...'
-                        : revisionContext
-                          ? 'Score Revision'
-                          : 'Evaluate & Score'}
-                    </span>
+                    {footerActionUi.primaryAction.kind === 'advance-sprint' ? (
+                      <ArrowRight className="w-3.5 h-3.5" aria-hidden="true" />
+                    ) : footerActionUi.primaryAction.kind === 'new-sprint' ||
+                      footerActionUi.primaryAction.kind === 'new-entry' ? (
+                      <Plus className="w-3.5 h-3.5" aria-hidden="true" />
+                    ) : footerActionUi.primaryAction.kind === 're-evaluate' ||
+                      footerActionUi.primaryAction.kind === 'score-revision' ? (
+                      <RotateCw className="w-3.5 h-3.5" aria-hidden="true" />
+                    ) : (
+                      <Sparkles
+                        className={`w-3.5 h-3.5 ${evaluating ? 'animate-pulse' : ''}`}
+                        aria-hidden="true"
+                      />
+                    )}
+                    <span>{footerActionUi.primaryAction.label}</span>
                   </button>
                 </div>
               </div>
             </div>
           </div>
+
+          {slowEvalNotice && (
+            <div
+              role="status"
+              data-testid="slow-eval-draft-notice"
+              className="drawer-reveal p-3.5 rounded-md border border-status-warning-border bg-status-warning-soft text-xs text-status-warning flex items-start justify-between gap-3"
+            >
+              <div className="flex items-start gap-2">
+                <RefreshCw
+                  className="w-3.5 h-3.5 mt-0.5 shrink-0 awaiting-ink-spinner"
+                  aria-hidden="true"
+                />
+                <span className="leading-relaxed">{slowEvalNotice}</span>
+              </div>
+              <button
+                type="button"
+                onClick={() => setSlowEvalNotice(null)}
+                aria-label="Dismiss background evaluation notice"
+                className="p-0.5 opacity-75 hover:opacity-100 shrink-0 cursor-pointer"
+              >
+                <X className="w-3.5 h-3.5" aria-hidden="true" />
+              </button>
+            </div>
+          )}
 
           {errorMessage && (
             <div
@@ -3695,13 +4099,13 @@ export function WriteStudio({
         <div
           role="status"
           data-testid="quick-add-vocab-toast"
-          className="fixed mobile-floating-clearance right-3 sm:right-5 z-40 inline-flex items-center gap-2 px-3.5 py-2 rounded-md border border-status-success-border bg-surface text-xs text-ink-primary shadow-md"
+          className="fixed top-16 left-1/2 -translate-x-1/2 z-50 max-w-[calc(100vw-1.5rem)] inline-flex items-center gap-2 px-3.5 py-2 rounded-md border border-status-success-border bg-elevated text-xs text-ink-primary shadow-md"
         >
           <CheckCircle2
             className="w-3.5 h-3.5 text-status-success shrink-0"
             aria-hidden="true"
           />
-          <span>{quickVocabToast}</span>
+          <span className="truncate">{quickVocabToast}</span>
         </div>
       )}
 

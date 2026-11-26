@@ -12,6 +12,7 @@ import {
   Laptop,
   Lock,
   LogOut,
+  Mail,
   Moon,
   RefreshCw,
   ShieldCheck,
@@ -77,7 +78,6 @@ interface VaultSettingsViewProps {
   }) => void;
   onUpdateDeskPreferences: (params: {
     tactileSoundEnabled?: boolean;
-    vaultLatchEnabled?: boolean;
   }) => void;
   cloudUser: {
     uid: string;
@@ -167,7 +167,6 @@ export function VaultSettingsView({
 
   const profile = vault.settings.studentProfile;
   const tactileSoundEnabled = Boolean(vault.settings.tactileSoundEnabled);
-  const vaultLatchEnabled = Boolean(vault.settings.vaultLatchEnabled);
 
   function handleTogglePreset(id: CoachPresetId) {
     playTactileClick(tactileSoundEnabled);
@@ -573,38 +572,6 @@ export function VaultSettingsView({
               )}
             </button>
           </div>
-
-          {/* Optional Vault Latch */}
-          <div className="py-3.5 flex flex-wrap items-center justify-between gap-3">
-            <div className="max-w-lg">
-              <div className="text-xs font-medium text-ink-primary">
-                Vault Latch (Private Journal Mode)
-              </div>
-              <div className="text-[11px] text-ink-muted leading-relaxed">
-                Arms the mechanical lock latch in the top bar for quick desk locking. Practice drafts stay ready for instant AI coaching.
-              </div>
-            </div>
-            <button
-              type="button"
-              role="switch"
-              aria-checked={vaultLatchEnabled}
-              onClick={() => {
-                const next = !vaultLatchEnabled;
-                playTactileClick(tactileSoundEnabled);
-                onUpdateDeskPreferences({ vaultLatchEnabled: next });
-              }}
-              className="btn-secondary inline-flex items-center gap-2 px-3 py-1.5 text-xs font-medium"
-            >
-              <span
-                className="vault-latch-track"
-                data-latched={vaultLatchEnabled ? 'true' : 'false'}
-                aria-hidden="true"
-              >
-                <span className="vault-latch-thumb" />
-              </span>
-              <span>{vaultLatchEnabled ? 'Armed' : 'Standard'}</span>
-            </button>
-          </div>
         </div>
       </section>
 
@@ -671,25 +638,35 @@ export function VaultSettingsView({
         {cloudUser && !cloudUser.emailVerified && (
           <div
             role="status"
-            className="p-3 rounded-md border border-status-warning-border bg-status-warning-soft text-xs text-status-warning flex flex-wrap items-center justify-between gap-2.5"
+            data-testid="settings-email-confirm-row"
+            className="px-3.5 py-2.5 rounded-md border border-border-subtle bg-subtle/45 flex flex-wrap items-center justify-between gap-2.5 text-xs"
           >
-            <span>
-              Verify your email ({cloudUser.email}) to activate live cross-device Firestore sync.
-            </span>
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-2.5 min-w-0">
+              <Mail
+                className="w-3.5 h-3.5 text-ink-muted shrink-0"
+                aria-hidden="true"
+              />
+              <span className="text-ink-secondary">
+                <strong className="font-medium text-ink-primary">
+                  Confirm email
+                </strong>{' '}
+                · {cloudUser.email} to enable cross-device sync
+              </span>
+            </div>
+            <div className="flex items-center gap-2 shrink-0">
               <button
                 type="button"
                 onClick={() => void onResendVerification()}
-                className="btn-secondary px-2.5 py-1 text-xs font-medium"
+                className="px-2 py-1 text-[11px] font-medium text-ink-muted hover:text-ink-primary transition-colors cursor-pointer"
               >
-                Resend Email
+                Resend link
               </button>
               <button
                 type="button"
                 onClick={() => void onRefreshVerification()}
-                className="btn-primary px-2.5 py-1 text-xs font-medium"
+                className="btn-secondary px-2.5 py-1 text-[11px] font-medium"
               >
-                I&apos;ve Verified
+                I&apos;ve verified
               </button>
             </div>
           </div>

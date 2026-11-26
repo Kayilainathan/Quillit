@@ -6,6 +6,8 @@ import {
   Clock,
   Download,
   History,
+  Lock,
+  RefreshCw,
   Search,
   Table2,
   Target,
@@ -38,7 +40,7 @@ import { ConverseFluencyChart } from './ConverseFluencyChart';
 import { FluencyHeatmap } from './FluencyHeatmap';
 import { EvaluationReportView } from './EvaluationReportView';
 import { isConverseSession } from '../utils/converseAnalytics';
-import { findTimeCapsuleCandidate } from '../utils/timeCapsule';
+import { getTimeCapsuleStatus } from '../utils/timeCapsule';
 
 interface DashboardViewProps {
   sessions: WritingSession[];
@@ -49,6 +51,8 @@ interface DashboardViewProps {
   onStartWriting: () => void;
   onStartConverse?: () => void;
   onLaunchTimeCapsule?: (originSession: WritingSession) => void;
+  onRetryPendingEvaluation?: (sessionId: string) => void;
+  retryingSessionId?: string | null;
 }
 
 export function DashboardView({
@@ -60,6 +64,8 @@ export function DashboardView({
   onStartWriting,
   onStartConverse,
   onLaunchTimeCapsule,
+  onRetryPendingEvaluation,
+  retryingSessionId = null,
 }: DashboardViewProps) {
   const [searchQuery, setSearchQuery] = useState('');
   const [modeFilter, setModeFilter] = useState<string>('all');
@@ -144,10 +150,19 @@ export function DashboardView({
     };
   }, [completed, todayISO]);
 
-  const timeCapsuleCandidate = useMemo(
-    () => findTimeCapsuleCandidate(completed, todayISO),
-    [completed, todayISO]
+  const awaitingAiSessions = useMemo(
+    () =>
+      sessions
+        .filter((s) => Boolean(s.evaluationPending))
+        .sort((a, b) => (b.queuedAt || b.createdAt).localeCompare(a.queuedAt || a.createdAt)),
+    [sessions]
   );
+
+  const timeCapsuleStatus = useMemo(
+    () => getTimeCapsuleStatus(sessions, todayISO),
+    [sessions, todayISO]
+  );
+  const timeCapsuleCandidate = timeCapsuleStatus.candidate;
 
   const latestTimeCapsuleSession = useMemo(
     () =>
@@ -252,6 +267,77 @@ export function DashboardView({
           </button>
         </div>
       </div>
+
+      {/* Awaiting AI Evaluation Indicator (shown only when a slow-API draft or queued entry is pending) */}
+      {awaitingAiSessions.length > 0 && (
+        <section
+          aria-label="Drafts awaiting AI evaluation"
+          data-testid="dashboard-awaiting-ai-banner"
+          className="card-surface drawer-reveal border-status-warning-border bg-status-warning-soft/55 p-4 space-y-2.5"
+        >
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="flex items-center gap-2 text-xs font-semibold text-status-warning">
+              <RefreshCw
+                className="w-3.5 h-3.5 awaiting-ink-spinner shrink-0"
+                aria-hidden="true"
+              />
+              <span>
+                Awaiting AI Evaluation ({awaitingAiSessions.length}{' '}
+                {awaitingAiSessions.length === 1 ? 'draft' : 'drafts'})
+              </span>
+            </div>
+            <span className="text-[11px] text-ink-secondary">
+              Saved safely to Drafts — scores update automatically while you use other features.
+            </span>
+          </div>
+
+          <div className="divide-y divide-border-subtle/70 border-t border-border-subtle/70">
+            {awaitingAiSessions.slice(0, 3).map((draft) => {
+              const isRetrying = retryingSessionId === draft.id;
+              return (
+                <div
+                  key={draft.id}
+                  className="pt-2.5 pb-1.5 flex flex-wrap items-center justify-between gap-2 text-xs"
+                >
+                  <div className="min-w-0 flex-1">
+                    <span className="font-medium text-ink-primary truncate block">
+                      {draft.topicDescription || 'Untitled Draft'}
+                    </span>
+                    <span className="font-mono-tabular text-[11px] text-ink-muted">
+                      {MODE_LABELS[draft.mode]} · {draft.wordCount}w · {draft.date}
+                    </span>
+                  </div>
+
+                  <div className="flex items-center gap-1.5 shrink-0">
+                    {onRetryPendingEvaluation && (
+                      <button
+                        type="button"
+                        data-testid={`retry-pending-eval-${draft.id}`}
+                        disabled={isRetrying}
+                        onClick={() => onRetryPendingEvaluation(draft.id)}
+                        className="btn-secondary inline-flex items-center gap-1 px-2.5 py-1 text-[11px] font-medium whitespace-nowrap"
+                      >
+                        <RefreshCw
+                          className={`w-3 h-3 ${isRetrying ? 'animate-spin' : ''}`}
+                          aria-hidden="true"
+                        />
+                        <span>{isRetrying ? 'Evaluating...' : 'Retry Now'}</span>
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      onClick={onStartWriting}
+                      className="btn-ghost px-2 py-1 text-[11px] font-medium whitespace-nowrap"
+                    >
+                      Open Studio
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </section>
+      )}
 
       {/* Primary KPI Strip */}
       <section
@@ -424,14 +510,29 @@ export function DashboardView({
                 </div>
               </>
             ) : (
-              <>
-                <div className="text-sm font-semibold text-ink-primary">
-                  {completed.length}/3 sessions until your first Blind Retest
+              <div className="space-y-1.5">
+                <div className="flex items-center gap-1.5 text-sm font-semibold text-ink-primary">
+                  <Lock className="w-3.5 h-3.5 text-ink-muted shrink-0" aria-hidden="true" />
+                  <span>
+                    {timeCapsuleStatus.completedCount} of {timeCapsuleStatus.requiredCount} entries sealed
+                  </span>
                 </div>
-                <div className="text-[11px] text-ink-muted">
-                  Re-answer an older prompt blind—then unseal Past You vs Today You side by side.
+                <p className="text-[11px] text-ink-muted leading-relaxed">
+                  {timeCapsuleStatus.naturalMessage}
+                </p>
+                <div className="flex items-center gap-1.5 max-w-[180px] pt-0.5">
+                  {Array.from({ length: timeCapsuleStatus.requiredCount }).map((_, idx) => (
+                    <span
+                      key={idx}
+                      className={`h-1.5 flex-1 rounded-full ${
+                        idx < timeCapsuleStatus.completedCount
+                          ? 'bg-accent'
+                          : 'bg-border-default'
+                      }`}
+                    />
+                  ))}
                 </div>
-              </>
+              </div>
             )}
           </div>
 

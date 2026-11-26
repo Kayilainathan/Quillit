@@ -71,6 +71,47 @@ export function getRoundConfig(round: 1 | 2 | 3): CompressionRoundConfig {
   return COMPRESSION_ROUNDS[round - 1];
 }
 
+export interface AdvanceRoundCheck {
+  allowed: boolean;
+  wordCount: number;
+  reason: string | null;
+}
+
+/**
+ * Prevents jumping past Round 1 or Round 2 with 0 written words so each
+ * compression pass actually exercises recall before shrinking the time budget.
+ */
+export function canAdvanceCompressionRound(
+  currentDraftText: string,
+  currentRound: 1 | 2 | 3
+): AdvanceRoundCheck {
+  const wordCount = countSprintWords(currentDraftText);
+  if (currentRound < 3 && wordCount === 0) {
+    return {
+      allowed: false,
+      wordCount,
+      reason: `Write a few words in Pass ${currentRound} before advancing to Pass ${currentRound + 1}.`,
+    };
+  }
+  return {
+    allowed: true,
+    wordCount,
+    reason: null,
+  };
+}
+
+/**
+ * Returns true in the final compression pass (Pass 3) once the writer reaches
+ * the minimum concise target word length (45 words) and is ready to evaluate.
+ */
+export function isFinalRoundReadyToEvaluate(
+  currentDraftText: string,
+  currentRound: 1 | 2 | 3
+): boolean {
+  if (currentRound !== 3) return false;
+  return countSprintWords(currentDraftText) >= COMPRESSION_ROUNDS[2].minWords;
+}
+
 /**
  * Advances from Round 1 -> Round 2 -> Round 3, snapshotting the completed round's text
  * and clearing the canvas for fresh recall/compression (never copy-pasting).
@@ -80,6 +121,11 @@ export function advanceCompressionRound(
   currentDraftText: string
 ): CompressionSprintState {
   const idx = state.currentRound - 1;
+  const check = canAdvanceCompressionRound(currentDraftText, state.currentRound);
+  if (!check.allowed) {
+    return state;
+  }
+
   const nextTexts: [string, string, string] = [...state.roundTexts] as [
     string,
     string,
@@ -91,7 +137,7 @@ export function advanceCompressionRound(
     number,
   ];
   nextTexts[idx] = currentDraftText.trim();
-  nextCounts[idx] = countSprintWords(currentDraftText);
+  nextCounts[idx] = check.wordCount;
 
   if (state.currentRound === 3) {
     return {

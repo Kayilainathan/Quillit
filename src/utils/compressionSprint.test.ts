@@ -2,9 +2,11 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   advanceCompressionRound,
+  canAdvanceCompressionRound,
   computeCompressionMetrics,
   createInitialCompressionState,
   formatCountdownMMSS,
+  isFinalRoundReadyToEvaluate,
 } from './compressionSprint';
 
 test('4/3/2 Compression Sprint advances cleanly through 3 rounds and snapshots word counts', () => {
@@ -34,6 +36,28 @@ test('4/3/2 Compression Sprint advances cleanly through 3 rounds and snapshots w
   assert.equal(metrics.compressionRatioPct, 64);
   assert.equal(metrics.hitTargetCurve, true);
   assert.ok(metrics.summaryLabel.includes('150w → 100w → 54w'));
+});
+
+test('canAdvanceCompressionRound blocks advancing Pass 1 or 2 when word count is zero', () => {
+  const s0 = createInitialCompressionState();
+  const emptyCheck = canAdvanceCompressionRound('   \n  ', 1);
+  assert.equal(emptyCheck.allowed, false);
+  assert.ok(emptyCheck.reason?.includes('Pass 1'));
+
+  const blocked = advanceCompressionRound(s0, '');
+  assert.equal(blocked.currentRound, 1);
+
+  const validCheck = canAdvanceCompressionRound('Clear instrumentation insight.', 2);
+  assert.equal(validCheck.allowed, true);
+  assert.equal(validCheck.wordCount, 3);
+});
+
+test('isFinalRoundReadyToEvaluate unlocks only in Pass 3 once 45+ words are written', () => {
+  const words44 = Array.from({ length: 44 }, (_, i) => `w${i}`).join(' ');
+  const words45 = Array.from({ length: 45 }, (_, i) => `w${i}`).join(' ');
+  assert.equal(isFinalRoundReadyToEvaluate(words45, 2), false);
+  assert.equal(isFinalRoundReadyToEvaluate(words44, 3), false);
+  assert.equal(isFinalRoundReadyToEvaluate(words45, 3), true);
 });
 
 test('formatCountdownMMSS formats seconds cleanly', () => {

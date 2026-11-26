@@ -266,13 +266,13 @@ export function curriculumTopicToCalendarSlot(params: {
   } = params;
 
   const suffix = dayOfWeek.slice(0, 3).toLowerCase();
-  const weekLabel = `W${String(topic.week).padStart(2, '0')} · ${topic.category}`;
+  const cleanLabel = topic.category;
   const drillSpec = inferRecommendedDrillForSlot(dayOfWeek, topic.pillar);
 
   return {
     id: `plan-${scheduledDate}-${suffix}`,
     dayOfWeek,
-    slotLabel: weekLabel,
+    slotLabel: cleanLabel,
     slotTime: reminderTime,
     scheduledDate,
     mode: topic.mode,
@@ -425,7 +425,7 @@ export function swapSlotWithCurriculum(params: {
   return {
     updatedSlot: {
       ...slot,
-      slotLabel: `W${String(picked.week).padStart(2, '0')} · ${picked.category}`,
+      slotLabel: picked.category,
       mode: picked.mode,
       tone: picked.tone,
       promptCategory: picked.category,

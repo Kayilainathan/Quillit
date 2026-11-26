@@ -1041,7 +1041,8 @@ export function ConverseStudio({
         activeScenario.mode,
         activeScenario.tone,
         offlineIssues,
-        `Live Chat: ${activeScenario.title}`
+        `Live Chat: ${activeScenario.title}`,
+        vocabulary
       );
       const offlineBench = buildOfflineConversationBenchmark({
         messages,

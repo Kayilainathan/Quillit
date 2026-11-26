@@ -21,12 +21,12 @@ export const MODE_LABELS: Record<WritingMode, string> = {
 };
 
 export const TONE_LABELS: Record<string, string> = {
-  'professional-warm': 'Professional-Warm',
-  conversational: 'Conversational & Natural',
-  'formal-executive': 'Formal & Executive',
-  'academic-technical': 'Academic / EIE Technical',
+  'professional-warm': 'Warm Professional',
+  conversational: 'Natural Spoken',
+  'formal-executive': 'Executive & Clear',
+  'academic-technical': 'Clear Technical',
   'crisp-direct': 'Crisp & Direct',
-  'narrative-vivid': 'Vivid & Narrative',
+  'narrative-vivid': 'Vivid Story',
 };
 
 export const RUBRIC_DIMENSIONS: Array<{

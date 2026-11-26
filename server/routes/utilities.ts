@@ -353,31 +353,31 @@ export function createUtilitiesRouter(): Router {
           task: 'topics',
           preferFastTier: true,
           complexityMetric: 60,
-          contents: `3 fresh, spoken-first, non-repeating writing prompts for: ${persona}.
-Mode: ${mode} | Tone: ${tone} | Focus: ${focusArea || 'fresh real-world communication, engineering clarity, or vivid storytelling'}
+        contents: `4 fresh, spoken-first, non-repeating writing prompts tailored for: ${persona}.
+Mode: ${mode} | Tone: ${tone} | Focus: ${focusArea || 'EIE instrumentation & embedded interviews, clear system explanations, outreach emails, or vivid stories'}
 Strictly avoid repeating any of these past/scheduled topics: ${avoidSample || 'none'}`,
-          systemInstruction:
-            'Return 3 crisp, highly specific, original writing prompts (no em-dashes, no word-count rules inside the title). Frame each guidance note around how it sounds spoken aloud plus a 1-sentence pivot permission. Never repeat any topic listed in the avoid list.',
-          responseSchema: {
-            type: Type.OBJECT,
-            properties: {
-              prompts: {
-                type: Type.ARRAY,
-                items: {
-                  type: Type.OBJECT,
-                  properties: {
-                    title: { type: Type.STRING },
-                    guidance: { type: Type.STRING },
-                    category: { type: Type.STRING },
-                    targetWords: { type: Type.INTEGER },
-                  },
-                  required: ['title', 'guidance', 'category', 'targetWords'],
+        systemInstruction:
+          'Return 4 crisp, engaging, non-generic writing prompts (no em-dashes, no word-count rules inside titles). Frame guidance around explaining cleanly aloud plus a 1-sentence pivot permission. Strictly avoid repeating past topics.',
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            prompts: {
+              type: Type.ARRAY,
+              items: {
+                type: Type.OBJECT,
+                properties: {
+                  title: { type: Type.STRING },
+                  guidance: { type: Type.STRING },
+                  category: { type: Type.STRING },
+                  targetWords: { type: Type.INTEGER },
                 },
+                required: ['title', 'guidance', 'category', 'targetWords'],
               },
             },
-            required: ['prompts'],
           },
-        });
+          required: ['prompts'],
+        },
+      });
 
       res.json({ ok: true, ...parsed, modelUsed, thinkingLevelUsed, downgraded, cached });
     } catch {
@@ -389,27 +389,35 @@ Strictly avoid repeating any of these past/scheduled topics: ${avoidSample || 'n
         prompts: [
           {
             title:
-              'Calibrating a PT100 RTD Bridge Against Ambient Thermal Drift in Lab',
+              'Calibrating a 3-Wire PT100 RTD Bridge Against Ambient Lead Resistance in Lab',
             guidance:
-              'Explain 3-wire lead compensation aloud to a lab partner. Swap to any sensor bench test you know well.',
+              'Explain lead-wire cancellation aloud to a lab partner. Swap to any sensor bridge bench test you know well.',
             category: String(mode),
             targetWords: 200,
           },
           {
             title:
-              'Follow-Up Note After a Process Control & Instrumentation Mock Interview',
+              'Cold Outreach Note After Reading a Core Embedded Team Engineer Article',
             guidance:
-              'Reinforce your explanation of PID anti-windup and thank the panel concisely.',
+              'Reference one specific firmware or ADC detail they wrote about and ask concisely for a 15-minute chat.',
             category: String(mode),
-            targetWords: 170,
+            targetWords: 150,
           },
           {
             title:
-              'The Brass Chronometer: When the City Master Clock Skipped a Beat at Midnight',
+              'Walking a Placement Panel Through Why Your Signal Conditioning Op-Amp Saturated',
             guidance:
-              'Narrate character urgency through sensory mechanical details and brisk spoken dialogue.',
+              'State the symptom, rail headroom constraint, and measured fix clearly without apologizing.',
             category: String(mode),
-            targetWords: 230,
+            targetWords: 195,
+          },
+          {
+            title:
+              'The Brass Chronometer: When the Station Master Clock Skipped a Beat at Dusk',
+            guidance:
+              'Narrate urgency through sensory mechanical details and tight spoken dialogue.',
+            category: String(mode),
+            targetWords: 225,
           },
         ],
       });

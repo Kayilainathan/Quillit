@@ -72,6 +72,46 @@ test('buildInstantLocalEvaluation runs fast and returns valid 6-pillar scores + 
   assert.equal(gibRes.cefrLevel, 'A1');
 });
 
+test('buildInstantLocalEvaluation prioritizes user vocabulary library upgrades and EIE alternatives', () => {
+  const draft =
+    'Yesterday we did a mistake while wiring a ADC and a RTD sensor at 50hz, so we had to fix the problem before testing the big error on the bench.';
+  const vocab = [
+    {
+      id: 'v-err',
+      used: 'big error',
+      betterAlternative: 'steady-state deviation',
+      explanation: 'Precise control-loop terminology.',
+      contextSnippet: 'Lab debug',
+      mode: 'technical' as const,
+      dateAdded: '2026-11-20',
+      mastered: false,
+    },
+  ];
+  const issues = runOfflineProofread(draft);
+  const res = buildInstantLocalEvaluation(
+    draft,
+    'technical',
+    'academic-technical',
+    issues,
+    'ADC Signal Conditioning',
+    vocab
+  );
+  assert.ok(
+    res.vocabUpgrades.some(
+      (v) =>
+        v.used.toLowerCase() === 'big error' &&
+        v.betterAlternative === 'steady-state deviation'
+    ),
+    'Expected saved library entry replacement to be prioritized in offline vocabUpgrades'
+  );
+  assert.ok(
+    res.vocabUpgrades.some((v) =>
+      v.betterAlternative.includes('isolate the root cause')
+    ),
+    'Expected EIE professional alternative for "fix the problem"'
+  );
+});
+
 test('resolveRandomTopicDismiss removes topic if body is empty or unchanged after picking random', () => {
   // Case 1: Empty body when closing
   const emptyRes = resolveRandomTopicDismiss({

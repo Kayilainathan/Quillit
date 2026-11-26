@@ -81,6 +81,102 @@ export function findTimeCapsuleCandidate(
   return null;
 }
 
+export const TIME_CAPSULE_REQUIRED_SESSIONS = 3;
+
+export interface TimeCapsuleStatus {
+  state: 'locked' | 'ready';
+  completedCount: number;
+  requiredCount: number;
+  remainingCount: number;
+  progressRatio: number;
+  naturalMessage: string;
+  candidate: TimeCapsuleCandidate | null;
+  allEligibleCandidates: TimeCapsuleCandidate[];
+}
+
+/**
+ * Returns a natural-language Time Capsule readiness state for both brand-new
+ * writers (locked with calm progress copy) and returning writers (ready with
+ * an auto-suggested past topic to rewrite blind).
+ */
+export function getTimeCapsuleStatus(
+  sessions: WritingSession[],
+  todayISO: string
+): TimeCapsuleStatus {
+  const completed = sessions
+    .filter(
+      (s) =>
+        s.status === 'Completed' &&
+        s.content.trim().length >= 40 &&
+        s.drillType !== 'time-capsule'
+    )
+    .sort((a, b) => a.date.localeCompare(b.date));
+
+  const candidate = findTimeCapsuleCandidate(sessions, todayISO);
+  const todayMs = parseISODateMs(todayISO);
+
+  const allEligibleCandidates: TimeCapsuleCandidate[] = completed.map((s) => {
+    const daysOld = Math.max(
+      0,
+      Math.round((todayMs - parseISODateMs(s.date)) / 86_400_000)
+    );
+    const isFull30Day = daysOld >= 30;
+    return {
+      session: s,
+      daysOld,
+      isFull30Day,
+      label: isFull30Day
+        ? `Time Capsule Ready · ${daysOld}d ago`
+        : daysOld > 0
+          ? `Earlier Topic · ${daysOld}d ago`
+          : 'Earlier Session',
+    };
+  });
+
+  if (candidate) {
+    const topicTitle = candidate.session.topicDescription || 'an earlier topic';
+    const agePhrase = candidate.isFull30Day
+      ? `${candidate.daysOld} days ago`
+      : candidate.daysOld > 0
+        ? `${candidate.daysOld} day${candidate.daysOld === 1 ? '' : 's'} ago`
+        : 'earlier';
+    return {
+      state: 'ready',
+      completedCount: completed.length,
+      requiredCount: TIME_CAPSULE_REQUIRED_SESSIONS,
+      remainingCount: 0,
+      progressRatio: 1,
+      naturalMessage: `Unlocked — rewrite "${topicTitle}" from ${agePhrase} with fresh eyes and compare how your voice evolved.`,
+      candidate,
+      allEligibleCandidates,
+    };
+  }
+
+  const remainingCount = Math.max(
+    1,
+    TIME_CAPSULE_REQUIRED_SESSIONS - completed.length
+  );
+  const progressRatio = Math.min(
+    1,
+    completed.length / TIME_CAPSULE_REQUIRED_SESSIONS
+  );
+  const naturalMessage =
+    completed.length === 0
+      ? 'Write 3 completed entries to seal your first Time Capsule. Once ready, Quillit will bring back an earlier topic to rewrite blind and compare your writing growth.'
+      : `Write ${remainingCount} more ${remainingCount === 1 ? 'entry' : 'entries'} to unlock Time Capsule — we will bring back one of your past topics to rewrite fresh and compare your aesthetics.`;
+
+  return {
+    state: 'locked',
+    completedCount: completed.length,
+    requiredCount: TIME_CAPSULE_REQUIRED_SESSIONS,
+    remainingCount,
+    progressRatio,
+    naturalMessage,
+    candidate: null,
+    allEligibleCandidates,
+  };
+}
+
 /**
  * Computes concrete Past-vs-Today growth deltas when a writer re-answers a sealed Time Capsule prompt.
  */

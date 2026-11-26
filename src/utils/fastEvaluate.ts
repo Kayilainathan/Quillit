@@ -10,6 +10,7 @@ import type {
   RubricMetricNotes,
   RubricScores,
   ToneSetting,
+  VocabEntry,
   VocabSuggestion,
   WritingMode,
 } from '../types';
@@ -26,6 +27,7 @@ import {
   filterGroundedGrammarFixes,
 } from './evaluationCalibration';
 import type { OfflineProofIssue } from './offlineProofreader';
+import { analyzeWritingSample } from './textAnalysis';
 
 export interface InstantEvaluationResult {
   evaluationStatus: 'completed';
@@ -407,10 +409,18 @@ export function buildInstantLocalEvaluation(
   mode: WritingMode,
   tone: ToneSetting,
   offlineIssues: OfflineProofIssue[],
-  existingTopic?: string
+  existingTopic?: string,
+  vocabulary: VocabEntry[] = []
 ): InstantEvaluationResult {
   const diag = analyzeDraftLocally(content);
   const integrity = assessDraftIntegrity(content);
+  const eieAnalysis = analyzeWritingSample({
+    text: content,
+    vocabulary,
+    mode,
+    tone,
+    topic: existingTopic,
+  });
   const words = Math.max(1, diag.wordCount);
   const sentences = Math.max(1, diag.sentenceCount);
   const lexicalDiversity = integrity.uniqueWordRatio;
@@ -509,15 +519,50 @@ export function buildInstantLocalEvaluation(
   });
 
   const vocabUpgrades: VocabSuggestion[] = [];
+  const seenUsedPhrases = new Set<string>();
   if (!calibrated.integrity.isGibberishOrLowEffort) {
-    for (const candidate of WEAK_VOCAB_UPGRADES) {
-      if (candidate.pattern.test(content)) {
+    // 1. Prioritize phrases matching entries already saved in the user's vocabulary library
+    for (const opp of eieAnalysis.vocabularyComparison.missedLibraryOpportunities) {
+      const key = opp.matchedUsedPhrase.toLowerCase();
+      if (seenUsedPhrases.has(key)) continue;
+      seenUsedPhrases.add(key);
+      vocabUpgrades.push({
+        used: opp.matchedUsedPhrase,
+        betterAlternative: opp.libraryAlternative,
+        explanation: opp.explanation,
+      });
+      if (vocabUpgrades.length >= 3) break;
+    }
+
+    // 2. Surface EIE-authentic professional vocabulary alternatives
+    if (vocabUpgrades.length < 3) {
+      for (const alt of eieAnalysis.vocabularyComparison.professionalAlternatives) {
+        const key = alt.original.toLowerCase();
+        if (seenUsedPhrases.has(key)) continue;
+        seenUsedPhrases.add(key);
         vocabUpgrades.push({
-          used: candidate.original,
-          betterAlternative: candidate.better,
-          explanation: candidate.reason,
+          used: alt.original,
+          betterAlternative: alt.professionalAlternative,
+          explanation: alt.educationalNote,
         });
         if (vocabUpgrades.length >= 3) break;
+      }
+    }
+
+    // 3. Fill remaining slots from general prose upgrades
+    if (vocabUpgrades.length < 3) {
+      for (const candidate of WEAK_VOCAB_UPGRADES) {
+        if (candidate.pattern.test(content)) {
+          const key = candidate.original.toLowerCase();
+          if (seenUsedPhrases.has(key)) continue;
+          seenUsedPhrases.add(key);
+          vocabUpgrades.push({
+            used: candidate.original,
+            betterAlternative: candidate.better,
+            explanation: candidate.reason,
+          });
+          if (vocabUpgrades.length >= 3) break;
+        }
       }
     }
   }
@@ -600,6 +645,19 @@ export function buildInstantLocalEvaluation(
     );
   }
 
+  const appliedLibrary = eieAnalysis.vocabularyComparison.appliedFromLibrary;
+  if (appliedLibrary.length > 0) {
+    const sampleHeadwords = appliedLibrary
+      .slice(0, 2)
+      .map((item) => `"${item.headword}"`)
+      .join(', ');
+    strengthParts.push(
+      `Applied ${appliedLibrary.length} saved library ${
+        appliedLibrary.length === 1 ? 'term' : 'terms'
+      } (${sampleHeadwords}) naturally.`
+    );
+  }
+
   const strictParts: string[] = [];
   if (words < 45) {
     strictParts.push(
@@ -609,6 +667,14 @@ export function buildInstantLocalEvaluation(
   if (grammarFixes.length > 0) {
     strictParts.push(
       `Fix ${grammarFixes.length} flagged mechanics ${grammarFixes.length === 1 ? 'slip' : 'slips'} (starting with "${grammarFixes[0].original}").`
+    );
+  }
+  const eieGrammarTip = eieAnalysis.suggestions.find(
+    (s) => s.category === 'grammar' && s.id.startsWith('eie-')
+  );
+  if (eieGrammarTip) {
+    strictParts.push(
+      `${eieGrammarTip.title} ("${eieGrammarTip.excerpt}") — ${eieGrammarTip.suggestion}.`
     );
   }
   if (diag.fillerHits.length > 0) {

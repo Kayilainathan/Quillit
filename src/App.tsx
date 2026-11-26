@@ -81,10 +81,16 @@ import {
   syncVocabToCloud,
 } from './utils/cloudSync';
 import {
+  clearDismissedNotifications,
+  dismissNotificationId,
   evaluateDayNotifications,
   fireBrowserDayNotification,
   getBrowserNotificationPermission,
+  loadNotificationActionState,
   requestBrowserNotificationPermission,
+  saveNotificationActionState,
+  snoozeNotificationId,
+  type NotificationActionState,
 } from './utils/notifications';
 import {
   pullVaultFromGoogleSheets,
@@ -119,6 +125,13 @@ import {
 } from './components/WorkspaceSyncConfirmModal';
 import { OfflineMigrationModal } from './components/OfflineMigrationModal';
 import { WelcomeTopicFlashcard } from './components/WelcomeTopicFlashcard';
+import { DailyPracticeSuggestionPopup } from './components/DailyPracticeSuggestionPopup';
+import { EmailVerifyPopup } from './components/EmailVerifyPopup';
+import { getEmailVerifyDismissKey } from './utils/emailVerifyPopup';
+import {
+  computeDailyPracticeSuggestion,
+  type DailyPracticeSuggestion,
+} from './utils/dailyPracticeCoach';
 import {
   loadOfflineMigrationRecord,
   mergeOfflineIntoCloudVault,
@@ -265,6 +278,17 @@ export default function App() {
   const [scheduleError, setScheduleError] = useState<string | null>(null);
   const [activeAiModelLabel, setActiveAiModelLabel] =
     useState<string>('gemini-4-hydrogen');
+  const [requestedPracticeWord, setRequestedPracticeWord] = useState<string | null>(
+    null
+  );
+  const [requestedDrillToken, setRequestedDrillToken] = useState<{
+    drill: DrillType;
+    nonce: number;
+    originSession?: WritingSession | null;
+  } | null>(null);
+  const [retryingPendingEvalId, setRetryingPendingEvalId] = useState<string | null>(
+    null
+  );
 
   // Firebase Cloud Auth + Firestore / Google Workspace fallback state
   const [cloudUser, setCloudUser] = useState<User | null>(null);
@@ -274,7 +298,33 @@ export default function App() {
   const [cloudSyncError, setCloudSyncError] = useState<string | null>(null);
   const [verificationNotice, setVerificationNotice] = useState<string | null>(null);
   const [verificationBusy, setVerificationBusy] = useState(false);
+  const [verifyPopupDismissed, setVerifyPopupDismissed] = useState(false);
+  const [verifyPopupNonce, setVerifyPopupNonce] = useState(0);
   const initialCloudSyncedUidRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (!cloudUser || cloudUser.emailVerified) {
+      setVerifyPopupDismissed(false);
+      return;
+    }
+    try {
+      const dismissed =
+        sessionStorage.getItem(getEmailVerifyDismissKey(cloudUser.uid)) === '1';
+      setVerifyPopupDismissed(dismissed);
+    } catch {
+      setVerifyPopupDismissed(false);
+    }
+  }, [cloudUser?.uid, cloudUser?.emailVerified]);
+
+  const handleDismissVerifyPopup = useCallback(() => {
+    setVerifyPopupDismissed(true);
+    if (!cloudUser) return;
+    try {
+      sessionStorage.setItem(getEmailVerifyDismissKey(cloudUser.uid), '1');
+    } catch {
+      // ignore storage quota/privacy restrictions
+    }
+  }, [cloudUser]);
 
   // Offline Space -> Cloud Account merge prompt state
   const [showOfflineMigrationModal, setShowOfflineMigrationModal] =
@@ -395,9 +445,70 @@ export default function App() {
     [vault]
   );
 
+  const [notifActionState, setNotifActionState] = useState<NotificationActionState>(
+    () => loadNotificationActionState()
+  );
+
+  const handleDismissNotification = useCallback((id: string) => {
+    setNotifActionState((prev) => {
+      const next = dismissNotificationId(prev, id);
+      saveNotificationActionState(next);
+      return next;
+    });
+  }, []);
+
+  const handleSnoozeNotification = useCallback(
+    (id: string) => {
+      setNotifActionState((prev) => {
+        const next = snoozeNotificationId(prev, id, todayISO, 1);
+        saveNotificationActionState(next);
+        return next;
+      });
+    },
+    [todayISO]
+  );
+
+  const handleResetDismissedNotifications = useCallback(() => {
+    const next = clearDismissedNotifications();
+    saveNotificationActionState(next);
+    setNotifActionState(next);
+  }, []);
+
   const notificationSummary = useMemo(
-    () => evaluateDayNotifications(vault?.calendarSlots ?? [], todayISO),
-    [vault?.calendarSlots, todayISO]
+    () =>
+      evaluateDayNotifications(vault?.calendarSlots ?? [], todayISO, new Date(), {
+        sessions: vault?.sessions ?? [],
+        dailyWordGoal:
+          vault?.settings.dailyWordGoal ||
+          vault?.settings.studentProfile?.targetWordGoal ||
+          250,
+        pendingAiCount: pendingEvalSessions.length,
+        dismissedIds: notifActionState.dismissedIds,
+        snoozedUntilById: notifActionState.snoozedUntilById,
+      }),
+    [
+      vault?.calendarSlots,
+      vault?.sessions,
+      vault?.settings.dailyWordGoal,
+      vault?.settings.studentProfile?.targetWordGoal,
+      pendingEvalSessions.length,
+      notifActionState.dismissedIds,
+      notifActionState.snoozedUntilById,
+      todayISO,
+    ]
+  );
+
+  const dailySuggestion = useMemo(
+    () =>
+      vault
+        ? computeDailyPracticeSuggestion({
+            preferredDays: vault.settings.studentProfile?.preferredDays,
+            todayISO,
+            sessions: vault.sessions,
+            calendarSlots: vault.calendarSlots,
+          })
+        : null,
+    [vault, todayISO]
   );
 
   const periodicAiStatus = useMemo(
@@ -818,9 +929,11 @@ export default function App() {
     if (!user.emailVerified) {
       setVerificationNotice(
         verificationSent
-          ? `Verification link sent to ${user.email || email}. Verify your email to activate live cross-device cloud sync.`
-          : 'Account created. Verify your email address to activate live cross-device cloud sync.'
+          ? `Confirmation link sent to ${user.email || email}.`
+          : 'Confirm your email to enable cross-device cloud sync.'
       );
+      setVerifyPopupDismissed(false);
+      setVerifyPopupNonce((n) => n + 1);
     }
     await unlockCloudAccountVault(user);
   }
@@ -902,9 +1015,11 @@ export default function App() {
       return;
     }
     if (!cloudUser.emailVerified) {
-      setCloudSyncError(
-        'Verify your email address first to activate live Firestore sync.'
+      setVerificationNotice(
+        `Confirm ${cloudUser.email || 'your email'} first to sync across devices.`
       );
+      setVerifyPopupDismissed(false);
+      setVerifyPopupNonce((n) => n + 1);
       return;
     }
     setCloudSyncError(null);
@@ -1091,6 +1206,26 @@ export default function App() {
       },
     }));
   }
+
+  const handleUpdateDailyWordGoal = useCallback(
+    (nextGoal: number) => {
+      const clamped = Math.max(50, Math.min(2000, Math.round(nextGoal)));
+      void updateVaultState((prev) => ({
+        ...prev,
+        settings: {
+          ...prev.settings,
+          dailyWordGoal: clamped,
+          studentProfile: prev.settings.studentProfile
+            ? {
+                ...prev.settings.studentProfile,
+                targetWordGoal: clamped,
+              }
+            : prev.settings.studentProfile,
+        },
+      }));
+    },
+    [updateVaultState]
+  );
 
   const handleSaveStudentProfile = useCallback(
     (payload: OnboardingPreferencesPayload) => {
@@ -1561,14 +1696,29 @@ export default function App() {
     handleLoadMonthTriWeekly,
   ]);
 
-  // Background auto-evaluator for any writing session accepted while API quota limits were exhausted
-  useEffect(() => {
-    if (!vault || !activePassphrase || pendingEvalSessions.length === 0) {
-      return;
-    }
-    const targetSession = pendingEvalSessions[0];
-    const timer = window.setTimeout(async () => {
+  // Reusable evaluator for pending/slow-API draft sessions (used by both auto-retry and Dashboard "Retry Now")
+  const evaluatePendingSession = useCallback(
+    async (targetSession: WritingSession) => {
+      if (!vault) return;
+      setRetryingPendingEvalId(targetSession.id);
       try {
+        const drillContext =
+          targetSession.drillType && targetSession.drillType !== 'standard'
+            ? {
+                drillType: targetSession.drillType,
+                originalPassage:
+                  targetSession.drillType === 'time-capsule'
+                    ? targetSession.drillMeta?.timeCapsuleOriginText
+                    : targetSession.drillMeta?.skeletonOriginalText,
+                originalPassageTitle:
+                  targetSession.drillMeta?.skeletonTitle,
+                clues: targetSession.drillMeta?.skeletonClues,
+                originalScore: targetSession.drillMeta?.timeCapsuleOriginScore,
+                originalDate: targetSession.drillMeta?.timeCapsuleOriginDate,
+                roundWordCounts: targetSession.drillMeta?.compressionWordCounts,
+              }
+            : undefined;
+
         const res = await fetch(getApiUrl('/api/evaluate'), {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -1584,6 +1734,7 @@ export default function App() {
             practicingVocab: coachContext.practicingWords.map(
               (v) => v.betterAlternative
             ),
+            drillContext,
           }),
         });
         if (!res.ok) return;
@@ -1595,6 +1746,7 @@ export default function App() {
           internationalMetrics?: WritingSession['internationalMetrics'];
           toneVerdict?: string;
           flowVerdict?: string;
+          drillVerdict?: WritingSession['drillVerdict'];
           feedbackImplemented?: WritingSession['feedbackImplemented'];
           whatImproved?: string;
           strictImprovements?: string;
@@ -1622,6 +1774,7 @@ export default function App() {
             if (s.id !== targetSession.id) return s;
             const finalized: WritingSession = {
               ...s,
+              status: 'Completed',
               scores: resolvedScores,
               totalScore,
               percentage,
@@ -1629,6 +1782,7 @@ export default function App() {
               internationalMetrics: intl,
               toneVerdict: data.toneVerdict || s.toneVerdict,
               flowVerdict: data.flowVerdict || s.flowVerdict,
+              drillVerdict: data.drillVerdict || s.drillVerdict,
               feedbackImplemented:
                 data.feedbackImplemented || s.feedbackImplemented,
               whatImproved: data.whatImproved || s.whatImproved,
@@ -1652,21 +1806,72 @@ export default function App() {
           }),
         }));
       } catch {
-        // Silent background retry on next quota window
+        // Silent retry on next window or manual Dashboard retry
+      } finally {
+        setRetryingPendingEvalId((curr) =>
+          curr === targetSession.id ? null : curr
+        );
       }
-    }, 22_000);
+    },
+    [
+      vault,
+      coachContext,
+      updateVaultState,
+      canUseFirestore,
+      cloudUser,
+      handleCloudSoftFailure,
+    ]
+  );
+
+  const handleRetryPendingEvaluation = useCallback(
+    (sessionId: string) => {
+      if (!vault) return;
+      const found = vault.sessions.find((s) => s.id === sessionId);
+      if (found) {
+        void evaluatePendingSession(found);
+      }
+    },
+    [vault, evaluatePendingSession]
+  );
+
+  const handleAcceptDailySuggestion = useCallback(
+    (suggestion: DailyPracticeSuggestion) => {
+      setFocusMode(false);
+      if (suggestion.actionType === 'converse') {
+        setActiveView('converse');
+        window.scrollTo({ top: 0, behavior: 'instant' as ScrollBehavior });
+        return;
+      }
+      if (suggestion.actionType === 'slot' && suggestion.slot) {
+        handleLaunchSlotInStudio(suggestion.slot);
+        return;
+      }
+      setActiveView('write');
+      setRequestedDrillToken({
+        drill:
+          suggestion.actionType === 'time-capsule'
+            ? 'time-capsule'
+            : suggestion.drill,
+        nonce: Date.now(),
+        originSession: suggestion.timeCapsuleOrigin ?? null,
+      });
+      window.scrollTo({ top: 0, behavior: 'instant' as ScrollBehavior });
+    },
+    [handleLaunchSlotInStudio]
+  );
+
+  // Background auto-evaluator for any writing session saved to draft while API was delayed or quota-limited
+  useEffect(() => {
+    if (!vault || !activePassphrase || pendingEvalSessions.length === 0) {
+      return;
+    }
+    const targetSession = pendingEvalSessions[0];
+    const timer = window.setTimeout(() => {
+      void evaluatePendingSession(targetSession);
+    }, 18_000);
 
     return () => window.clearTimeout(timer);
-  }, [
-    vault,
-    activePassphrase,
-    pendingEvalSessions,
-    coachContext,
-    updateVaultState,
-    canUseFirestore,
-    cloudUser,
-    handleCloudSoftFailure,
-  ]);
+  }, [vault, activePassphrase, pendingEvalSessions, evaluatePendingSession]);
 
   async function handleCreateOfflineSpace(
     passphrase: string,
@@ -1879,7 +2084,6 @@ export default function App() {
         dailyWordGoal: 220,
         liveOfflineCheck: true,
         tactileSoundEnabled: false,
-        vaultLatchEnabled: true,
       },
     };
     await saveLocalDeskVault(readyLocal);
@@ -1887,16 +2091,6 @@ export default function App() {
     setVault(readyLocal);
     setActivePassphrase('quillit-local-desk-no-pass');
     setActiveView('write');
-  }
-
-  function handleLockVault() {
-    manuallyLockedRef.current = true;
-    setVault(null);
-    setActivePassphrase(null);
-    setFocusMode(false);
-    setShowEditProfileModal(false);
-    setPendingWorkspaceTarget(null);
-    setLocalDeskSessionsCount(loadLocalDeskVaultSync()?.sessions.length ?? 0);
   }
 
   function handleChangeThemePreference(pref: ThemePreference) {
@@ -1947,16 +2141,12 @@ export default function App() {
 
   function handleUpdateDeskPreferences(params: {
     tactileSoundEnabled?: boolean;
-    vaultLatchEnabled?: boolean;
   }) {
     void updateVaultState((prev) => {
       const nextSettings = {
         ...prev.settings,
         ...(typeof params.tactileSoundEnabled === 'boolean'
           ? { tactileSoundEnabled: params.tactileSoundEnabled }
-          : {}),
-        ...(typeof params.vaultLatchEnabled === 'boolean'
-          ? { vaultLatchEnabled: params.vaultLatchEnabled }
           : {}),
       };
       if (canUseFirestore && cloudUser) {
@@ -2829,7 +3019,6 @@ export default function App() {
             setActiveView(view);
             window.scrollTo({ top: 0, behavior: 'instant' as ScrollBehavior });
           }}
-          onLockVault={handleLockVault}
           cloudUserEmail={cloudUser?.email}
           cloudSyncStatus={cloudSyncStatus}
           onConnectCloud={() => {
@@ -2839,22 +3028,25 @@ export default function App() {
               void handleConnectCloud();
             }
           }}
-          localSessionCount={
-            activeStorageKey === LOCAL_DESK_STORAGE_KEY && !cloudUser
-              ? vault.sessions.length
-              : 0
-          }
           weeklyCompletedCount={weeklyCompletedCount}
           weeklyTargetCount={weeklyTargetCount}
           tactileSoundEnabled={Boolean(vault.settings.tactileSoundEnabled)}
-          vaultLatchEnabled={vault.settings.vaultLatchEnabled !== false}
           notificationSummary={notificationSummary}
           notificationsEnabled={Boolean(vault.settings.notificationsEnabled)}
           browserPermission={browserPermission}
+          hasDismissedOrSnoozedNotifications={
+            notifActionState.dismissedIds.length > 0 ||
+            Object.keys(notifActionState.snoozedUntilById).length > 0
+          }
           onToggleNotifications={() => void handleToggleNotifications()}
           onOpenTaskFromNotification={(slot) => {
             handleLaunchSlotInStudio(slot);
           }}
+          onDismissNotification={handleDismissNotification}
+          onSnoozeNotification={handleSnoozeNotification}
+          onResetDismissedNotifications={handleResetDismissedNotifications}
+          dailySuggestion={dailySuggestion}
+          onAcceptDailySuggestion={handleAcceptDailySuggestion}
           writeEvaluationState={{
             inProgress: writeEvalInProgress,
             hasUnreadResult: writeEvalHasUnreadResult,
@@ -2865,38 +3057,6 @@ export default function App() {
             hasActiveChat: converseHasActiveChat,
           }}
         />
-      )}
-
-      {cloudUser && !cloudUser.emailVerified && !(activeView === 'write' && focusMode) && (
-        <div
-          role="status"
-          className="border-b border-status-warning-border bg-status-warning-soft px-4 sm:px-6 py-2.5"
-        >
-          <div className="max-w-6xl mx-auto flex flex-wrap items-center justify-between gap-2.5 text-xs text-status-warning">
-            <span>
-              {verificationNotice ||
-                `Verify ${cloudUser.email || 'your email'} to activate live cross-device Firestore sync.`}
-            </span>
-            <div className="flex items-center gap-2">
-              <button
-                type="button"
-                disabled={verificationBusy}
-                onClick={() => void handleResendVerification()}
-                className="btn-secondary px-2.5 py-1 text-xs font-medium"
-              >
-                Resend Email
-              </button>
-              <button
-                type="button"
-                disabled={verificationBusy}
-                onClick={() => void handleRefreshVerification()}
-                className="btn-primary px-2.5 py-1 text-xs font-medium"
-              >
-                {verificationBusy ? 'Checking...' : "I've Verified — Sync Now"}
-              </button>
-            </div>
-          </div>
-        </div>
       )}
 
       <main
@@ -2947,6 +3107,7 @@ export default function App() {
               vault.settings.studentProfile?.targetWordGoal ||
               250
             }
+            onChangeDailyWordGoal={handleUpdateDailyWordGoal}
             liveOfflineCheckEnabled={vault.settings.liveOfflineCheck !== false}
             onToggleLiveOfflineCheck={handleToggleLiveOfflineCheck}
             onSaveSession={handleSaveSession}
@@ -2957,6 +3118,9 @@ export default function App() {
             onAddVocabEntry={handleAddVocabEntry}
             onOpenScheduledPopup={(slot) => setActivePopupSlot(slot)}
             onEvaluationStateChange={handleWriteEvaluationStateChange}
+            requestedPracticeWord={requestedPracticeWord}
+            onClearRequestedPracticeWord={() => setRequestedPracticeWord(null)}
+            requestedDrillToken={requestedDrillToken}
           />
         </div>
 
@@ -2988,6 +3152,8 @@ export default function App() {
             onStartWriting={() => setActiveView('write')}
             onStartConverse={() => setActiveView('converse')}
             onLaunchTimeCapsule={handleLaunchTimeCapsule}
+            onRetryPendingEvaluation={handleRetryPendingEvaluation}
+            retryingSessionId={retryingPendingEvalId}
           />
         )}
 
@@ -3026,6 +3192,11 @@ export default function App() {
             onToggleMastered={handleToggleVocabMastered}
             onDeleteVocab={handleDeleteVocab}
             onCategorizeWithAI={handleCategorizeVocabularyWithAI}
+            onPracticeWordInWrite={(word) => {
+              setRequestedPracticeWord(word);
+              setActiveView('write');
+              window.scrollTo({ top: 0, behavior: 'instant' as ScrollBehavior });
+            }}
           />
         )}
 
@@ -3183,6 +3354,44 @@ export default function App() {
         busy={welcomeFlashcardBusy}
         onAccept={handleAcceptWelcomeFlashcard}
         onDismiss={handleDismissWelcomeFlashcard}
+      />
+
+      <EmailVerifyPopup
+        visible={Boolean(
+          cloudUser &&
+            !cloudUser.emailVerified &&
+            !verifyPopupDismissed &&
+            !focusMode &&
+            !showWelcomeFlashcard &&
+            !showOfflineMigrationModal &&
+            !showEditProfileModal &&
+            !showClearTasksModal &&
+            !activePopupSlot &&
+            !pendingWorkspaceTarget
+        )}
+        email={cloudUser?.email ?? null}
+        notice={verificationNotice}
+        busy={verificationBusy}
+        triggerNonce={verifyPopupNonce}
+        onResend={() => void handleResendVerification()}
+        onCheckVerified={() => void handleRefreshVerification()}
+        onDismiss={handleDismissVerifyPopup}
+      />
+
+      <DailyPracticeSuggestionPopup
+        suggestion={dailySuggestion}
+        todayISO={todayISO}
+        suppressed={
+          focusMode ||
+          showWelcomeFlashcard ||
+          showOfflineMigrationModal ||
+          showEditProfileModal ||
+          showClearTasksModal ||
+          Boolean(activePopupSlot) ||
+          Boolean(pendingWorkspaceTarget) ||
+          Boolean(cloudUser && !cloudUser.emailVerified && !verifyPopupDismissed)
+        }
+        onAccept={handleAcceptDailySuggestion}
       />
     </div>
   );

@@ -114,12 +114,18 @@ Evaluate BOTH clarity and genuine register contrast. Return drillVerdict with re
   }
 
   if (drillContext.drillType === 'time-capsule') {
-    return `\nDRILL CONTEXT (BLIND 30-DAY TIME CAPSULE RETEST):
+    return `\nDRILL CONTEXT (BLIND TIME CAPSULE COMPARATIVE RETEST):
 Original Past Draft (${String(p.pastDate || 'earlier')} · previous score ${Number(p.pastScore || 0)}/60):
 """
 ${String(p.pastDraft || '').slice(0, 1800)}
 """
-The writer re-answered this prompt blind today (Draft below). Grade today's draft strictly and independently (zero score inflation!), then in drillVerdict.headline and drillVerdict.summary highlight concrete improvements in cadence, precision, or conciseness vs. the past draft.`;
+The writer re-answered this exact past topic blind today (Draft below).
+1. Grade today's draft strictly and independently on its own merits (zero score inflation!).
+2. Compare the Past Draft vs. Today's Rewrite across writing aesthetics: sentence cadence & rhythm, clarity & conciseness, vocabulary precision, structural flow, and natural voice confidence.
+3. Populate drillVerdict with:
+   - badge: crisp 2-4 word aesthetic evolution label (e.g. "Sharper Cadence", "Cleaner Restraint", "Stronger Voice")
+   - headline: one punchy sentence naming the clearest aesthetic shift between the past draft and today's rewrite
+   - summary: 2-3 specific, grounded sentences comparing how today's writing aesthetics (rhythm, word choice, clarity, or restraint) improved or regressed relative to the original draft, citing concrete differences.`;
   }
 
   return '';

@@ -920,6 +920,7 @@ export function CalendarView({
                       {daySlots.slice(0, 2).map((slot) => (
                         <div
                           key={slot.id}
+                          title={slot.topic}
                           className={`text-[10px] leading-tight truncate px-1.5 py-0.5 rounded-xs ${
                             slot.completed
                               ? 'bg-status-success-soft text-status-success line-through'
@@ -1454,7 +1455,7 @@ export function CalendarView({
                     </button>
                     <div className="min-w-0">
                       <div
-                        className={`text-xs sm:text-sm font-medium truncate ${
+                        className={`text-xs sm:text-sm font-medium leading-snug break-words ${
                           slot.completed
                             ? 'line-through text-ink-muted'
                             : 'text-ink-primary'

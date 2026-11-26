@@ -2,13 +2,15 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   CURATED_RANDOM_TOPICS,
+  drawNextCurriculumRandomTopic,
   drawNextRandomTopic,
+  shouldRefreshPeriodicTopics,
   type TopicDeckState,
 } from './topicDeck';
 
 test('drawNextRandomTopic never repeats any topic within a full cycle and starts cleanly after cycle completion', () => {
   const total = CURATED_RANDOM_TOPICS.length;
-  assert.ok(total >= 15 && total <= 20);
+  assert.ok(total >= 60);
 
   let state: TopicDeckState | null = null;
   const seenCycle1 = new Set<string>();
@@ -41,4 +43,57 @@ test('drawNextRandomTopic never repeats any topic within a full cycle and starts
   assert.equal(firstOfCycle2.positionInCycle, 1);
   assert.equal(firstOfCycle2.nextState.cycleCount, 2);
   assert.notEqual(firstOfCycle2.topic.id, lastOfCycle1);
+});
+
+test('drawNextCurriculumRandomTopic omits Week N prefixes and blends periodic refined topics', () => {
+  const drawn = drawNextCurriculumRandomTopic({
+    usedCurriculumIds: [],
+    usedTopicTitles: [],
+    rng: () => 0.5,
+  });
+  assert.equal(drawn.category.includes('Week '), false);
+  assert.equal(drawn.week, undefined);
+
+  const refined = drawNextCurriculumRandomTopic({
+    usedCurriculumIds: [],
+    usedTopicTitles: [],
+    refinedTopics: [
+      {
+        id: 'refined-1',
+        title: 'A quiet habit that rescued your week',
+        hint: 'Focus on one concrete turning point.',
+        category: 'Fresh Prompt',
+        mode: 'journal',
+        tone: 'conversational',
+        targetWords: 190,
+      },
+    ],
+    rng: () => 0.1,
+  });
+  assert.equal(refined.id, 'refined-1');
+  assert.equal(refined.category, 'Fresh Prompt');
+});
+
+test('shouldRefreshPeriodicTopics triggers after 5 draws or 7 elapsed days', () => {
+  assert.equal(
+    shouldRefreshPeriodicTopics(
+      { updatedAtISO: '2026-11-20', drawsSinceRefresh: 2, topics: [] },
+      '2026-11-22'
+    ),
+    false
+  );
+  assert.equal(
+    shouldRefreshPeriodicTopics(
+      { updatedAtISO: '2026-11-20', drawsSinceRefresh: 5, topics: [] },
+      '2026-11-22'
+    ),
+    true
+  );
+  assert.equal(
+    shouldRefreshPeriodicTopics(
+      { updatedAtISO: '2026-11-10', drawsSinceRefresh: 0, topics: [] },
+      '2026-11-20'
+    ),
+    true
+  );
 });

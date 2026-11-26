@@ -78,9 +78,17 @@ test('ConverseTurnRequestSchema and SkeletonPassageRequestSchema validate bounds
 
   const skel = SkeletonPassageRequestSchema.safeParse({
     mode: 'technical',
+    topic: 'Why PID control prevents thermal overshoot',
+    domain: 'technical',
     focusTheme: 'PID control tuning',
   });
   assert.equal(skel.success, true);
+
+  const skelInvalidDomain = SkeletonPassageRequestSchema.safeParse({
+    mode: 'technical',
+    domain: 'invalid-domain',
+  });
+  assert.equal(skelInvalidDomain.success, false);
 });
 
 test('5-generation Gemini cascade preserves exact PSR-10 order and capability guards', () => {
