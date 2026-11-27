@@ -12,8 +12,6 @@ export interface EieEvaluationMetrics {
   placementPanelScore: number;
   /** Systems cause-and-effect rigor, concise framing & signal strength (0-100) */
   technicalClarityScore: number;
-  /** Lab manual, IEEE abstract & professional email precision (0-100) */
-  ieeeDocPolishScore: number;
   readinessBand: EieReadinessBand;
   /** Highest-leverage single action for an EIE 6th-semester writer */
   focusLever: string;
@@ -25,8 +23,8 @@ function clampPct(value: number): number {
 
 /**
  * Derives practical EIE 6th-semester engineering evaluation metrics on top of
- * the saved 6-pillar RubricScores so Firestore documents stay 100% compatible
- * while surfacing actionable placement, technical clarity, and IEEE documentation signals.
+ * the saved 6-pillar RubricScores: live placement panel readiness and
+ * systems technical clarity.
  */
 export function deriveEieEvaluationMetrics(params: {
   scores: RubricScores;
@@ -43,7 +41,7 @@ export function deriveEieEvaluationMetrics(params: {
     ? analyzeWritingSample({ text: trimmed, vocabulary: [] })
     : null;
 
-  // 1. Placement & Panel Readiness: weighted toward natural spoken flow, clarity, and structure
+  // 1. Placement & Panel Readiness: weighted toward natural spoken flow, tone, and structure
   const flowComponent =
     typeof spokenReadinessScore === 'number'
       ? spokenReadinessScore
@@ -54,7 +52,7 @@ export function deriveEieEvaluationMetrics(params: {
     ((scores.sentenceVarietyCadence + scores.toneEngagement) / 20) * 100 * 0.32 +
     (scores.concisenessDirectness / 10) * 100 * 0.2;
 
-  // 2. Technical Clarity & Signal: clarity + directness + measured signal/noise ratio
+  // 2. Technical Clarity & Signal: clarity + directness + mechanics precision + signal/noise ratio
   const snrComponent =
     typeof signalNoiseRatio === 'number'
       ? signalNoiseRatio
@@ -63,31 +61,18 @@ export function deriveEieEvaluationMetrics(params: {
         : (scores.concisenessDirectness / 10) * 100;
 
   const techClarityRaw =
-    ((scores.claritySimplicity * 0.42 +
-      scores.concisenessDirectness * 0.38 +
-      scores.sentenceVarietyCadence * 0.2) /
+    ((scores.claritySimplicity * 0.38 +
+      scores.concisenessDirectness * 0.34 +
+      scores.grammarMechanics * 0.28) /
       10) *
       100 *
-      0.65 +
-    snrComponent * 0.35;
-
-  // 3. IEEE & Lab Doc Polish: grammar mechanics + tone precision + EIE mechanics
-  const grammarComponent = sampleAnalysis
-    ? sampleAnalysis.scores.grammar
-    : (scores.grammarMechanics / 10) * 100;
-
-  const docPolishRaw =
-    (scores.grammarMechanics / 10) * 100 * 0.52 +
-    (scores.toneEngagement / 10) * 100 * 0.28 +
-    grammarComponent * 0.2;
+      0.68 +
+    snrComponent * 0.32;
 
   const placementPanelScore = clampPct(panelRaw);
   const technicalClarityScore = clampPct(techClarityRaw);
-  const ieeeDocPolishScore = clampPct(docPolishRaw);
 
-  const avg = Math.round(
-    (placementPanelScore + technicalClarityScore + ieeeDocPolishScore) / 3
-  );
+  const avg = Math.round((placementPanelScore + technicalClarityScore) / 2);
 
   const readinessBand: EieReadinessBand =
     avg >= 82
@@ -100,29 +85,17 @@ export function deriveEieEvaluationMetrics(params: {
 
   let focusLever =
     'Hold this structure and anchor every claim with one measured bench number.';
-  if (
-    technicalClarityScore <= placementPanelScore &&
-    technicalClarityScore <= ieeeDocPolishScore &&
-    technicalClarityScore < 85
-  ) {
+  if (technicalClarityScore <= placementPanelScore && technicalClarityScore < 85) {
     focusLever =
-      'Lead with cause, constraint, and measured result — trim filler clauses.';
-  } else if (
-    ieeeDocPolishScore <= placementPanelScore &&
-    ieeeDocPolishScore <= technicalClarityScore &&
-    ieeeDocPolishScore < 85
-  ) {
-    focusLever =
-      'Verify SI unit spacing (e.g. 5 V, 20 mA), tense consistency, and tight mechanics.';
+      'Lead with cause, constraint, and measured result — tighten mechanics and cut filler clauses.';
   } else if (placementPanelScore < 85) {
     focusLever =
-      'Deliver the core answer in the opening 2 lines as if facing a live panel.';
+      'Deliver the core answer in the opening 2 lines as if speaking directly to a live interview panel.';
   }
 
   return {
     placementPanelScore,
     technicalClarityScore,
-    ieeeDocPolishScore,
     readinessBand,
     focusLever,
   };

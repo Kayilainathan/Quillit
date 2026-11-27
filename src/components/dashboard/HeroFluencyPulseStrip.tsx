@@ -61,8 +61,8 @@ export function HeroFluencyPulseStrip({
     >
       {/* KPI 1: Overall Fluency Score */}
       <div className="card-surface p-4 sm:p-5 flex flex-col justify-between gap-2">
-        <div className="text-[11px] uppercase tracking-wider text-ink-muted">
-          Fluency Pulse (Last 5)
+        <div className="text-xs font-medium text-ink-muted">
+          Fluency pulse (last 5)
         </div>
         <div className="flex items-baseline gap-1.5">
           <span className="text-3xl font-semibold font-mono-tabular text-ink-primary">
@@ -80,8 +80,8 @@ export function HeroFluencyPulseStrip({
 
       {/* KPI 2: Spoken Readiness */}
       <div className="card-surface p-4 sm:p-5 flex flex-col justify-between gap-2">
-        <div className="text-[11px] uppercase tracking-wider text-ink-muted">
-          Spoken Readiness
+        <div className="text-xs font-medium text-ink-muted">
+          Spoken readiness
         </div>
         <div className="flex items-baseline gap-1">
           <span className="text-3xl font-semibold font-mono-tabular text-ink-primary">
@@ -103,8 +103,8 @@ export function HeroFluencyPulseStrip({
         className="card-surface p-4 sm:p-5 flex items-center justify-between gap-3"
       >
         <div className="min-w-0 space-y-1.5">
-          <div className="text-[11px] uppercase tracking-wider text-ink-muted">
-            Streak &amp; Weekly Cadence
+          <div className="text-xs font-medium text-ink-muted">
+            Streak &amp; weekly cadence
           </div>
           <div className="flex items-baseline gap-2">
             <span className="inline-flex items-center gap-1 text-2xl font-semibold font-mono-tabular text-ink-primary">
@@ -162,8 +162,8 @@ export function HeroFluencyPulseStrip({
       {/* KPI 4: CEFR Level + Next Target Focus */}
       <div className="card-surface p-4 sm:p-5 flex flex-col justify-between gap-2">
         <div className="flex items-center justify-between gap-2">
-          <span className="text-[11px] uppercase tracking-wider text-ink-muted">
-            CEFR &amp; Next Focus
+          <span className="text-xs font-medium text-ink-muted">
+            CEFR &amp; next focus
           </span>
           <span className="font-mono-tabular text-xs font-semibold text-ink-primary">
             {pulse.latestCefr} → {pulse.nextCefrTarget}

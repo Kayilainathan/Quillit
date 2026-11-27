@@ -1,4 +1,4 @@
-import { ArrowRight, CheckCircle2, History, Lock } from 'lucide-react';
+import { ArrowRight, CheckCircle2, History } from 'lucide-react';
 import type { WritingSession } from '../../types';
 import type { FeedbackAppliedSummary } from '../../utils/errorPatternAnalytics';
 import type { TimeCapsuleStatus } from '../../utils/timeCapsule';
@@ -30,9 +30,9 @@ export function FeedbackLoopCard({
       >
         <div className="flex items-start justify-between gap-3">
           <div className="space-y-1">
-            <div className="inline-flex items-center gap-1.5 text-[11px] uppercase tracking-wider text-ink-muted">
+            <div className="inline-flex items-center gap-1.5 text-xs font-medium text-ink-muted">
               <CheckCircle2 className="w-3.5 h-3.5 text-ink-secondary" aria-hidden="true" />
-              <span>Closed-Loop Feedback Rate</span>
+              <span>Closed-loop feedback rate</span>
             </div>
             <div className="text-sm font-medium text-ink-primary">
               {feedback.trendLabel}
@@ -68,16 +68,16 @@ export function FeedbackLoopCard({
         className="card-surface lg:col-span-6 p-4 sm:p-5 flex flex-wrap items-center justify-between gap-4"
       >
         <div className="space-y-1 min-w-0 flex-1">
-          <div className="inline-flex items-center gap-1.5 text-[11px] uppercase tracking-wider text-ink-muted">
+          <div className="inline-flex items-center gap-1.5 text-xs font-medium text-ink-muted">
             <History className="w-3.5 h-3.5 text-ink-secondary" aria-hidden="true" />
-            <span>30-Day Blind Time Capsule</span>
+            <span>30-day blind time capsule</span>
           </div>
           {candidate ? (
             <>
               <div className="text-sm font-semibold text-ink-primary truncate">
                 {!candidate.isFull30Day
-                  ? `Early Retest Ready · "${candidate.session.topicDescription}"`
-                  : `${candidate.daysOld}d Retest Ready · "${candidate.session.topicDescription}"`}
+                  ? `Early retest ready · "${candidate.session.topicDescription}"`
+                  : `${candidate.daysOld}d retest ready · "${candidate.session.topicDescription}"`}
               </div>
               <div className="text-[11px] text-ink-muted font-mono-tabular">
                 Sealed {candidate.session.totalScore}/60 on {candidate.session.date} · Rewrite blind to prove growth
@@ -87,7 +87,7 @@ export function FeedbackLoopCard({
             <>
               <div className="text-sm font-semibold text-ink-primary">
                 {latestTimeCapsuleSession.drillVerdict?.headline ||
-                  'Blind Retest Logged'}
+                  'Blind retest logged'}
               </div>
               <div className="text-[11px] text-ink-secondary line-clamp-2">
                 {latestTimeCapsuleSession.drillVerdict?.summary}
@@ -95,11 +95,8 @@ export function FeedbackLoopCard({
             </>
           ) : (
             <div className="space-y-1.5">
-              <div className="flex items-center gap-1.5 text-sm font-semibold text-ink-primary">
-                <Lock className="w-3.5 h-3.5 text-ink-muted shrink-0" aria-hidden="true" />
-                <span>
-                  {timeCapsuleStatus.completedCount} of {timeCapsuleStatus.requiredCount} entries sealed
-                </span>
+              <div className="text-sm font-semibold text-ink-primary">
+                {timeCapsuleStatus.completedCount} of {timeCapsuleStatus.requiredCount} entries sealed
               </div>
               <p className="text-[11px] text-ink-muted leading-relaxed">
                 {timeCapsuleStatus.naturalMessage}
@@ -109,7 +106,7 @@ export function FeedbackLoopCard({
                   (_, idx) => (
                     <span
                       key={idx}
-                      className={`h-1.5 flex-1 rounded-full ${
+                      className={`h-1.5 flex-1 rounded-full transition-colors duration-300 ${
                         idx < timeCapsuleStatus.completedCount
                           ? 'bg-accent'
                           : 'bg-border-default'

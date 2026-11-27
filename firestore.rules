@@ -111,7 +111,7 @@ service cloud.firestore {
           'spokenReadinessScore', 'signalNoiseRatio', 'audienceReaction',
           'audience', 'calqueFixes', 'drillType', 'drillMeta', 'drillVerdict',
           'revisionOfSessionId', 'revisionDelta',
-          'edits', 'toneCheck', 'nextDraftPriority',
+          'edits', 'toneCheck', 'nextDraftPriority', 'targetCheck',
           'status', 'evaluationPending', 'modelUsed', 'createdAt', 'updatedAt'
         ])
         && data.id == sessionId && isValidId(data.id)
@@ -155,6 +155,7 @@ service cloud.firestore {
         && (!('edits' in data) || (data.edits is list && data.edits.size() <= 12 && (data.edits.size() == 0 || data.edits[0] is map)))
         && (!('toneCheck' in data) || (data.toneCheck is map && data.toneCheck.keys().size() <= 5))
         && (!('nextDraftPriority' in data) || (data.nextDraftPriority is string && data.nextDraftPriority.size() <= 240))
+        && (!('targetCheck' in data) || (data.targetCheck is map && data.targetCheck.keys().size() <= 4))
         && data.status in ['Completed', 'Draft']
         && (!('evaluationPending' in data) || data.evaluationPending is bool)
         && (!('modelUsed' in data) || (data.modelUsed is string && data.modelUsed.size() <= 64))
@@ -284,7 +285,7 @@ service cloud.firestore {
             'signalNoiseRatio', 'audienceReaction', 'audience',
             'calqueFixes', 'drillType', 'drillMeta', 'drillVerdict',
             'revisionOfSessionId', 'revisionDelta',
-            'edits', 'toneCheck', 'nextDraftPriority',
+            'edits', 'toneCheck', 'nextDraftPriority', 'targetCheck',
             'evaluationPending', 'modelUsed', 'status', 'updatedAt'
           ]);
         allow delete: if isValidId(userId) && isValidId(sessionId) && isVerifiedOwner(userId);

@@ -24,28 +24,27 @@ test('deriveEieEvaluationMetrics returns Panel Ready band and 0-100 scores for s
   assert.equal(res.readinessBand, 'Panel Ready');
   assert.ok(res.placementPanelScore >= 82);
   assert.ok(res.technicalClarityScore >= 82);
-  assert.ok(res.ieeeDocPolishScore >= 82);
   assert.ok(res.focusLever.length > 10);
 });
 
-test('deriveEieEvaluationMetrics targets weakest lever accurately on weak grammar draft', () => {
-  const weakGrammarScores: RubricScores = {
+test('deriveEieEvaluationMetrics targets weakest lever accurately on weak clarity & mechanics draft', () => {
+  const weakClarityScores: RubricScores = {
     naturalVoiceFlow: 7,
-    claritySimplicity: 7,
+    claritySimplicity: 5,
     grammarMechanics: 4,
-    toneEngagement: 6,
+    toneEngagement: 7,
     sentenceVarietyCadence: 7,
-    concisenessDirectness: 7,
+    concisenessDirectness: 5,
   };
 
   const res = deriveEieEvaluationMetrics({
-    scores: weakGrammarScores,
+    scores: weakClarityScores,
     content: 'The sensor are giving reading of 5v and basically we tested it.',
-    spokenReadinessScore: 72,
-    signalNoiseRatio: 74,
+    spokenReadinessScore: 76,
+    signalNoiseRatio: 62,
   });
 
   assert.equal(res.readinessBand, 'Calibrating');
-  assert.ok(res.ieeeDocPolishScore < res.technicalClarityScore);
-  assert.ok(res.focusLever.includes('SI unit'));
+  assert.ok(res.technicalClarityScore < res.placementPanelScore);
+  assert.ok(res.focusLever.includes('cause, constraint'));
 });

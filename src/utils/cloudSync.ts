@@ -266,6 +266,14 @@ function sanitizeSessionPayload(
   if (session.nextDraftPriority) {
     payload.nextDraftPriority = clip(session.nextDraftPriority, 240);
   }
+  if (session.targetCheck && typeof session.targetCheck === 'object') {
+    payload.targetCheck = {
+      mechanicsStatus: clip(session.targetCheck.mechanicsStatus || 'Baseline', 24),
+      mechanicsNote: clip(session.targetCheck.mechanicsNote || '', 260),
+      vocabUsed: (session.targetCheck.vocabUsed || []).slice(0, 12).map((v) => clip(v, 120)),
+      vocabMissed: (session.targetCheck.vocabMissed || []).slice(0, 12).map((v) => clip(v, 120)),
+    };
+  }
   if (typeof session.evaluationPending === 'boolean') {
     payload.evaluationPending = session.evaluationPending;
   }
@@ -535,6 +543,9 @@ export async function syncSessionToCloud(
           ...(sanitized.nextDraftPriority
             ? { nextDraftPriority: sanitized.nextDraftPriority }
             : {}),
+          ...(sanitized.targetCheck
+            ? { targetCheck: sanitized.targetCheck }
+            : {}),
           toneVerdict: sanitized.toneVerdict,
           flowVerdict: sanitized.flowVerdict,
           feedbackImplemented: sanitized.feedbackImplemented,
@@ -747,6 +758,10 @@ function docToSession(raw: Record<string, unknown>): WritingSession {
     nextDraftPriority:
       typeof raw.nextDraftPriority === 'string'
         ? raw.nextDraftPriority
+        : undefined,
+    targetCheck:
+      raw.targetCheck && typeof raw.targetCheck === 'object'
+        ? (raw.targetCheck as WritingSession['targetCheck'])
         : undefined,
     status: raw.status === 'Draft' ? 'Draft' : 'Completed',
     evaluationPending:

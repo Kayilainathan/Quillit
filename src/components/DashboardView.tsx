@@ -1,5 +1,7 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
+import { createPortal } from 'react-dom';
 import {
+  ArrowUpRight,
   ChevronDown,
   ChevronUp,
   Download,
@@ -31,6 +33,7 @@ import {
   RubricProfileChart,
   ScoreTrendChart,
   WordVolumeChart,
+  formatShortChartDate,
 } from './Charts';
 import { ConverseFluencyChart } from './ConverseFluencyChart';
 import { FluencyHeatmap } from './FluencyHeatmap';
@@ -71,12 +74,30 @@ export function DashboardView({
 }: DashboardViewProps) {
   const [searchQuery, setSearchQuery] = useState('');
   const [modeFilter, setModeFilter] = useState<string>('all');
+  const [ledgerOpen, setLedgerOpen] = useState(true);
   const [ledgerView, setLedgerView] = useState<'summary' | 'sheet'>('summary');
   const [mistakeWindow, setMistakeWindow] = useState<ErrorPatternWindow>('30d');
   const [showDeepBenchmarks, setShowDeepBenchmarks] = useState(false);
   const [selectedSession, setSelectedSession] = useState<WritingSession | null>(
     null
   );
+
+  // Smooth Escape-to-close & body scroll lock while Diff & Report popup is open
+  useEffect(() => {
+    if (!selectedSession) return;
+    const prevOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setSelectedSession(null);
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => {
+      document.body.style.overflow = prevOverflow;
+      window.removeEventListener('keydown', onKeyDown);
+    };
+  }, [selectedSession]);
 
   const completed = useMemo(
     () =>
@@ -195,6 +216,8 @@ export function DashboardView({
   const selectedSessionIntl = selectedSession
     ? deriveInternationalMetrics(selectedSession)
     : null;
+  const latestScoreLabel =
+    completed.length > 0 ? `latest ${completed[0].totalScore}/60` : 'no sessions yet';
 
   return (
     <div className="editorial-enter max-w-6xl mx-auto px-3 sm:px-6 py-5 sm:py-8 space-y-6 sm:space-y-8">
@@ -329,7 +352,7 @@ export function DashboardView({
         onLaunchTimeCapsule={onLaunchTimeCapsule}
       />
 
-      {/* Primary Trend & Spoken Fluency Charts */}
+      {/* Primary Trend & Rubric Balance Charts */}
       <section className="grid grid-cols-1 lg:grid-cols-12 gap-4 sm:gap-6">
         <div className="card-surface lg:col-span-7 p-4 sm:p-6">
           <ScoreTrendChart sessions={completed} />
@@ -344,6 +367,250 @@ export function DashboardView({
         onStartConverse={onStartConverse}
         onStartWriting={onStartWriting}
       />
+
+      {/* Minimal Toggle-Driven Session Evaluation Ledger */}
+      <section
+        data-testid="session-evaluation-ledger"
+        className="card-surface overflow-hidden"
+      >
+        <div className="px-4 sm:px-6 py-4 flex flex-wrap items-center justify-between gap-3">
+          <div className="min-w-0">
+            <h2 className="text-sm sm:text-base font-semibold text-ink-primary">
+              Session Evaluation Ledger
+            </h2>
+            <p className="text-xs font-mono-tabular text-ink-muted mt-0.5">
+              {completed.length} {completed.length === 1 ? 'session' : 'sessions'} · {latestScoreLabel} · click any entry for diff &amp; report
+            </p>
+          </div>
+
+          <button
+            type="button"
+            role="switch"
+            aria-checked={ledgerOpen}
+            data-testid="toggle-session-ledger"
+            onClick={() => setLedgerOpen((v) => !v)}
+            className="inline-flex items-center gap-2.5 text-xs font-medium text-ink-secondary hover:text-ink-primary transition-colors cursor-pointer shrink-0"
+          >
+            <span>{ledgerOpen ? 'Ledger open' : 'Show ledger'}</span>
+            <span
+              aria-hidden="true"
+              className={`relative inline-flex h-5 w-9 items-center rounded-full border transition-colors duration-200 ${
+                ledgerOpen
+                  ? 'bg-accent border-accent'
+                  : 'bg-subtle border-border-default'
+              }`}
+            >
+              <span
+                className={`inline-block h-3.5 w-3.5 rounded-full transition-transform duration-200 ${
+                  ledgerOpen
+                    ? 'translate-x-[18px] bg-bg-surface'
+                    : 'translate-x-[2px] bg-ink-muted'
+                }`}
+              />
+            </span>
+          </button>
+        </div>
+
+        {ledgerOpen && (
+          <div className="drawer-reveal px-4 sm:px-6 pb-5 pt-3 border-t border-border-subtle space-y-4">
+            {/* Minimal Filter & View Toggle Strip */}
+            <div className="flex flex-wrap items-center justify-between gap-2.5">
+              <div
+                role="tablist"
+                aria-label="Ledger display mode"
+                className="segmented-track inline-flex items-center gap-0.5"
+              >
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={ledgerView === 'summary'}
+                  data-active={ledgerView === 'summary' ? 'true' : 'false'}
+                  data-testid="ledger-mode-compact"
+                  onClick={() => setLedgerView('summary')}
+                  className="segmented-item px-2.5 py-1 text-xs font-medium"
+                >
+                  Compact
+                </button>
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={ledgerView === 'sheet'}
+                  data-active={ledgerView === 'sheet' ? 'true' : 'false'}
+                  data-testid="ledger-mode-sheet"
+                  onClick={() => setLedgerView('sheet')}
+                  className="segmented-item inline-flex items-center gap-1 px-2.5 py-1 text-xs font-medium"
+                >
+                  <Table2 className="w-3.5 h-3.5" aria-hidden="true" />
+                  <span>Full Sheet</span>
+                </button>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-2 flex-1 sm:flex-initial justify-end">
+                <div className="relative flex-1 sm:flex-initial min-w-[160px]">
+                  <Search
+                    className="w-3.5 h-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-ink-muted"
+                    aria-hidden="true"
+                  />
+                  <input
+                    type="search"
+                    value={searchQuery}
+                    onChange={(e) => setSearchQuery(e.target.value)}
+                    placeholder="Search topics..."
+                    aria-label="Search sessions"
+                    className="input-tactile w-full pl-8 pr-3 py-1.5 text-xs"
+                  />
+                </div>
+
+                <select
+                  value={modeFilter}
+                  onChange={(e) => setModeFilter(e.target.value)}
+                  aria-label="Filter sessions by writing mode"
+                  className="input-tactile px-2.5 py-1.5 text-xs"
+                >
+                  <option value="all">All modes</option>
+                  <option value="converse">Converse</option>
+                  <option value="written">Written only</option>
+                  <option value="journal">Personal Journal</option>
+                  <option value="linkedin">LinkedIn Post</option>
+                  <option value="email">Professional Email</option>
+                  <option value="friend">Friend Exchange</option>
+                  <option value="technical">Technical &amp; Interview</option>
+                  <option value="creative">Creative Writing</option>
+                </select>
+              </div>
+            </div>
+
+            {filteredSessions.length === 0 ? (
+              <div className="py-10 text-center text-sm text-ink-muted">
+                No sessions match your current filter.
+              </div>
+            ) : ledgerView === 'summary' ? (
+              <div className="divide-y divide-border-subtle border-t border-border-subtle">
+                {filteredSessions.map((session) => {
+                  const topTag = getSessionTopIssueTag(session);
+                  const spokenPct =
+                    typeof session.spokenReadinessScore === 'number'
+                      ? session.spokenReadinessScore
+                      : Math.round(session.percentage);
+                  return (
+                    <button
+                      key={session.id}
+                      type="button"
+                      data-testid={`ledger-row-${session.id}`}
+                      onClick={() => setSelectedSession(session)}
+                      className="w-full text-left py-3 px-2 -mx-2 rounded-md hover:bg-subtle/60 transition-colors cursor-pointer flex flex-wrap sm:flex-nowrap items-center justify-between gap-3 group"
+                    >
+                      <div className="flex items-baseline gap-3.5 min-w-0 flex-1">
+                        <span className="font-mono-tabular text-[11px] text-ink-muted shrink-0 w-12">
+                          {formatShortChartDate(session.date)}
+                        </span>
+                        <div className="min-w-0 flex-1">
+                          <div className="text-sm font-medium text-ink-primary truncate group-hover:text-accent transition-colors">
+                            {session.topicDescription}
+                          </div>
+                          <div className="text-[11px] text-ink-muted mt-0.5 flex flex-wrap items-center gap-x-1.5">
+                            <span>{MODE_LABELS[session.mode]}</span>
+                            <span aria-hidden="true">·</span>
+                            <span className="font-mono-tabular">{session.wordCount}w</span>
+                            <span aria-hidden="true">·</span>
+                            <span className="font-mono-tabular">CEFR {session.cefrLevel}</span>
+                            <span aria-hidden="true">·</span>
+                            <span className={topTag ? 'text-ink-secondary' : 'text-status-success'}>
+                              {topTag ? ERROR_TAG_META[topTag].label : 'Clean pass'}
+                            </span>
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="flex items-center gap-4 shrink-0 pl-15 sm:pl-0">
+                        <div className="text-right font-mono-tabular">
+                          <div className="text-xs font-semibold text-ink-primary">
+                            {session.totalScore}/60
+                          </div>
+                          <div className="text-[10px] text-ink-muted">
+                            {spokenPct}% spoken
+                          </div>
+                        </div>
+                        <span className="inline-flex items-center gap-1 text-xs font-medium text-ink-secondary group-hover:text-ink-primary transition-colors whitespace-nowrap">
+                          <span>Diff &amp; Report</span>
+                          <ArrowUpRight className="w-3.5 h-3.5" aria-hidden="true" />
+                        </span>
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+            ) : (
+              <div className="overflow-x-auto border border-border-subtle rounded-lg">
+                <table className="w-max min-w-full text-left border-collapse text-xs">
+                  <thead>
+                    <tr className="border-b border-border-subtle bg-subtle/70 text-[11px] text-ink-secondary">
+                      <th className="py-2.5 px-3 font-medium whitespace-nowrap">Date</th>
+                      <th className="py-2.5 px-3 font-medium whitespace-nowrap">Mode</th>
+                      <th className="py-2.5 px-3 font-medium whitespace-nowrap">Topic</th>
+                      <th className="py-2.5 px-3 font-medium text-right whitespace-nowrap">Words</th>
+                      <th className="py-2.5 px-3 font-medium text-right whitespace-nowrap">Voice</th>
+                      <th className="py-2.5 px-3 font-medium text-right whitespace-nowrap">Clarity</th>
+                      <th className="py-2.5 px-3 font-medium text-right whitespace-nowrap">Grammar</th>
+                      <th className="py-2.5 px-3 font-medium text-right whitespace-nowrap">Tone</th>
+                      <th className="py-2.5 px-3 font-medium text-right whitespace-nowrap">Cadence</th>
+                      <th className="py-2.5 px-3 font-medium text-right whitespace-nowrap">Concise</th>
+                      <th className="py-2.5 px-3 font-medium text-right whitespace-nowrap">Total</th>
+                      <th className="py-2.5 px-3 font-medium whitespace-nowrap">Feedback</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-border-subtle">
+                    {filteredSessions.map((session) => (
+                      <tr
+                        key={session.id}
+                        onClick={() => setSelectedSession(session)}
+                        className="row-tactile cursor-pointer align-top"
+                      >
+                        <td className="py-2.5 px-3 font-mono-tabular whitespace-nowrap text-ink-secondary">
+                          {formatShortChartDate(session.date)}
+                        </td>
+                        <td className="py-2.5 px-3 whitespace-nowrap text-ink-secondary">
+                          {MODE_LABELS[session.mode]}
+                        </td>
+                        <td className="py-2.5 px-3 min-w-[200px] max-w-[280px] font-medium text-ink-primary">
+                          {session.topicDescription}
+                        </td>
+                        <td className="py-2.5 px-3 text-right font-mono-tabular text-ink-secondary">
+                          {session.wordCount}
+                        </td>
+                        <td className="py-2.5 px-3 text-right font-mono-tabular text-ink-secondary">
+                          {session.scores.naturalVoiceFlow}
+                        </td>
+                        <td className="py-2.5 px-3 text-right font-mono-tabular text-ink-secondary">
+                          {session.scores.claritySimplicity}
+                        </td>
+                        <td className="py-2.5 px-3 text-right font-mono-tabular text-ink-secondary">
+                          {session.scores.grammarMechanics}
+                        </td>
+                        <td className="py-2.5 px-3 text-right font-mono-tabular text-ink-secondary">
+                          {session.scores.toneEngagement}
+                        </td>
+                        <td className="py-2.5 px-3 text-right font-mono-tabular text-ink-secondary">
+                          {session.scores.sentenceVarietyCadence}
+                        </td>
+                        <td className="py-2.5 px-3 text-right font-mono-tabular text-ink-secondary">
+                          {session.scores.concisenessDirectness}
+                        </td>
+                        <td className="py-2.5 px-3 text-right font-mono-tabular font-semibold text-ink-primary">
+                          {session.totalScore}/60
+                        </td>
+                        <td className="py-2.5 px-3 whitespace-nowrap text-ink-secondary">
+                          {session.feedbackImplemented}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        )}
+      </section>
 
       {/* Collapsible Deep Benchmarks & History (IELTS/TOEFL, D3 Heatmap, Mode Breakdown, Consistency) */}
       <section className="card-surface overflow-hidden">
@@ -400,9 +667,9 @@ export function DashboardView({
                             : 'No sessions yet'}
                         </span>
                       </div>
-                      <div className="h-1.5 rounded-sm bg-subtle overflow-hidden">
+                      <div className="h-1.5 rounded-full bg-subtle overflow-hidden">
                         <div
-                          className={`h-full rounded-sm ${
+                          className={`h-full rounded-full ${
                             item.sessionCount > 0 ? 'bg-accent' : 'bg-transparent'
                           }`}
                           style={{ width: `${item.avgPercentage}%` }}
@@ -423,302 +690,94 @@ export function DashboardView({
         )}
       </section>
 
-      {/* Scannable Session Ledger */}
-      <section className="card-surface p-4 sm:p-6">
-        <div className="flex flex-wrap items-center justify-between gap-4 mb-5">
-          <div>
-            <h2 className="text-base font-semibold text-ink-primary">
-              Session Evaluation Ledger
-            </h2>
-            <p className="text-xs text-ink-muted mt-0.5">
-              Scan score, spoken readiness, and top issue tag at a glance — click any row for Before→After diff and full report.
-            </p>
-          </div>
-
-          <div className="flex flex-wrap items-center gap-2">
-            <div
-              role="tablist"
-              aria-label="Ledger display mode"
-              className="segmented-track inline-flex items-center gap-0.5"
-            >
-              <button
-                type="button"
-                role="tab"
-                aria-selected={ledgerView === 'summary'}
-                data-active={ledgerView === 'summary' ? 'true' : 'false'}
-                onClick={() => setLedgerView('summary')}
-                className="segmented-item px-2.5 py-1 text-xs font-medium"
-              >
-                Scannable Ledger
-              </button>
-              <button
-                type="button"
-                role="tab"
-                aria-selected={ledgerView === 'sheet'}
-                data-active={ledgerView === 'sheet' ? 'true' : 'false'}
-                onClick={() => setLedgerView('sheet')}
-                className="segmented-item inline-flex items-center gap-1 px-2.5 py-1 text-xs font-medium"
-              >
-                <Table2 className="w-3.5 h-3.5" aria-hidden="true" />
-                <span>Full Sheet</span>
-              </button>
-            </div>
-
-            <div className="relative">
-              <Search
-                className="w-3.5 h-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-ink-muted"
-                aria-hidden="true"
-              />
-              <input
-                type="search"
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                placeholder="Search topics or notes..."
-                aria-label="Search sessions"
-                className="input-tactile pl-8 pr-3 py-1.5 text-xs"
-              />
-            </div>
-
-            <select
-              value={modeFilter}
-              onChange={(e) => setModeFilter(e.target.value)}
-              aria-label="Filter sessions by writing mode"
-              className="input-tactile px-3 py-1.5 text-xs"
-            >
-              <option value="all">All Modes</option>
-              <option value="converse">Converse (Live Chat)</option>
-              <option value="written">Written Drafts Only</option>
-              <option value="journal">Personal Journal</option>
-              <option value="linkedin">LinkedIn Post</option>
-              <option value="email">Professional Email</option>
-              <option value="friend">Friend Exchange</option>
-              <option value="technical">Technical &amp; Interview</option>
-              <option value="creative">Creative Writing</option>
-            </select>
-          </div>
-        </div>
-
-        {filteredSessions.length === 0 ? (
-          <div className="py-12 text-center text-sm text-ink-muted">
-            No sessions match your current filter.
-          </div>
-        ) : ledgerView === 'summary' ? (
-          <div className="overflow-x-auto">
-            <table className="w-full text-left border-collapse">
-              <thead>
-                <tr className="border-b border-border-subtle text-xs text-ink-muted">
-                  <th className="py-2.5 pr-4 font-medium">Date</th>
-                  <th className="py-2.5 pr-4 font-medium">Title &amp; Mode</th>
-                  <th className="py-2.5 pr-4 font-medium text-right">Score</th>
-                  <th className="py-2.5 pr-4 font-medium text-right">Spoken</th>
-                  <th className="py-2.5 pr-4 font-medium">Top Issue Tag</th>
-                  <th className="py-2.5 font-medium text-right">Inspect</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-border-subtle text-sm">
-                {filteredSessions.map((session) => {
-                  const topTag = getSessionTopIssueTag(session);
-                  const spokenPct =
-                    typeof session.spokenReadinessScore === 'number'
-                      ? session.spokenReadinessScore
-                      : Math.round(session.percentage);
-                  return (
-                    <tr
-                      key={session.id}
-                      onClick={() => setSelectedSession(session)}
-                      className="row-tactile cursor-pointer"
-                    >
-                      <td className="py-3 pr-4 font-mono-tabular text-xs text-ink-secondary whitespace-nowrap">
-                        {session.date}
-                      </td>
-                      <td className="py-3 pr-4 min-w-[200px]">
-                        <div className="font-medium text-ink-primary">
-                          {session.topicDescription}
-                        </div>
-                        <div className="text-xs text-ink-muted mt-0.5">
-                          {MODE_LABELS[session.mode]} · {session.wordCount}w · CEFR{' '}
-                          {session.cefrLevel}
-                        </div>
-                      </td>
-                      <td className="py-3 pr-4 text-right font-mono-tabular text-xs font-medium text-ink-primary whitespace-nowrap">
-                        {session.totalScore}/60
-                      </td>
-                      <td className="py-3 pr-4 text-right font-mono-tabular text-xs text-ink-secondary whitespace-nowrap">
-                        {spokenPct}%
-                      </td>
-                      <td className="py-3 pr-4 text-xs text-ink-secondary whitespace-nowrap">
-                        {topTag ? (
-                          <span className="inline-block px-2 py-0.5 rounded border border-border-subtle bg-subtle text-[11px]">
-                            {ERROR_TAG_META[topTag].label}
-                          </span>
-                        ) : (
-                          <span className="text-ink-muted">Clean pass</span>
-                        )}
-                      </td>
-                      <td className="py-3 text-right">
-                        <button
-                          type="button"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            setSelectedSession(session);
-                          }}
-                          className="inline-link-tactile text-xs font-medium whitespace-nowrap"
-                        >
-                          Diff &amp; Report
-                        </button>
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-        ) : (
-          <div className="overflow-x-auto border border-border-subtle rounded-lg">
-            <table className="w-max min-w-full text-left border-collapse text-xs">
-              <thead>
-                <tr className="border-b border-border-subtle bg-subtle text-[11px] text-ink-secondary">
-                  <th className="py-2.5 px-3 font-semibold whitespace-nowrap">Date</th>
-                  <th className="py-2.5 px-3 font-semibold whitespace-nowrap">Mode</th>
-                  <th className="py-2.5 px-3 font-semibold whitespace-nowrap">Topic</th>
-                  <th className="py-2.5 px-3 font-semibold text-right whitespace-nowrap">Words</th>
-                  <th className="py-2.5 px-3 font-semibold text-right whitespace-nowrap">Voice</th>
-                  <th className="py-2.5 px-3 font-semibold text-right whitespace-nowrap">Clarity</th>
-                  <th className="py-2.5 px-3 font-semibold text-right whitespace-nowrap">Grammar</th>
-                  <th className="py-2.5 px-3 font-semibold text-right whitespace-nowrap">Tone</th>
-                  <th className="py-2.5 px-3 font-semibold text-right whitespace-nowrap">Cadence</th>
-                  <th className="py-2.5 px-3 font-semibold text-right whitespace-nowrap">Concise</th>
-                  <th className="py-2.5 px-3 font-semibold text-right whitespace-nowrap">Total</th>
-                  <th className="py-2.5 px-3 font-semibold whitespace-nowrap">Feedback</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-border-subtle">
-                {filteredSessions.map((session) => (
-                  <tr
-                    key={session.id}
-                    onClick={() => setSelectedSession(session)}
-                    className="row-tactile cursor-pointer align-top"
-                  >
-                    <td className="py-2.5 px-3 font-mono-tabular whitespace-nowrap text-ink-secondary">
-                      {session.date}
-                    </td>
-                    <td className="py-2.5 px-3 whitespace-nowrap text-ink-secondary">
-                      {MODE_LABELS[session.mode]}
-                    </td>
-                    <td className="py-2.5 px-3 min-w-[200px] max-w-[280px] font-medium text-ink-primary">
-                      {session.topicDescription}
-                    </td>
-                    <td className="py-2.5 px-3 text-right font-mono-tabular text-ink-secondary">
-                      {session.wordCount}
-                    </td>
-                    <td className="py-2.5 px-3 text-right font-mono-tabular text-ink-secondary">
-                      {session.scores.naturalVoiceFlow}
-                    </td>
-                    <td className="py-2.5 px-3 text-right font-mono-tabular text-ink-secondary">
-                      {session.scores.claritySimplicity}
-                    </td>
-                    <td className="py-2.5 px-3 text-right font-mono-tabular text-ink-secondary">
-                      {session.scores.grammarMechanics}
-                    </td>
-                    <td className="py-2.5 px-3 text-right font-mono-tabular text-ink-secondary">
-                      {session.scores.toneEngagement}
-                    </td>
-                    <td className="py-2.5 px-3 text-right font-mono-tabular text-ink-secondary">
-                      {session.scores.sentenceVarietyCadence}
-                    </td>
-                    <td className="py-2.5 px-3 text-right font-mono-tabular text-ink-secondary">
-                      {session.scores.concisenessDirectness}
-                    </td>
-                    <td className="py-2.5 px-3 text-right font-mono-tabular font-semibold text-ink-primary">
-                      {session.totalScore}/60
-                    </td>
-                    <td className="py-2.5 px-3 whitespace-nowrap text-ink-secondary">
-                      {session.feedbackImplemented}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </section>
-
-      {/* Slide-over Session Inspection Drawer */}
-      {selectedSession && selectedSessionIntl && (
-        <div
-          role="dialog"
-          aria-modal="true"
-          aria-labelledby="session-modal-title"
-          className="modal-scrim fixed inset-0 z-50 flex justify-end"
-          onClick={() => setSelectedSession(null)}
-        >
+      {/* Smooth Centered Diff & Report Modal Dialog (portaled to document.body so ancestor transforms never offset fixed positioning) */}
+      {selectedSession &&
+        selectedSessionIntl &&
+        typeof document !== 'undefined' &&
+        createPortal(
           <div
-            onClick={(e) => e.stopPropagation()}
-            className="modal-panel w-full max-w-2xl h-full overflow-y-auto p-5 sm:p-6 space-y-5 rounded-none sm:rounded-l-xl"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="session-modal-title"
+            data-testid="diff-report-modal-backdrop"
+            className="modal-scrim fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-6"
+            onClick={() => setSelectedSession(null)}
           >
-            <div className="flex items-start justify-between gap-4 pb-3 border-b border-border-subtle">
-              <div>
-                <div className="text-xs text-ink-muted font-mono-tabular">
-                  {selectedSession.date} · {MODE_LABELS[selectedSession.mode]} ·{' '}
-                  {selectedSession.wordCount} words
+            <div
+              data-testid="diff-report-modal-panel"
+              onClick={(e) => e.stopPropagation()}
+              className="modal-panel w-full max-w-3xl max-h-[86vh] flex flex-col rounded-xl overflow-hidden"
+            >
+              {/* Sticky Editorial Header */}
+              <div className="shrink-0 flex items-start justify-between gap-4 px-5 sm:px-6 py-4 border-b border-border-subtle bg-elevated">
+                <div className="min-w-0">
+                  <div className="text-xs text-ink-muted font-mono-tabular">
+                    {formatShortChartDate(selectedSession.date)} · {MODE_LABELS[selectedSession.mode]} ·{' '}
+                    {selectedSession.wordCount} words · {selectedSession.totalScore}/60
+                  </div>
+                  <h2
+                    id="session-modal-title"
+                    className="font-display text-lg sm:text-xl font-medium text-ink-primary mt-0.5 leading-snug"
+                  >
+                    {selectedSession.topicDescription}
+                  </h2>
                 </div>
-                <h2
-                  id="session-modal-title"
-                  className="font-display text-xl font-medium text-ink-primary mt-1"
+                <button
+                  type="button"
+                  data-testid="diff-report-modal-close"
+                  onClick={() => setSelectedSession(null)}
+                  aria-label="Close diff and report dialog"
+                  className="btn-ghost p-1.5 shrink-0"
                 >
-                  {selectedSession.topicDescription}
-                </h2>
+                  <X className="w-4 h-4" aria-hidden="true" />
+                </button>
               </div>
-              <button
-                type="button"
-                onClick={() => setSelectedSession(null)}
-                aria-label="Close session detail"
-                className="btn-ghost p-1.5"
-              >
-                <X className="w-4 h-4" aria-hidden="true" />
-              </button>
-            </div>
 
-            <EvaluationReportView
-              defaultView="detailed"
-              draftContent={selectedSession.content}
-              report={{
-                topic: selectedSession.topicDescription,
-                modeLabel: MODE_LABELS[selectedSession.mode],
-                scores: selectedSession.scores,
-                metricNotes: selectedSession.metricNotes,
-                cefrLevel: selectedSession.cefrLevel,
-                internationalMetrics: selectedSessionIntl,
-                toneVerdict: selectedSession.toneVerdict,
-                flowVerdict: selectedSession.flowVerdict,
-                feedbackImplemented: selectedSession.feedbackImplemented,
-                feedbackCheck: selectedSession.feedbackCheck,
-                whatImproved: selectedSession.whatImproved,
-                whatImprovedPoints: selectedSession.whatImprovedPoints,
-                strictImprovements: selectedSession.strictImprovements,
-                pinpointedRewrites: selectedSession.pinpointedRewrites,
-                rewrittenSample: selectedSession.rewrittenSample,
-                grammarFixes: selectedSession.grammarFixes,
-                vocabUpgrades: selectedSession.vocabUpgrades,
-                routingMeta: selectedSession.routingMeta,
-                modelUsed: selectedSession.modelUsed,
-                spokenReadinessScore: selectedSession.spokenReadinessScore,
-                signalNoiseRatio: selectedSession.signalNoiseRatio,
-                audienceReaction: selectedSession.audienceReaction,
-                audience: selectedSession.audience,
-                calqueFixes: selectedSession.calqueFixes,
-                drillType: selectedSession.drillType,
-                drillMeta: selectedSession.drillMeta,
-                drillVerdict: selectedSession.drillVerdict,
-                revisionDelta: selectedSession.revisionDelta,
-                edits: selectedSession.edits,
-                toneCheck: selectedSession.toneCheck,
-                nextDraftPriority: selectedSession.nextDraftPriority,
-              }}
-            />
-          </div>
-        </div>
-      )}
+              {/* Smooth Scrollable Body */}
+              <div className="flex-1 overflow-y-auto overscroll-contain px-5 sm:px-6 py-5">
+                <EvaluationReportView
+                  defaultView="detailed"
+                  draftContent={selectedSession.content}
+                  report={{
+                    topic: selectedSession.topicDescription,
+                    modeLabel: MODE_LABELS[selectedSession.mode],
+                    scores: selectedSession.scores,
+                    metricNotes: selectedSession.metricNotes,
+                    cefrLevel: selectedSession.cefrLevel,
+                    internationalMetrics: selectedSessionIntl,
+                    toneVerdict: selectedSession.toneVerdict,
+                    flowVerdict: selectedSession.flowVerdict,
+                    feedbackImplemented: selectedSession.feedbackImplemented,
+                    feedbackCheck: selectedSession.feedbackCheck,
+                    whatImproved: selectedSession.whatImproved,
+                    whatImprovedPoints: selectedSession.whatImprovedPoints,
+                    strictImprovements: selectedSession.strictImprovements,
+                    pinpointedRewrites: selectedSession.pinpointedRewrites,
+                    rewrittenSample: selectedSession.rewrittenSample,
+                    grammarFixes: selectedSession.grammarFixes,
+                    vocabUpgrades: selectedSession.vocabUpgrades,
+                    routingMeta: selectedSession.routingMeta,
+                    modelUsed: selectedSession.modelUsed,
+                    spokenReadinessScore: selectedSession.spokenReadinessScore,
+                    signalNoiseRatio: selectedSession.signalNoiseRatio,
+                    audienceReaction: selectedSession.audienceReaction,
+                    audience: selectedSession.audience,
+                    calqueFixes: selectedSession.calqueFixes,
+                    drillType: selectedSession.drillType,
+                    drillMeta: selectedSession.drillMeta,
+                    drillVerdict: selectedSession.drillVerdict,
+                    revisionDelta: selectedSession.revisionDelta,
+                    edits: selectedSession.edits,
+                    toneCheck: selectedSession.toneCheck,
+                    nextDraftPriority: selectedSession.nextDraftPriority,
+                    targetCheck: selectedSession.targetCheck,
+                  }}
+                />
+              </div>
+            </div>
+          </div>,
+          document.body
+        )}
     </div>
   );
 }

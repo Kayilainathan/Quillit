@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useId, useMemo, useState } from 'react';
 import type { RubricScores, WritingSession } from '../types';
 import { RUBRIC_DIMENSIONS, computeAverageRubric } from '../utils/analytics';
 
@@ -6,11 +6,108 @@ interface TrendChartProps {
   sessions: WritingSession[];
 }
 
+const SHORT_MONTHS = [
+  'Jan',
+  'Feb',
+  'Mar',
+  'Apr',
+  'May',
+  'Jun',
+  'Jul',
+  'Aug',
+  'Sep',
+  'Oct',
+  'Nov',
+  'Dec',
+] as const;
+
+export function formatShortChartDate(isoDate: string): string {
+  const parts = isoDate.split('-').map(Number);
+  if (parts.length !== 3 || parts.some((n) => !Number.isFinite(n))) {
+    return isoDate.slice(5);
+  }
+  const monthLabel = SHORT_MONTHS[(parts[1] - 1) % 12] ?? String(parts[1]);
+  return `${monthLabel} ${parts[2]}`;
+}
+
+/**
+ * Selects evenly distributed X-axis tick indices that guarantee a minimum pixel
+ * gap so date labels NEVER collide or overlap regardless of session count.
+ */
+export function selectVisibleTickIndices(
+  xPositions: number[],
+  maxTicks = 5,
+  minGapPx = 76
+): number[] {
+  const n = xPositions.length;
+  if (n === 0) return [];
+  if (n === 1) return [0];
+
+  const firstIdx = 0;
+  const lastIdx = n - 1;
+  if (xPositions[lastIdx] - xPositions[firstIdx] < minGapPx) {
+    return [lastIdx];
+  }
+
+  const chosen: number[] = [firstIdx];
+  const interiorSlots = Math.max(0, maxTicks - 2);
+  if (interiorSlots > 0 && n > 2) {
+    const step = (lastIdx - firstIdx) / (interiorSlots + 1);
+    for (let k = 1; k <= interiorSlots; k += 1) {
+      const candidate = Math.round(firstIdx + step * k);
+      if (candidate <= chosen[chosen.length - 1] || candidate >= lastIdx) {
+        continue;
+      }
+      const prevX = xPositions[chosen[chosen.length - 1]];
+      const candX = xPositions[candidate];
+      const lastX = xPositions[lastIdx];
+      if (candX - prevX >= minGapPx && lastX - candX >= minGapPx) {
+        chosen.push(candidate);
+      }
+    }
+  }
+
+  chosen.push(lastIdx);
+  return chosen;
+}
+
+function buildSmoothCurvePath(pts: Array<{ x: number; y: number }>): string {
+  if (pts.length === 0) return '';
+  if (pts.length === 1) return `M ${pts[0].x.toFixed(1)} ${pts[0].y.toFixed(1)}`;
+  if (pts.length === 2) {
+    return `M ${pts[0].x.toFixed(1)} ${pts[0].y.toFixed(1)} L ${pts[1].x.toFixed(1)} ${pts[1].y.toFixed(1)}`;
+  }
+
+  let d = `M ${pts[0].x.toFixed(1)} ${pts[0].y.toFixed(1)}`;
+  for (let i = 0; i < pts.length - 1; i += 1) {
+    const p0 = pts[Math.max(0, i - 1)];
+    const p1 = pts[i];
+    const p2 = pts[i + 1];
+    const p3 = pts[Math.min(pts.length - 1, i + 2)];
+
+    const cp1x = p1.x + (p2.x - p0.x) / 6;
+    const cp1y = p1.y + (p2.y - p0.y) / 6;
+    const cp2x = p2.x - (p3.x - p1.x) / 6;
+    const cp2y = p2.y - (p3.y - p1.y) / 6;
+
+    d += ` C ${cp1x.toFixed(1)} ${cp1y.toFixed(1)}, ${cp2x.toFixed(1)} ${cp2y.toFixed(1)}, ${p2.x.toFixed(1)} ${p2.y.toFixed(1)}`;
+  }
+  return d;
+}
+
 export function ScoreTrendChart({ sessions }: TrendChartProps) {
+  const gradientId = useId();
   const [hoveredIdx, setHoveredIdx] = useState<number | null>(null);
-  const completed = [...sessions]
-    .filter((s) => s.status === 'Completed')
-    .sort((a, b) => a.date.localeCompare(b.date));
+  const completed = useMemo(
+    () =>
+      [...sessions]
+        .filter((s) => s.status === 'Completed' && !s.evaluationPending)
+        .sort(
+          (a, b) =>
+            a.date.localeCompare(b.date) || a.createdAt.localeCompare(b.createdAt)
+        ),
+    [sessions]
+  );
 
   if (completed.length === 0) {
     return (
@@ -21,74 +118,108 @@ export function ScoreTrendChart({ sessions }: TrendChartProps) {
   }
 
   const width = 560;
-  const height = 220;
-  const padX = 44;
-  const padY = 24;
-  const innerW = width - padX * 2;
-  const innerH = height - padY * 2;
+  const height = 232;
+  const padLeft = 40;
+  const padRight = 22;
+  const padTop = 20;
+  const padBottom = 34;
+  const innerW = width - padLeft - padRight;
+  const innerH = height - padTop - padBottom;
+  const baselineY = padTop + innerH;
 
   const points = completed.map((s, idx) => {
     const x =
       completed.length === 1
-        ? padX + innerW / 2
-        : padX + (idx / (completed.length - 1)) * innerW;
+        ? padLeft + innerW / 2
+        : padLeft + (idx / (completed.length - 1)) * innerW;
     const clampedPct = Math.max(0, Math.min(100, s.percentage));
-    const y = padY + innerH - (clampedPct / 100) * innerH;
+    const y = padTop + innerH - (clampedPct / 100) * innerH;
     return { x, y, session: s };
   });
 
-  const linePath = points
-    .map((p, idx) => `${idx === 0 ? 'M' : 'L'} ${p.x.toFixed(1)} ${p.y.toFixed(1)}`)
-    .join(' ');
+  const visibleTickIndices = selectVisibleTickIndices(
+    points.map((p) => p.x),
+    5,
+    78
+  );
 
+  const linePath = buildSmoothCurvePath(points);
   const areaPath =
     points.length > 1
-      ? `${linePath} L ${points[points.length - 1].x.toFixed(1)} ${(padY + innerH).toFixed(1)} L ${points[0].x.toFixed(1)} ${(padY + innerH).toFixed(1)} Z`
+      ? `${linePath} L ${points[points.length - 1].x.toFixed(1)} ${baselineY.toFixed(1)} L ${points[0].x.toFixed(1)} ${baselineY.toFixed(1)} Z`
       : '';
 
-  const activePoint = hoveredIdx !== null ? points[hoveredIdx] : points[points.length - 1];
+  const activeIdx = hoveredIdx !== null ? hoveredIdx : points.length - 1;
+  const activePoint = points[activeIdx];
+  const hitWidth =
+    points.length > 1 ? Math.max(16, innerW / Math.max(1, points.length - 1)) : innerW;
 
   return (
-    <div>
+    <div data-testid="mastery-rubric-trend-chart">
       <div className="flex flex-wrap items-baseline justify-between gap-2 mb-3">
         <div>
           <h3 className="text-sm font-semibold text-ink-primary">
             Mastery &amp; Rubric Trajectory
           </h3>
           <p className="text-xs text-ink-muted">
-            Percentage score across completed writing sessions
+            Score progression across {completed.length}{' '}
+            {completed.length === 1 ? 'session' : 'sessions'}
           </p>
         </div>
+
         {activePoint && (
-          <div className="text-xs font-mono-tabular text-ink-secondary">
-            {activePoint.session.date} · {activePoint.session.totalScore}/60 (
-            {activePoint.session.percentage.toFixed(1)}%)
+          <div className="text-xs font-mono-tabular text-ink-secondary flex flex-wrap items-center gap-x-1.5">
+            <span className="text-ink-primary font-medium">
+              {formatShortChartDate(activePoint.session.date)}
+            </span>
+            <span className="text-ink-muted" aria-hidden="true">
+              ·
+            </span>
+            <span className="text-ink-primary font-semibold">
+              {activePoint.session.totalScore}/60
+            </span>
+            <span className="text-ink-muted">
+              ({activePoint.session.percentage.toFixed(0)}%)
+            </span>
           </div>
         )}
       </div>
 
+      {activePoint && (
+        <div className="text-[11px] text-ink-muted truncate mb-2 min-h-[16px]">
+          {activePoint.session.topicDescription}
+        </div>
+      )}
+
       <svg
         viewBox={`0 0 ${width} ${height}`}
-        className="w-full h-56 overflow-visible"
+        className="w-full h-56 select-none"
         role="img"
         aria-label="Line chart of writing mastery percentage across sessions"
       >
+        <defs>
+          <linearGradient id={gradientId} x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor="var(--chart-primary)" stopOpacity="0.16" />
+            <stop offset="100%" stopColor="var(--chart-primary)" stopOpacity="0.01" />
+          </linearGradient>
+        </defs>
+
         {[0, 25, 50, 75, 100].map((tick) => {
-          const y = padY + innerH - (tick / 100) * innerH;
+          const y = padTop + innerH - (tick / 100) * innerH;
           return (
             <g key={tick}>
               <line
-                x1={padX}
+                x1={padLeft}
                 y1={y}
-                x2={width - padX / 2}
+                x2={width - padRight}
                 y2={y}
                 stroke="var(--chart-grid)"
                 strokeWidth={1}
-                strokeDasharray={tick === 0 ? undefined : '3 3'}
+                strokeDasharray={tick === 0 ? undefined : '2 4'}
               />
               <text
-                x={padX - 8}
-                y={y + 4}
+                x={padLeft - 8}
+                y={y + 3.5}
                 textAnchor="end"
                 fill="var(--ink-muted)"
                 className="text-[10px] font-mono"
@@ -99,12 +230,7 @@ export function ScoreTrendChart({ sessions }: TrendChartProps) {
           );
         })}
 
-        {areaPath && (
-          <path
-            d={areaPath}
-            fill="var(--chart-primary-soft)"
-          />
-        )}
+        {areaPath && <path d={areaPath} fill={`url(#${gradientId})`} />}
 
         {points.length > 1 && (
           <path
@@ -117,31 +243,71 @@ export function ScoreTrendChart({ sessions }: TrendChartProps) {
           />
         )}
 
+        {/* Active vertical crosshair guide */}
+        {activePoint && (
+          <line
+            x1={activePoint.x}
+            y1={padTop}
+            x2={activePoint.x}
+            y2={baselineY}
+            stroke="var(--border-strong)"
+            strokeWidth={1}
+            strokeDasharray="2 3"
+          />
+        )}
+
+        {/* Interactive columns + data points */}
         {points.map((pt, idx) => {
-          const isHovered = hoveredIdx === idx;
+          const isActive = idx === activeIdx;
+          const showDot = points.length <= 16 || isActive || idx === 0 || idx === points.length - 1;
           return (
-            <g key={pt.session.id}>
-              <circle
-                cx={pt.x}
-                cy={pt.y}
-                r={isHovered ? 5.5 : 4}
-                fill="var(--bg-surface)"
-                stroke="var(--chart-primary)"
-                className="cursor-pointer transition-all"
-                strokeWidth={2}
-                onMouseEnter={() => setHoveredIdx(idx)}
-                onMouseLeave={() => setHoveredIdx(null)}
+            <g
+              key={pt.session.id}
+              onMouseEnter={() => setHoveredIdx(idx)}
+              onMouseLeave={() => setHoveredIdx(null)}
+              className="cursor-pointer"
+            >
+              <rect
+                x={Math.max(padLeft - 8, pt.x - hitWidth / 2)}
+                y={padTop - 6}
+                width={hitWidth}
+                height={innerH + 14}
+                fill="transparent"
               />
-              <text
-                x={pt.x}
-                y={height - 4}
-                textAnchor="middle"
-                fill="var(--ink-muted)"
-                className="text-[10px] font-mono"
-              >
-                {pt.session.date.slice(5)}
-              </text>
+              {showDot && (
+                <circle
+                  cx={pt.x}
+                  cy={pt.y}
+                  r={isActive ? 5 : 3.2}
+                  fill={isActive ? 'var(--chart-primary)' : 'var(--bg-surface)'}
+                  stroke={isActive ? 'var(--bg-surface)' : 'var(--chart-primary)'}
+                  strokeWidth={isActive ? 2.5 : 1.75}
+                  className="transition-all duration-150"
+                />
+              )}
             </g>
+          );
+        })}
+
+        {/* Non-overlapping thinned X-axis date labels */}
+        {visibleTickIndices.map((idx, pos) => {
+          const pt = points[idx];
+          const isFirst = pos === 0 && visibleTickIndices.length > 1;
+          const isLast =
+            pos === visibleTickIndices.length - 1 && visibleTickIndices.length > 1;
+          const anchor = isFirst ? 'start' : isLast ? 'end' : 'middle';
+          return (
+            <text
+              key={`tick-${pt.session.id}-${idx}`}
+              data-testid="score-trend-date-tick"
+              x={pt.x}
+              y={height - 8}
+              textAnchor={anchor}
+              fill="var(--ink-muted)"
+              className="text-[10px] font-mono"
+            >
+              {formatShortChartDate(pt.session.date)}
+            </text>
           );
         })}
       </svg>
@@ -160,8 +326,11 @@ export function RubricProfileChart({ sessions }: RubricComparisonProps) {
   const completed = useMemo(
     () =>
       [...sessions]
-        .filter((s) => s.status === 'Completed')
-        .sort((a, b) => b.date.localeCompare(a.date)),
+        .filter((s) => s.status === 'Completed' && !s.evaluationPending)
+        .sort(
+          (a, b) =>
+            b.date.localeCompare(a.date) || b.createdAt.localeCompare(a.createdAt)
+        ),
     [sessions]
   );
 
@@ -173,9 +342,9 @@ export function RubricProfileChart({ sessions }: RubricComparisonProps) {
   }, [completed]);
 
   const radarGeometry = useMemo(() => {
-    const cx = 170;
-    const cy = 140;
-    const maxR = 98;
+    const cx = 175;
+    const cy = 142;
+    const maxR = 94;
     const n = RUBRIC_DIMENSIONS.length;
 
     const getPoint = (idx: number, val10: number) => {
@@ -197,7 +366,7 @@ export function RubricProfileChart({ sessions }: RubricComparisonProps) {
 
     const axes = RUBRIC_DIMENSIONS.map((dim, idx) => {
       const outer = getPoint(idx, 10);
-      const labelPos = getPoint(idx, 12.2);
+      const labelPos = getPoint(idx, 12.4);
       return {
         dim,
         outer,
@@ -233,7 +402,7 @@ export function RubricProfileChart({ sessions }: RubricComparisonProps) {
       <div className="flex flex-wrap items-baseline justify-between gap-2 mb-3">
         <div>
           <h3 className="text-sm font-semibold text-ink-primary">
-            6-Axis Rubric Web
+            6-Axis Rubric Balance
           </h3>
           <p className="text-xs text-ink-muted">
             Latest vs average vs personal best (/10)
@@ -262,7 +431,7 @@ export function RubricProfileChart({ sessions }: RubricComparisonProps) {
 
       {displayMode === 'web' ? (
         <div className="space-y-2.5">
-          <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] font-mono-tabular px-2.5 py-1.5 rounded-lg bg-subtle border border-border-subtle">
+          <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] font-mono-tabular px-2.5 py-1.5 rounded-lg bg-subtle/60 border border-border-subtle">
             <span className="font-sans font-medium text-ink-primary">
               {focusedAxis.dim.label}
             </span>
@@ -273,8 +442,8 @@ export function RubricProfileChart({ sessions }: RubricComparisonProps) {
           </div>
 
           <svg
-            viewBox="0 0 340 280"
-            className="w-full h-64 select-none overflow-visible"
+            viewBox="0 0 350 284"
+            className="w-full h-60 select-none"
             role="img"
             aria-label="6-axis rubric radar chart comparing latest, average, and personal best scores"
           >
@@ -305,8 +474,8 @@ export function RubricProfileChart({ sessions }: RubricComparisonProps) {
                 points={radarGeometry.bestPoly}
                 fill="var(--chart-secondary-soft)"
                 stroke="var(--chart-secondary)"
-                strokeOpacity={0.75}
-                strokeWidth={1.5}
+                strokeOpacity={0.7}
+                strokeWidth={1.4}
               />
             )}
 
@@ -314,7 +483,7 @@ export function RubricProfileChart({ sessions }: RubricComparisonProps) {
               points={radarGeometry.avgPoly}
               fill="var(--accent-soft)"
               stroke="var(--ink-muted)"
-              strokeWidth={1.4}
+              strokeWidth={1.3}
               strokeDasharray="4 3"
             />
 
@@ -340,10 +509,11 @@ export function RubricProfileChart({ sessions }: RubricComparisonProps) {
                     <circle
                       cx={axis.latestPt.x}
                       cy={axis.latestPt.y}
-                      r={active ? 5.5 : 4}
+                      r={active ? 5 : 3.6}
                       fill="var(--bg-surface)"
                       stroke="var(--chart-primary)"
                       strokeWidth={2}
+                      className="transition-all duration-150"
                     />
                   )}
                   <text
@@ -399,16 +569,16 @@ export function RubricProfileChart({ sessions }: RubricComparisonProps) {
                     {latestVal}/10 <span className="text-ink-muted">· avg {avgVal}</span>
                   </span>
                 </div>
-                <div className="relative h-2.5 rounded-sm bg-subtle overflow-hidden">
+                <div className="relative h-2 rounded-full bg-subtle overflow-hidden">
                   <div
-                    className="absolute inset-y-0 left-0 rounded-sm"
+                    className="absolute inset-y-0 left-0 rounded-full"
                     style={{
                       width: `${Math.min(100, avgVal * 10)}%`,
                       backgroundColor: 'var(--border-default)',
                     }}
                   />
                   <div
-                    className="absolute inset-y-0 left-0 bg-accent rounded-sm transition-all duration-200"
+                    className="absolute inset-y-0 left-0 bg-accent rounded-full transition-all duration-300"
                     style={{ width: `${Math.min(100, latestVal * 10)}%` }}
                   />
                 </div>
@@ -455,7 +625,7 @@ export function ConsistencyGrid({
             42-Day Writing Consistency
           </h3>
           <p className="text-xs text-ink-muted">
-            Daily practice cadence ending {referenceDateISO}
+            Daily practice cadence ending {formatShortChartDate(referenceDateISO)}
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-3 text-[11px] font-mono-tabular text-ink-muted">
@@ -535,7 +705,7 @@ export function ConsistencyGrid({
 
 export function WordVolumeChart({ sessions }: { sessions: WritingSession[] }) {
   const completed = [...sessions]
-    .filter((s) => s.status === 'Completed')
+    .filter((s) => s.status === 'Completed' && !s.evaluationPending)
     .sort((a, b) => a.date.localeCompare(b.date))
     .slice(-8);
 
@@ -557,7 +727,7 @@ export function WordVolumeChart({ sessions }: { sessions: WritingSession[] }) {
             Word Output per Session
           </h3>
           <p className="text-xs text-ink-muted">
-            Recent drafts vs 200-word target baseline
+            Recent drafts vs 200-word baseline
           </p>
         </div>
         <span className="text-xs font-mono-tabular text-ink-muted">
@@ -565,10 +735,15 @@ export function WordVolumeChart({ sessions }: { sessions: WritingSession[] }) {
         </span>
       </div>
 
-      <div className="h-40 flex items-end gap-3 pt-4 border-b border-border-subtle">
-        {completed.map((s) => {
+      <div className="h-40 flex items-end gap-2 sm:gap-3 pt-4 border-b border-border-subtle">
+        {completed.map((s, idx) => {
           const pct = Math.max(10, Math.round((s.wordCount / maxWords) * 100));
           const hitGoal = s.wordCount >= 200;
+          const showLabel =
+            completed.length <= 6 ||
+            idx === 0 ||
+            idx === completed.length - 1 ||
+            idx % 2 === 0;
           return (
             <div
               key={s.id}
@@ -579,7 +754,7 @@ export function WordVolumeChart({ sessions }: { sessions: WritingSession[] }) {
               </span>
               <div
                 title={`${s.date} · ${s.topicDescription}: ${s.wordCount} words`}
-                className={`w-full max-w-[44px] rounded-t-md transition-all duration-200 ${
+                className={`w-full max-w-[40px] rounded-t-md transition-all duration-200 ${
                   hitGoal ? 'bg-accent' : ''
                 }`}
                 style={{
@@ -587,8 +762,8 @@ export function WordVolumeChart({ sessions }: { sessions: WritingSession[] }) {
                   backgroundColor: hitGoal ? undefined : 'var(--border-default)',
                 }}
               />
-              <span className="text-[10px] font-mono-tabular text-ink-muted pb-1">
-                {s.date.slice(5)}
+              <span className="text-[10px] font-mono-tabular text-ink-muted pb-1 truncate max-w-full">
+                {showLabel ? formatShortChartDate(s.date) : ''}
               </span>
             </div>
           );

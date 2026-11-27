@@ -168,6 +168,7 @@ export function createEvaluateRouter(): Router {
       topic: rawTopic,
       needsAutoTitle,
       previousSessionSummary,
+      activeMechanicsCheck,
       practicingVocab,
       topicPrimer,
       studentProfile,
@@ -179,6 +180,7 @@ export function createEvaluateRouter(): Router {
     } = validated.data;
 
     const trimmedTopic = rawTopic.trim();
+    const trimmedMechanicsCheck = (activeMechanicsCheck || '').trim();
     const shouldInferTitle = Boolean(needsAutoTitle) || trimmedTopic.length === 0;
     const integrity = assessDraftIntegrity(trimmedContent);
     const localDiagnostics = computeProseDiagnostics(trimmedContent);
@@ -228,8 +230,9 @@ export function createEvaluateRouter(): Router {
           drillContext.drillPayload?.constraintLabel)
     );
     const hasPreviousSummary = previousSessionSummary.trim().length > 0;
+    const hasTargetCheck = trimmedMechanicsCheck.length > 0 || vocabList.length > 0;
 
-    const cacheKey = makeCacheKey('evaluate-coach-v8-slim', {
+    const cacheKey = makeCacheKey('evaluate-coach-v9-brief', {
       content: trimmedContent,
       mode,
       tone,
@@ -237,6 +240,7 @@ export function createEvaluateRouter(): Router {
       targetAudience,
       shouldInferTitle,
       previousSessionSummary: previousSessionSummary.slice(0, 260),
+      activeMechanicsCheck: trimmedMechanicsCheck.slice(0, 260),
       vocabList,
       studentDescriptor,
       fencedPreferences,
@@ -251,6 +255,8 @@ export function createEvaluateRouter(): Router {
       targetAudience,
       shouldInferTitle,
       hasPreviousSummary,
+      activeMechanicsCheck: trimmedMechanicsCheck,
+      practicingVocab: vocabList,
       drillInstructionBlock,
       fencedPreferences,
     });
@@ -259,6 +265,7 @@ export function createEvaluateRouter(): Router {
       includeSuggestedTitle: shouldInferTitle,
       includeDrillVerdict: hasDrill,
       includeFeedbackNote: hasPreviousSummary,
+      includeTargetCheck: hasTargetCheck,
     });
 
     const convContextBlock =
@@ -276,7 +283,7 @@ ${String(conversationContext.dialogueTranscript).slice(0, 3200)}
 
     const prompt = `Mode: ${mode} | Tone: ${tone} | Audience: ${targetAudience} | Words: ${wordCount} | MaxSentence: ${integrity.longestSentenceWords}w | SignalNoise: ${localDiagnostics.signalNoiseRatio}%
 Topic: ${trimmedTopic || '(blank - infer 3-7 word editorial title)'}
-${topicPrimer ? `Brief: ${topicPrimer}\n` : ''}${previousSessionSummary ? `PrevPriority: ${previousSessionSummary}\n` : ''}${vocabList.length > 0 ? `PracticeVocab: ${vocabList.join(', ')}\n` : ''}${convContextBlock}Draft:
+${topicPrimer ? `Brief: ${topicPrimer}\n` : ''}${previousSessionSummary ? `PrevPriority: ${previousSessionSummary}\n` : ''}${trimmedMechanicsCheck ? `ActiveMechanicsCheck: ${trimmedMechanicsCheck}\n` : ''}${vocabList.length > 0 ? `PracticeVocab: ${vocabList.join(', ')}\n` : ''}${convContextBlock}Draft:
 """
 ${trimmedContent}
 """`;
@@ -297,6 +304,8 @@ ${trimmedContent}
         trimmedTopic,
         targetAudience,
         previousSessionSummary,
+        activeMechanicsCheck: trimmedMechanicsCheck,
+        practicingVocab: vocabList,
         localDiagnostics,
         drillContext,
       });

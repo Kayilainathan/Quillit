@@ -2248,9 +2248,12 @@ export default function App() {
         detectPracticingVocabUsed(newSession.content, prev.vocabulary)
       );
       const aiPhraseSet = new Set(
-        (aiMasteredWords ?? []).map((w) => w.trim().toLowerCase())
+        [
+          ...(aiMasteredWords ?? []),
+          ...(newSession.targetCheck?.vocabUsed ?? []),
+        ].map((w) => w.trim().toLowerCase())
       );
-      const promotedIdSet = new Set<string>();
+      const updatedVocabIdSet = new Set<string>();
 
       const updatedVocab = prev.vocabulary.map((v) => {
         const textUses =
@@ -2261,26 +2264,45 @@ export default function App() {
                 newSession.content,
                 newSession.grammarFixes
               );
-        const aiCredited = aiPhraseSet.has(v.betterAlternative.toLowerCase());
+        const primaryPhrase = v.betterAlternative
+          .split(/\s*(?:\/|;)\s*/)[0]
+          .replace(/\([^)]*\)/g, '')
+          .trim()
+          .toLowerCase();
+        const targetCredited =
+          aiPhraseSet.has(v.betterAlternative.toLowerCase()) ||
+          aiPhraseSet.has(primaryPhrase);
         const matchedThisSession =
-          textUses > 0 || aiCredited || deterministicIds.has(v.id);
+          textUses > 0 || targetCredited || deterministicIds.has(v.id);
 
         if (!matchedThisSession) return v;
 
-        const addedUses = Math.max(textUses, aiCredited || deterministicIds.has(v.id) ? 1 : 0);
-        const nextCount = (v.correctUseCount ?? 0) + addedUses;
-        const shouldMarkMastered =
-          v.mastered || aiCredited || nextCount >= MASTERY_TARGET_USES;
+        const addedUses = Math.max(
+          textUses,
+          targetCredited || deterministicIds.has(v.id) ? 1 : 0
+        );
+        const prevCount = Math.max(v.correctUseCount ?? 0, v.usageCount ?? 0);
+        const nextCount = prevCount + addedUses;
+        const shouldMarkMastered = v.mastered || nextCount >= MASTERY_TARGET_USES;
+        const nextStage: VocabEntry['masteryStage'] = shouldMarkMastered
+          ? 'mastered'
+          : nextCount >= 2
+            ? 'building'
+            : nextCount >= 1
+              ? 'emerging'
+              : 'new';
 
+        updatedVocabIdSet.add(v.id);
         if (shouldMarkMastered && !v.mastered) {
           promotedWords.push(v.betterAlternative);
-          promotedIdSet.add(v.id);
         }
 
         return {
           ...v,
           mastered: shouldMarkMastered,
           correctUseCount: nextCount,
+          usageCount: nextCount,
+          masteryStage: nextStage,
         };
       });
 
@@ -2291,7 +2313,7 @@ export default function App() {
           void syncVocabToCloud(uid, v).catch(handleCloudSoftFailure);
         }
         for (const v of updatedVocab) {
-          if (promotedIdSet.has(v.id)) {
+          if (updatedVocabIdSet.has(v.id)) {
             void syncVocabToCloud(uid, v).catch(handleCloudSoftFailure);
           }
         }

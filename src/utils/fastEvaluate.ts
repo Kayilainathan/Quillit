@@ -9,6 +9,7 @@ import type {
   RewrittenSample,
   RubricMetricNotes,
   RubricScores,
+  SessionTargetCheck,
   ToneCheck,
   ToneSetting,
   UnifiedEdit,
@@ -32,6 +33,7 @@ import {
 import { computeProseDiagnostics } from './proseDiagnostics';
 import type { OfflineProofIssue } from './offlineProofreader';
 import { analyzeWritingSample } from './textAnalysis';
+import { evaluateTargetCheckOffline } from './sessionBrief';
 
 export interface InstantEvaluationResult {
   evaluationStatus: 'completed';
@@ -52,6 +54,7 @@ export interface InstantEvaluationResult {
   strictImprovements: string;
   nextDraftPriority?: string;
   toneCheck?: ToneCheck;
+  targetCheck?: SessionTargetCheck;
   edits?: UnifiedEdit[];
   pinpointedRewrites?: PinpointedRewrite[];
   rewrittenSample?: RewrittenSample;
@@ -417,7 +420,8 @@ export function buildInstantLocalEvaluation(
   tone: ToneSetting,
   offlineIssues: OfflineProofIssue[],
   existingTopic?: string,
-  vocabulary: VocabEntry[] = []
+  vocabulary: VocabEntry[] = [],
+  briefTargets?: { activeMechanicsCheck?: string; practicingVocab?: string[] }
 ): InstantEvaluationResult {
   const diag = analyzeDraftLocally(content);
   const integrity = assessDraftIntegrity(content);
@@ -847,6 +851,19 @@ export function buildInstantLocalEvaluation(
     toneFix: nextDraftPriority,
   };
 
+  const targetCheck =
+    briefTargets &&
+    (Boolean(briefTargets.activeMechanicsCheck?.trim()) ||
+      (briefTargets.practicingVocab && briefTargets.practicingVocab.length > 0))
+      ? evaluateTargetCheckOffline({
+          content,
+          activeMechanicsCheck: briefTargets.activeMechanicsCheck,
+          practicingVocab: briefTargets.practicingVocab,
+          grammarFixes,
+          grammarScore: calibrated.scores.grammarMechanics,
+        })
+      : undefined;
+
   return {
     evaluationStatus: 'completed',
     modelUsed: 'offline-rubric',
@@ -858,6 +875,7 @@ export function buildInstantLocalEvaluation(
     cefrLevel: calibrated.cefrLevel,
     internationalMetrics,
     toneCheck,
+    targetCheck,
     toneVerdict:
       topicPenalty < 0
         ? `Reads in a ${TONE_LABELS[tone].toLowerCase()} voice, though topical alignment with the prompt looks light.`

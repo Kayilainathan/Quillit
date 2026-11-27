@@ -68,9 +68,12 @@ test('firestore.rules validates v4.0 Draft updates and unified edits/toneCheck/n
   assert.ok(rules.includes("data.edits is list && data.edits.size() <= 12"));
   assert.ok(rules.includes("data.toneCheck is map && data.toneCheck.keys().size() <= 5"));
   assert.ok(rules.includes("data.nextDraftPriority is string && data.nextDraftPriority.size() <= 240"));
+  assert.ok(rules.includes("data.targetCheck is map && data.targetCheck.keys().size() <= 4"));
 
   assert.equal(blueprint.entities.WritingSessionDoc.properties.edits.type, 'array');
   assert.equal(blueprint.entities.WritingSessionDoc.properties.toneCheck.type, 'object');
   assert.equal(blueprint.entities.WritingSessionDoc.properties.nextDraftPriority.maxLength, 240);
+  assert.equal(blueprint.entities.WritingSessionDoc.properties.targetCheck.type, 'object');
 });
+
 

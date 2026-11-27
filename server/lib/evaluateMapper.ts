@@ -10,6 +10,10 @@ import {
   sanitizeWhatImprovedPoints,
 } from '../../src/utils/evaluationCalibration';
 import { deriveInternationalMetrics } from '../../src/utils/analytics';
+import {
+  detectUsedTargetVocab,
+  evaluateTargetCheckOffline,
+} from '../../src/utils/sessionBrief';
 import type {
   AudienceOption,
   CalqueFix,
@@ -20,6 +24,8 @@ import type {
   PinpointedRewrite,
   ProseDiagnosticsResult,
   RewrittenSample,
+  SessionTargetCheck,
+  TargetCheckStatus,
   ToneCheck,
   UnifiedEdit,
 } from '../../src/types';
@@ -37,6 +43,7 @@ export function buildSlimEvaluateSchema(options: {
   includeSuggestedTitle: boolean;
   includeDrillVerdict: boolean;
   includeFeedbackNote: boolean;
+  includeTargetCheck?: boolean;
 }): Record<string, unknown> {
   const properties: Record<string, unknown> = {
     scores: {
@@ -177,6 +184,29 @@ export function buildSlimEvaluateSchema(options: {
     required.push('drillVerdict');
   }
 
+  if (options.includeTargetCheck) {
+    properties.targetCheck = {
+      type: Type.OBJECT,
+      properties: {
+        mechanicsStatus: {
+          type: Type.STRING,
+          enum: ['Cleared', 'Partial', 'Missed', 'Baseline'],
+        },
+        mechanicsNote: { type: Type.STRING },
+        vocabUsed: {
+          type: Type.ARRAY,
+          items: { type: Type.STRING },
+        },
+        vocabMissed: {
+          type: Type.ARRAY,
+          items: { type: Type.STRING },
+        },
+      },
+      required: ['mechanicsStatus', 'mechanicsNote', 'vocabUsed', 'vocabMissed'],
+    };
+    required.push('targetCheck');
+  }
+
   return {
     type: Type.OBJECT,
     properties,
@@ -191,9 +221,17 @@ export function buildSlimEvaluateSystemInstruction(params: {
   targetAudience: string;
   shouldInferTitle: boolean;
   hasPreviousSummary: boolean;
+  activeMechanicsCheck?: string;
+  practicingVocab?: string[];
   drillInstructionBlock: string;
   fencedPreferences: string;
 }): string {
+  const hasTargets =
+    Boolean(params.activeMechanicsCheck?.trim()) ||
+    Boolean(params.practicingVocab && params.practicingVocab.length > 0);
+  const targetRule = hasTargets
+    ? `\n10. targetCheck: Verify ActiveMechanicsCheck (mechanicsStatus 'Cleared'|'Partial'|'Missed'|'Baseline' + <=18-word evidence mechanicsNote) and list only PracticeVocab phrases genuinely used naturally in vocabUsed, remaining in vocabMissed.`
+    : '';
   return `Strict senior writing & spoken-English coach evaluating a ${params.studentDescriptor} (${params.mode} · ${params.tone} · Audience: ${params.targetAudience}). Honest, uninflated human-editor judgment.
 
 RUBRIC (1-10 integers, ZERO inflation):
@@ -215,7 +253,7 @@ OUTPUT CONTRACT (compact, verbatim-grounded):
 6. strengths (2 items): { title, detail } quoting what genuinely worked.
 7. nextDraftPriority: 1 concrete imperative habit for the very next draft.
 8. feedbackStatus: ${params.hasPreviousSummary ? "'Yes'|'Partial'|'No' + concise feedbackNote citing what stuck or slipped." : "'Baseline' (no prior session)."}
-${params.shouldInferTitle ? '9. suggestedTitle: Sharp 3-7 word editorial title (no em-dashes).' : ''}${params.drillInstructionBlock}${params.fencedPreferences ? `\n${params.fencedPreferences}` : ''}`;
+${params.shouldInferTitle ? '9. suggestedTitle: Sharp 3-7 word editorial title (no em-dashes).' : ''}${targetRule}${params.drillInstructionBlock}${params.fencedPreferences ? `\n${params.fencedPreferences}` : ''}`;
 }
 
 function mergeCalqueFixesFromEdits(
@@ -247,6 +285,8 @@ export function mapSlimEvaluateResponse(params: {
   trimmedTopic: string;
   targetAudience: AudienceOption;
   previousSessionSummary: string;
+  activeMechanicsCheck?: string;
+  practicingVocab?: string[];
   localDiagnostics: ProseDiagnosticsResult;
   drillContext?: {
     drillType?: string;
@@ -259,6 +299,8 @@ export function mapSlimEvaluateResponse(params: {
     trimmedTopic,
     targetAudience,
     previousSessionSummary,
+    activeMechanicsCheck,
+    practicingVocab,
     localDiagnostics,
     drillContext,
   } = params;
@@ -486,6 +528,47 @@ export function mapSlimEvaluateResponse(params: {
     metricNotes.naturalVoiceFlow ||
     `${localDiagnostics.wordCount} words across ${localDiagnostics.sentenceCount} sentences (Signal-to-Noise ${localDiagnostics.signalNoiseRatio}%).`;
 
+  const practicing = (practicingVocab ?? [])
+    .map((p) => String(p).trim())
+    .filter((p) => p.length >= 2);
+  let targetCheck: SessionTargetCheck | undefined;
+  if (Boolean(activeMechanicsCheck?.trim()) || practicing.length > 0) {
+    const offlineFallback = evaluateTargetCheckOffline({
+      content: trimmedContent,
+      activeMechanicsCheck,
+      practicingVocab: practicing,
+      grammarFixes,
+      grammarScore: calibrated.scores.grammarMechanics,
+    });
+    const rawTarget =
+      parsed.targetCheck && typeof parsed.targetCheck === 'object'
+        ? (parsed.targetCheck as Record<string, unknown>)
+        : null;
+
+    const validStatuses: TargetCheckStatus[] = ['Cleared', 'Partial', 'Missed', 'Baseline'];
+    const aiStatus =
+      rawTarget && validStatuses.includes(rawTarget.mechanicsStatus as TargetCheckStatus)
+        ? (rawTarget.mechanicsStatus as TargetCheckStatus)
+        : offlineFallback.mechanicsStatus;
+
+    const aiNote =
+      rawTarget && typeof rawTarget.mechanicsNote === 'string' && rawTarget.mechanicsNote.trim()
+        ? sanitizeCoachProse(rawTarget.mechanicsNote).slice(0, 260)
+        : offlineFallback.mechanicsNote;
+
+    // Ground vocabulary usage directly against draft text so AI never hallucinates a used phrase
+    const verifiedUsed = detectUsedTargetVocab(trimmedContent, practicing);
+    const usedSet = new Set(verifiedUsed.map((v) => v.toLowerCase()));
+    const verifiedMissed = practicing.filter((p) => !usedSet.has(p.toLowerCase()));
+
+    targetCheck = {
+      mechanicsStatus: isGibberish ? 'Missed' : aiStatus,
+      mechanicsNote: aiNote,
+      vocabUsed: verifiedUsed,
+      vocabMissed: verifiedMissed,
+    };
+  }
+
   return {
     suggestedTitle,
     spokenReadinessScore,
@@ -495,6 +578,7 @@ export function mapSlimEvaluateResponse(params: {
     toneCheck,
     calqueFixes,
     drillVerdict,
+    targetCheck,
     scores: calibrated.scores,
     metricNotes,
     cefrLevel: calibrated.cefrLevel,
@@ -510,7 +594,7 @@ export function mapSlimEvaluateResponse(params: {
     edits: groundedEdits,
     pinpointedRewrites,
     rewrittenSample,
-    masteredWordsUsed: [] as string[],
+    masteredWordsUsed: targetCheck?.vocabUsed ?? ([] as string[]),
     grammarFixes,
     vocabUpgrades: groundedVocab,
   };

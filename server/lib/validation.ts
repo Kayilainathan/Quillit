@@ -148,6 +148,7 @@ export const EvaluateRequestSchema = z.object({
   topic: z.string().max(260).optional().default(''),
   needsAutoTitle: z.boolean().optional().default(false),
   previousSessionSummary: z.string().max(1500).optional().default(''),
+  activeMechanicsCheck: z.string().max(400).optional(),
   practicingVocab: z.array(z.string().max(120)).max(24).optional().default([]),
   topicPrimer: z.string().max(1000).optional().default(''),
   studentProfile: z.record(z.string(), z.unknown()).optional(),

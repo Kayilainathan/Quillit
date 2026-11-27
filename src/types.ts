@@ -222,6 +222,15 @@ export interface EvaluationRoutingMeta {
   latencyMs?: number;
 }
 
+export type TargetCheckStatus = 'Cleared' | 'Partial' | 'Missed' | 'Baseline';
+
+export interface SessionTargetCheck {
+  mechanicsStatus: TargetCheckStatus;
+  mechanicsNote: string;
+  vocabUsed: string[];
+  vocabMissed: string[];
+}
+
 export interface WritingSession {
   id: string;
   date: string; // YYYY-MM-DD
@@ -265,6 +274,8 @@ export interface WritingSession {
   edits?: UnifiedEdit[];
   toneCheck?: ToneCheck;
   nextDraftPriority?: string;
+  /** v4.1 Closed-Loop Session Brief Target Check */
+  targetCheck?: SessionTargetCheck;
   status: 'Completed' | 'Draft';
   evaluationPending?: boolean;
   modelUsed?: string;

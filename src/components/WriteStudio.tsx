@@ -13,7 +13,6 @@ import {
   Feather,
   FileText,
   Layers,
-  Lock,
   Maximize2,
   Minimize2,
   Moon,
@@ -25,7 +24,6 @@ import {
   Sparkles,
   Sun,
   Trash2,
-  Unlock,
   X,
 } from 'lucide-react';
 import type {
@@ -46,6 +44,7 @@ import type {
   RewrittenSample,
   RubricMetricNotes,
   RubricScores,
+  SessionTargetCheck,
   StudentProfile,
   ToneCheck,
   ToneSetting,
@@ -77,6 +76,12 @@ import {
 import { buildAdaptivePromptContext } from '../utils/adaptivePromptProfile';
 import { apiFetch, safeParseJsonResponse } from '../utils/apiBase';
 import { QuickAddVocabModal } from './QuickAddVocabModal';
+import { SessionBriefCard } from './SessionBriefCard';
+import {
+  buildSessionBrief,
+  detectUsedTargetVocab,
+  pickDefaultBriefSlot,
+} from '../utils/sessionBrief';
 import {
   applyAllOfflineIssues,
   applyOfflineIssue,
@@ -213,6 +218,7 @@ interface EvaluationPayload {
   edits?: UnifiedEdit[];
   toneCheck?: ToneCheck;
   nextDraftPriority?: string;
+  targetCheck?: SessionTargetCheck;
 }
 
 interface WriteStudioProps {
@@ -537,8 +543,9 @@ export function WriteStudio({
     isAi?: boolean;
   } | null>(null);
 
-  const [showPivotInput, setShowPivotInput] = useState(false);
-  const [pivotFocus, setPivotFocus] = useState('');
+  const [briefCollapsed, setBriefCollapsed] = useState(false);
+  const [freeWriteMode, setFreeWriteMode] = useState(false);
+  const autoBriefBoundRef = useRef(false);
   const [pivoting, setPivoting] = useState(false);
 
   const [showOfflinePanel, setShowOfflinePanel] = useState(true);
@@ -549,8 +556,6 @@ export function WriteStudio({
   const [showQuickAddVocab, setShowQuickAddVocab] = useState(false);
   const [quickVocabToast, setQuickVocabToast] = useState<string | null>(null);
   const quickVocabToastTimerRef = useRef<number | null>(null);
-
-  const [checkedAngles, setCheckedAngles] = useState<Record<string, boolean>>({});
 
   const [evaluating, setEvaluating] = useState(false);
   const [evaluatingTierLabel, setEvaluatingTierLabel] =
@@ -1191,6 +1196,70 @@ export function WriteStudio({
     [activeSlotId, calendarSlots]
   );
 
+  // Auto-load today's next incomplete CalendarSlot into the calm Session Brief on first open
+  useEffect(() => {
+    if (autoBriefBoundRef.current) return;
+    if (
+      activeSlotId ||
+      linkedCalendarSlotId ||
+      initialTopic.trim().length > 0 ||
+      initialTimeCapsuleOrigin ||
+      freeWriteMode ||
+      content.trim().length > 0
+    ) {
+      autoBriefBoundRef.current = true;
+      return;
+    }
+    const defaultSlot = pickDefaultBriefSlot(calendarSlots, todayISO);
+    if (!defaultSlot) return;
+    autoBriefBoundRef.current = true;
+    setActiveSlotId(defaultSlot.id);
+    setMode(defaultSlot.mode);
+    setTone(defaultSlot.tone);
+    setTopic(defaultSlot.topic);
+    setDaySlot(`${defaultSlot.dayOfWeek} · ${defaultSlot.slotLabel}`);
+  }, [
+    activeSlotId,
+    linkedCalendarSlotId,
+    initialTopic,
+    initialTimeCapsuleOrigin,
+    freeWriteMode,
+    content,
+    calendarSlots,
+    todayISO,
+  ]);
+
+  const sessionBrief = useMemo(
+    () =>
+      buildSessionBrief({
+        activeSlot: activeLinkedSlot,
+        calendarSlots,
+        sessions,
+        vocabulary,
+        studentProfile,
+        todayISO,
+        currentMode: mode,
+        currentTone: tone,
+        currentTopic: topic,
+      }),
+    [
+      activeLinkedSlot,
+      calendarSlots,
+      sessions,
+      vocabulary,
+      studentProfile,
+      todayISO,
+      mode,
+      tone,
+      topic,
+    ]
+  );
+
+  const usedBriefVocab = useMemo(
+    () => detectUsedTargetVocab(effectiveDraftText, sessionBrief.vocabTargets),
+    [effectiveDraftText, sessionBrief.vocabTargets]
+  );
+
   const formattedToday = useMemo(() => {
     try {
       const [y, m, d] = todayISO.split('-').map(Number);
@@ -1775,6 +1844,8 @@ export function WriteStudio({
         content,
       });
     }
+    setFreeWriteMode(false);
+    setBriefCollapsed(false);
     setMode(slot.mode);
     setTone(slot.tone);
     setTopic(slot.topic);
@@ -1783,12 +1854,10 @@ export function WriteStudio({
     if (slot.recommendedDrill) {
       setActiveDrill(slot.recommendedDrill);
     }
-    setCheckedAngles({});
-    setShowPivotInput(false);
     setErrorMessage(null);
   }
 
-  function handleUndoLoadTask() {
+  function handleEnterFreeWrite() {
     if (preLoadSnapshot) {
       setMode(preLoadSnapshot.mode);
       setTone(preLoadSnapshot.tone);
@@ -1798,51 +1867,67 @@ export function WriteStudio({
       setContent(preLoadSnapshot.content);
     } else {
       setActiveSlotId(undefined);
+      setTopic('');
+      setDaySlot('Free Write');
     }
     setPreLoadSnapshot(null);
-    setShowPivotInput(false);
-    setCheckedAngles({});
+    setFreeWriteMode(true);
     setErrorMessage(null);
   }
 
-  async function handleUniversalPivot() {
-    if (!activeLinkedSlot || pivotFocus.trim().length < 3) return;
+  async function handleUniversalPivot(customFocusRaw: string) {
+    const cleanedFocus = customFocusRaw.trim();
+    if (cleanedFocus.length < 3) return;
     setPivoting(true);
     setErrorMessage(null);
     try {
+      const slotPayload = activeLinkedSlot ?? {
+        mode,
+        tone,
+        dayOfWeek: sessionBrief.slotContext.split('·')[0]?.trim() || 'Today',
+      };
       const res = await apiFetch('/api/pivot-topic', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          slot: activeLinkedSlot,
-          customFocus: pivotFocus.trim(),
+          slot: slotPayload,
+          customFocus: cleanedFocus,
         }),
       });
       const data = await safeParseJsonResponse<Record<string, unknown>>(res);
-      if (!res.ok || !data) {
-        throw new Error(
-          (typeof data?.error === 'string' && data.error) ||
-            'Topic pivot requires an active API server.'
-        );
+      if (res.ok && data && !data.error) {
+        const nextTopic = String(data.topic || cleanedFocus);
+        if (activeLinkedSlot) {
+          const nextSlot: CalendarSlot = {
+            ...activeLinkedSlot,
+            topic: nextTopic,
+            topicPrimer: String(data.topicPrimer || activeLinkedSlot.topicPrimer || ''),
+            suggestions:
+              Array.isArray(data.suggestions) && data.suggestions.length > 0
+                ? data.suggestions
+                : activeLinkedSlot.suggestions,
+          };
+          onUpdateSlot(nextSlot);
+        }
+        setTopic(nextTopic);
+      } else {
+        // Offline / static host graceful pivot: update directly without blocking
+        if (activeLinkedSlot) {
+          onUpdateSlot({
+            ...activeLinkedSlot,
+            topic: cleanedFocus,
+          });
+        }
+        setTopic(cleanedFocus);
       }
-      const nextTopic = String(data.topic || pivotFocus.trim());
-      const nextSlot: CalendarSlot = {
-        ...activeLinkedSlot,
-        topic: nextTopic,
-        topicPrimer: String(data.topicPrimer || activeLinkedSlot.topicPrimer || ''),
-        suggestions:
-          Array.isArray(data.suggestions) && data.suggestions.length > 0
-            ? data.suggestions
-            : activeLinkedSlot.suggestions,
-      };
-      onUpdateSlot(nextSlot);
-      setTopic(nextTopic);
-      setPivotFocus('');
-      setShowPivotInput(false);
-    } catch (err) {
-      setErrorMessage(
-        err instanceof Error ? err.message : 'Unable to apply Universal Pivot.'
-      );
+    } catch {
+      if (activeLinkedSlot) {
+        onUpdateSlot({
+          ...activeLinkedSlot,
+          topic: cleanedFocus,
+        });
+      }
+      setTopic(cleanedFocus);
     } finally {
       setPivoting(false);
     }
@@ -2194,6 +2279,7 @@ export function WriteStudio({
       edits: evalPayload.edits,
       toneCheck: evalPayload.toneCheck,
       nextDraftPriority: evalPayload.nextDraftPriority,
+      targetCheck: evalPayload.targetCheck,
       revisionOfSessionId: revisionContext?.pass1SessionId,
       revisionDelta,
       status: 'Completed',
@@ -2220,11 +2306,18 @@ export function WriteStudio({
         sessionId: stableSessionId,
       }));
 
+    const verifiedMasteredWords = Array.from(
+      new Set([
+        ...(evalPayload.masteredWordsUsed ?? []),
+        ...(evalPayload.targetCheck?.vocabUsed ?? []),
+      ])
+    );
+
     const promoted = onSaveSession(
       sessionRecord,
       newVocab,
       activeSlotId,
-      evalPayload.masteredWordsUsed
+      verifiedMasteredWords
     );
     if (promoted && promoted.length > 0) {
       setPromotedVocabBanner(promoted);
@@ -2363,6 +2456,16 @@ export function WriteStudio({
       setEvaluating(false);
     }, SLOW_EVAL_THRESHOLD_MS);
 
+    const activeMechanicsCheck = freeWriteMode
+      ? undefined
+      : sessionBrief.mechanicsCheck;
+    const mergedPracticingVocab = Array.from(
+      new Set([
+        ...(freeWriteMode ? [] : sessionBrief.vocabTargets.map((v) => v.phrase)),
+        ...coachContext.practicingWords.map((v) => v.betterAlternative),
+      ])
+    ).slice(0, 12);
+
     try {
       const res = await apiFetch('/api/evaluate', {
         method: 'POST',
@@ -2373,11 +2476,10 @@ export function WriteStudio({
           tone: TONE_LABELS[tone],
           topic: wasTopicBlank ? '' : fallbackTopic,
           needsAutoTitle: wasTopicBlank,
-          topicPrimer: activeLinkedSlot?.topicPrimer || '',
+          topicPrimer: activeLinkedSlot?.topicPrimer || sessionBrief.topicPrimer || '',
           previousSessionSummary: coachContext.previousSessionSummary,
-          practicingVocab: coachContext.practicingWords.map(
-            (v) => v.betterAlternative
-          ),
+          activeMechanicsCheck,
+          practicingVocab: mergedPracticingVocab,
           studentProfile,
           audience,
           customCoachPrompt: customCoachPrompt || undefined,
@@ -2464,7 +2566,11 @@ export function WriteStudio({
         tone,
         currentOfflineIssues,
         fallbackTopic,
-        vocabulary
+        vocabulary,
+        {
+          activeMechanicsCheck,
+          practicingVocab: mergedPracticingVocab,
+        }
       );
       const localProse = computeProseDiagnostics(submittedDraft);
       const mergedOffline: EvaluationPayload = {
@@ -2587,11 +2693,6 @@ export function WriteStudio({
     return parts.join(' · ');
   }, [offlineIssues]);
 
-  const targetWordGoal = activeLinkedSlot?.targetWords || 200;
-  const wordGoalPct = Math.min(
-    100,
-    Math.round((diagnostics.wordCount / Math.max(1, targetWordGoal)) * 100)
-  );
   const queueProgressPct =
     initialResetTotal > 0
       ? Math.min(
@@ -3039,8 +3140,8 @@ export function WriteStudio({
           }
         >
           <div className="card-surface overflow-hidden">
-            {/* Minimal Animated Writing-Inspired Desk Control Ribbon */}
-            {!focusMode && !activeLinkedSlot && (
+            {/* Minimal Animated Writing-Inspired Desk Control Ribbon (Always Unlocked) */}
+            {!focusMode && (
               <div
                 data-faded={chromeFaded ? 'true' : 'false'}
                 className="vanishing-chrome"
@@ -3113,163 +3214,58 @@ export function WriteStudio({
               </div>
             )}
 
-            {/* Unified Locked Task Header + Brief when a scheduled task is loaded */}
-            {activeLinkedSlot && !focusMode && (
-              <>
-                <div
-                  data-testid="locked-task-bar"
-                  className="relative px-5 py-3 border-b border-border-subtle bg-subtle/80 flex flex-wrap items-center justify-between gap-3"
+            {/* v4.1 Calm Editorial Session Brief Core */}
+            {!focusMode && activeDrill === 'standard' && !freeWriteMode && (
+              <SessionBriefCard
+                brief={sessionBrief}
+                usedVocabPhrases={usedBriefVocab}
+                collapsed={briefCollapsed}
+                onToggleCollapse={() => {
+                  playTactileClick(tactileSoundEnabled);
+                  setBriefCollapsed((v) => !v);
+                }}
+                onEnterFreeWrite={handleEnterFreeWrite}
+                onApplyPivot={handleUniversalPivot}
+                pivoting={pivoting}
+                onInsertVocabPhrase={(phrase) => {
+                  const el = document.getElementById(
+                    'writing-editor'
+                  ) as HTMLTextAreaElement | null;
+                  if (!el) return;
+                  const start = el.selectionStart ?? content.length;
+                  const end = el.selectionEnd ?? content.length;
+                  const prefix = start > 0 && !/\s$/.test(content.slice(0, start)) ? ' ' : '';
+                  const next = `${content.slice(0, start)}${prefix}${phrase}${content.slice(end)}`;
+                  setContent(next);
+                  window.setTimeout(() => {
+                    el.focus();
+                    const caret = start + prefix.length + phrase.length;
+                    el.setSelectionRange(caret, caret);
+                  }, 10);
+                }}
+              />
+            )}
+
+            {!focusMode && activeDrill === 'standard' && freeWriteMode && (
+              <div
+                data-testid="free-write-strip"
+                className="flex items-center justify-between gap-2 px-4 sm:px-6 py-2 border-b border-border-subtle bg-subtle/25 text-[11px]"
+              >
+                <span className="text-ink-muted">
+                  Free write · open page without a brief
+                </span>
+                <button
+                  type="button"
+                  data-testid="restore-session-brief-btn"
+                  onClick={() => {
+                    setFreeWriteMode(false);
+                    setBriefCollapsed(false);
+                  }}
+                  className="font-medium text-ink-secondary hover:text-ink-primary transition-colors cursor-pointer"
                 >
-                  <div className="flex items-center gap-2.5 min-w-0">
-                    <span
-                      title="Mode and tone are locked to this scheduled session"
-                      className="w-6 h-6 rounded-md border border-border-default bg-surface inline-flex items-center justify-center shrink-0"
-                    >
-                      <Lock
-                        className="w-3 h-3 text-ink-primary"
-                        aria-hidden="true"
-                      />
-                    </span>
-                    <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs min-w-0">
-                      <span className="font-semibold text-ink-primary whitespace-nowrap">
-                        {MODE_LABELS[mode]}
-                      </span>
-                      <span className="text-ink-muted" aria-hidden="true">
-                        ·
-                      </span>
-                      <span className="text-ink-secondary whitespace-nowrap">
-                        {TONE_LABELS[tone]}
-                      </span>
-                      <span className="text-ink-muted" aria-hidden="true">
-                        ·
-                      </span>
-                      <span className="font-mono-tabular text-[11px] text-ink-muted whitespace-nowrap">
-                        {activeLinkedSlot.dayOfWeek} {activeLinkedSlot.scheduledDate}
-                      </span>
-                    </div>
-                  </div>
-
-                  <div className="flex items-center gap-2 shrink-0">
-                    <span className="font-mono-tabular text-[11px] text-ink-secondary pr-1 whitespace-nowrap">
-                      {diagnostics.wordCount}/{activeLinkedSlot.targetWords}w
-                      <span className="text-ink-muted"> ({wordGoalPct}%)</span>
-                    </span>
-                    <span
-                      aria-hidden="true"
-                      className="h-3.5 w-px bg-border-default"
-                    />
-                    <button
-                      type="button"
-                      onClick={() => setShowPivotInput((v) => !v)}
-                      className="btn-ghost inline-flex items-center gap-1 px-2 py-1 text-[11px] font-medium whitespace-nowrap"
-                    >
-                      <Shuffle className="w-3 h-3" aria-hidden="true" />
-                      <span>Pivot</span>
-                    </button>
-                    <button
-                      type="button"
-                      onClick={handleUndoLoadTask}
-                      aria-label="Unlock mode and detach scheduled task"
-                      className="btn-secondary inline-flex items-center gap-1 px-2.5 py-1 text-[11px] font-medium whitespace-nowrap"
-                    >
-                      <Unlock className="w-3 h-3" aria-hidden="true" />
-                      <span>Unlock</span>
-                    </button>
-                  </div>
-
-                  <div
-                    aria-hidden="true"
-                    className="absolute inset-x-0 bottom-0 h-[2px] bg-border-subtle overflow-hidden"
-                  >
-                    <div
-                      className="h-full bg-accent transition-transform duration-200 origin-left"
-                      style={{
-                        transform: `scaleX(${Math.min(1, wordGoalPct / 100)})`,
-                      }}
-                    />
-                  </div>
-                </div>
-
-                <div className="px-5 py-3.5 border-b border-border-subtle bg-subtle/35 space-y-2.5">
-                  {activeLinkedSlot.topicPrimer && (
-                    <div className="text-xs text-ink-secondary leading-relaxed">
-                      <span className="font-semibold text-ink-primary">
-                        Brief:{' '}
-                      </span>
-                      {activeLinkedSlot.topicPrimer}
-                    </div>
-                  )}
-
-                  <div className="text-[11px] text-ink-secondary">
-                    <span className="font-semibold text-status-warning">
-                      Coach Focus:{' '}
-                    </span>
-                    {activeLinkedSlot.feedbackReminder || coachContext.activeReminder}
-                  </div>
-
-                  {showPivotInput && (
-                    <div className="p-3 rounded-md border border-border-default bg-surface space-y-2">
-                      <div className="text-[11px] text-ink-secondary">
-                        {activeLinkedSlot.pivotRule ||
-                          'Swap to any familiar circuit, sensor, email scenario, or story while keeping the same tone.'}
-                      </div>
-                      <div className="flex flex-wrap gap-2">
-                        <input
-                          type="text"
-                          value={pivotFocus}
-                          onChange={(e) => setPivotFocus(e.target.value)}
-                          placeholder="e.g., Ultrasonic tank level sensor / Capstone PCB status email..."
-                          aria-label="Universal Pivot custom focus"
-                          className="input-tactile flex-1 min-w-[200px] px-3 py-1.5 text-xs"
-                        />
-                        <button
-                          type="button"
-                          disabled={pivoting || pivotFocus.trim().length < 3}
-                          onClick={handleUniversalPivot}
-                          className="btn-primary px-3 py-1.5 text-xs font-medium"
-                        >
-                          {pivoting ? 'Pivoting...' : 'Apply Pivot'}
-                        </button>
-                      </div>
-                    </div>
-                  )}
-
-                  {activeLinkedSlot.suggestions &&
-                    activeLinkedSlot.suggestions.length > 0 && (
-                      <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 pt-1">
-                        {activeLinkedSlot.suggestions.map((angle, idx) => {
-                          const key = `${activeLinkedSlot.id}-${idx}`;
-                          const done = Boolean(checkedAngles[key]);
-                          return (
-                            <button
-                              key={key}
-                              type="button"
-                              onClick={() =>
-                                setCheckedAngles((prev) => ({
-                                  ...prev,
-                                  [key]: !done,
-                                }))
-                              }
-                              className={`text-left p-2 rounded-sm border text-[11px] leading-snug flex items-start gap-1.5 transition-colors cursor-pointer ${
-                                done
-                                  ? 'border-status-success-border bg-status-success-soft text-status-success line-through'
-                                  : 'border-border-subtle bg-surface text-ink-secondary hover:border-border-strong'
-                              }`}
-                            >
-                              <Check
-                                className={`w-3.5 h-3.5 shrink-0 mt-0.5 ${
-                                  done ? 'text-status-success' : 'text-ink-muted'
-                                }`}
-                                aria-hidden="true"
-                              />
-                              <span>{angle}</span>
-                            </button>
-                          );
-                        })}
-                      </div>
-                    )}
-                </div>
-              </>
+                  Show session brief
+                </button>
+              </div>
             )}
 
             {/* ======================================================= */}
@@ -4158,6 +4154,7 @@ export function WriteStudio({
                     edits: evaluation.edits,
                     toneCheck: evaluation.toneCheck,
                     nextDraftPriority: evaluation.nextDraftPriority,
+                    targetCheck: evaluation.targetCheck,
                     signalNoiseRatio: evaluation.signalNoiseRatio,
                     audienceReaction: evaluation.audienceReaction,
                     audience,

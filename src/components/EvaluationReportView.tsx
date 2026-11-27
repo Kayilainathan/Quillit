@@ -16,6 +16,7 @@ import type {
   RewrittenSample,
   RubricMetricNotes,
   RubricScores,
+  SessionTargetCheck,
   ToneCheck,
   UnifiedEdit,
   VocabSuggestion,
@@ -56,6 +57,7 @@ export interface EvaluationReportData {
   edits?: UnifiedEdit[];
   toneCheck?: ToneCheck;
   nextDraftPriority?: string;
+  targetCheck?: SessionTargetCheck;
 }
 
 type ReportTab = 'overview' | 'fixes' | 'rubric';

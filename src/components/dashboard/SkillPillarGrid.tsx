@@ -57,7 +57,6 @@ export function SkillPillarGrid({
   pillars,
   onPracticeWeakness,
 }: SkillPillarGridProps) {
-  // Default select lowest-scoring pillar so the "How to Improvise" playbook is immediately actionable
   const lowestKey =
     [...pillars].sort((a, b) => a.avgScore - b.avgScore)[0]?.key ?? 'grammar';
   const [selectedKey, setSelectedKey] = useState<SkillPillarKey>(lowestKey);
@@ -73,15 +72,15 @@ export function SkillPillarGrid({
     >
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
-          <div className="text-[11px] uppercase tracking-wider text-ink-muted">
-            6 Skill Pillars
+          <div className="text-xs font-medium text-ink-muted">
+            6 skill pillars
           </div>
           <h2 className="font-display text-lg sm:text-xl font-medium text-ink-primary mt-0.5">
             Where to Level Up &amp; How to Improvise
           </h2>
         </div>
         <span className="text-xs text-ink-muted">
-          Select any pillar to open its focused micro-habit &amp; 1-click drill
+          Select any pillar for its micro-habit &amp; 1-click drill
         </span>
       </div>
 
@@ -96,7 +95,7 @@ export function SkillPillarGrid({
               data-testid={`skill-pillar-${pillar.key}`}
               aria-pressed={isSelected}
               onClick={() => setSelectedKey(pillar.key)}
-              className={`text-left p-3.5 rounded-lg border transition-colors cursor-pointer space-y-2.5 ${
+              className={`text-left p-3.5 rounded-lg border transition-all duration-200 cursor-pointer space-y-2.5 ${
                 isSelected
                   ? 'border-ink-primary bg-subtle/80'
                   : 'border-border-subtle bg-elevated hover:border-border-strong'
@@ -149,17 +148,17 @@ export function SkillPillarGrid({
           className="drawer-reveal p-4 sm:p-5 rounded-lg border border-border-default bg-subtle/45 flex flex-col lg:flex-row lg:items-center justify-between gap-4"
         >
           <div className="space-y-2 max-w-2xl">
-            <div className="inline-flex items-center gap-1.5 text-[11px] uppercase tracking-wider text-ink-muted">
+            <div className="inline-flex items-center gap-1.5 text-xs font-medium text-ink-muted">
               <Sparkles className="w-3.5 h-3.5 text-ink-primary" aria-hidden="true" />
-              <span>How to Improvise · {activePillar.label} Playbook</span>
+              <span>How to improvise · {activePillar.label}</span>
             </div>
             <p className="text-xs sm:text-sm text-ink-primary leading-relaxed">
-              <span className="font-semibold">Weakest Pattern: </span>
+              <span className="font-semibold">Weakest pattern: </span>
               {activePillar.weakestRule}
             </p>
             <p className="text-xs text-ink-secondary leading-relaxed">
               <span className="font-semibold text-ink-primary">
-                Concrete Micro-Habit:{' '}
+                Concrete micro-habit:{' '}
               </span>
               {activePillar.microHabit}
             </p>

@@ -36,9 +36,9 @@ export function MistakeRadarCard({
     >
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="space-y-0.5">
-          <div className="inline-flex items-center gap-1.5 text-[11px] uppercase tracking-wider text-ink-muted">
+          <div className="inline-flex items-center gap-1.5 text-xs font-medium text-ink-muted">
             <Radar className="w-3.5 h-3.5 text-ink-secondary" aria-hidden="true" />
-            <span>Recurring Mistake Radar</span>
+            <span>Recurring mistake radar</span>
           </div>
           <h2 className="font-display text-lg sm:text-xl font-medium text-ink-primary">
             What Is Holding You Back
@@ -88,12 +88,12 @@ export function MistakeRadarCard({
           {analytics.topPatterns.map((item, idx) => {
             const isExpanded = expandedTag === item.errorTag;
             const meta = ERROR_TAG_META[item.errorTag];
-            const trendClass =
+            const trendTextClass =
               item.trend === 'Improving'
-                ? 'text-status-success border-status-success-border bg-status-success-soft/60'
+                ? 'text-status-success'
                 : item.trend === 'New'
-                  ? 'text-status-warning border-status-warning-border bg-status-warning-soft/60'
-                  : 'text-ink-secondary border-border-default bg-subtle';
+                  ? 'text-status-warning'
+                  : 'text-ink-muted';
 
             return (
               <div
@@ -103,19 +103,23 @@ export function MistakeRadarCard({
               >
                 <div className="flex flex-wrap items-start justify-between gap-3">
                   <div className="min-w-0 flex-1 space-y-1">
-                    <div className="flex flex-wrap items-center gap-2">
+                    <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
                       <span className="font-mono-tabular text-[11px] text-ink-muted">
                         0{idx + 1}
                       </span>
                       <span className="text-sm font-semibold text-ink-primary">
                         {item.label}
                       </span>
+                      <span className="text-ink-muted" aria-hidden="true">
+                        ·
+                      </span>
                       <span className="font-mono-tabular text-xs font-medium text-ink-secondary">
                         {item.count}×
                       </span>
-                      <span
-                        className={`text-[10px] font-medium px-1.5 py-0.5 rounded border ${trendClass}`}
-                      >
+                      <span className="text-ink-muted" aria-hidden="true">
+                        ·
+                      </span>
+                      <span className={`text-xs font-medium ${trendTextClass}`}>
                         {item.trend}
                       </span>
                     </div>
@@ -136,7 +140,7 @@ export function MistakeRadarCard({
                       }
                       className="btn-secondary inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-medium whitespace-nowrap"
                     >
-                      <span>Inspect Examples ({item.examples.length})</span>
+                      <span>Examples ({item.examples.length})</span>
                       {isExpanded ? (
                         <ChevronUp className="w-3.5 h-3.5" aria-hidden="true" />
                       ) : (
@@ -171,11 +175,11 @@ export function MistakeRadarCard({
                 {isExpanded && (
                   <div
                     data-testid={`mistake-examples-drawer-${item.errorTag}`}
-                    className="drawer-reveal pl-5 border-l-2 border-border-default space-y-2.5 pt-1"
+                    className="drawer-reveal pt-2.5 mt-1 border-t border-border-subtle/70 space-y-2.5"
                   >
                     <div className="text-xs text-ink-secondary">
                       <span className="font-semibold text-ink-primary">
-                        Micro-Habit:{' '}
+                        Micro-habit:{' '}
                       </span>
                       {item.microHabit}
                     </div>
@@ -184,7 +188,7 @@ export function MistakeRadarCard({
                       {item.examples.map((ex, exIdx) => (
                         <div
                           key={`${ex.sessionId}-${exIdx}`}
-                          className="p-3 rounded-md border border-border-subtle bg-subtle/50 space-y-1 text-xs"
+                          className="p-3 rounded-md border border-border-subtle bg-subtle/45 space-y-1 text-xs"
                         >
                           <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] font-mono-tabular text-ink-muted">
                             <span className="truncate">{ex.topic}</span>
