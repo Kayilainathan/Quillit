@@ -271,7 +271,16 @@ service cloud.firestore {
           && isValidId(sessionId)
           && isVerifiedOwner(userId)
           && isValidWritingSession(incoming(), userId, sessionId)
-          && (existing().status == 'Draft' || existing().evaluationPending == true)
+          && (existing().status == 'Draft'
+            || existing().evaluationPending == true
+            || ('modelUsed' in existing()
+              && existing().modelUsed in [
+                'offline-rubric',
+                'offline-local',
+                'local-offline',
+                'offline-conversation',
+                'queued-pending-reset'
+              ]))
           && incoming().id == existing().id
           && incoming().ownerId == existing().ownerId
           && incoming().createdAt == existing().createdAt

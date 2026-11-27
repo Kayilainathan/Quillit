@@ -259,6 +259,10 @@ export function recordModelFailure(model: ModelTier, err: unknown): void {
     const isRateLimit =
       msg.includes('429') || msg.includes('RESOURCE_EXHAUSTED');
     modelCooldownUntil[model] = Date.now() + (isRateLimit ? 40_000 : 18_000);
+    return;
+  }
+  if (isTransientNetworkError(err)) {
+    modelCooldownUntil[model] = Date.now() + 12_000;
   }
 }
 
@@ -272,29 +276,45 @@ export function recordModelSuccess(model: ModelTier, downgraded: boolean): void 
 export function getCascadeHealthSnapshot() {
   const now = Date.now();
   const candidates = getCandidateModelOrder();
+  const hasKey = Boolean(process.env.GEMINI_API_KEY);
+  const tiers = MODEL_TIERS.map((m) => {
+    const cooldownSeconds = Math.max(
+      0,
+      Math.ceil((modelCooldownUntil[m] - now) / 1000)
+    );
+    const unsupportedSeconds = Math.max(
+      0,
+      Math.ceil((modelUnsupportedUntil[m] - now) / 1000)
+    );
+    return {
+      model: m,
+      tierName: MODEL_CAPABILITIES[m].shortLabel,
+      generation: MODEL_CAPABILITIES[m].generation,
+      available: cooldownSeconds === 0 && unsupportedSeconds === 0,
+      cooldownSeconds,
+      unsupportedSeconds,
+    };
+  });
+  const aiAvailable = hasKey && tiers.some((t) => t.available);
+  const coolingCandidates = tiers
+    .filter((t) => t.unsupportedSeconds === 0 && t.cooldownSeconds > 0)
+    .map((t) => t.cooldownSeconds);
+  const nextAvailableInSeconds = aiAvailable
+    ? 0
+    : coolingCandidates.length > 0
+      ? Math.min(...coolingCandidates)
+      : hasKey
+        ? 20
+        : 60;
+
   return {
     ok: true,
-    hasKey: Boolean(process.env.GEMINI_API_KEY),
+    hasKey,
+    aiAvailable,
+    nextAvailableInSeconds,
     activeModel: candidates[0],
     lastSuccessfulModel,
-    tiers: MODEL_TIERS.map((m) => {
-      const cooldownSeconds = Math.max(
-        0,
-        Math.ceil((modelCooldownUntil[m] - now) / 1000)
-      );
-      const unsupportedSeconds = Math.max(
-        0,
-        Math.ceil((modelUnsupportedUntil[m] - now) / 1000)
-      );
-      return {
-        model: m,
-        tierName: MODEL_CAPABILITIES[m].shortLabel,
-        generation: MODEL_CAPABILITIES[m].generation,
-        available: cooldownSeconds === 0 && unsupportedSeconds === 0,
-        cooldownSeconds,
-        unsupportedSeconds,
-      };
-    }),
+    tiers,
     totalCacheHits,
     totalAutoDowngrades,
   };
@@ -324,6 +344,7 @@ export async function runCascadeSteps<T>(params: {
   const primaryModel: ActiveEvalModel = cascade[0]?.model ?? 'gemini-4-hydrogen';
   const failedModelsThisRequest = new Set<ActiveEvalModel>();
   let lastErr: unknown;
+  let hadRetryableFailure = false;
 
   for (let i = 0; i < cascade.length; i += 1) {
     const step = cascade[i];
@@ -374,6 +395,13 @@ export async function runCascadeSteps<T>(params: {
       } catch (err) {
         if (timeoutHandle) clearTimeout(timeoutHandle);
         lastErr = err;
+        if (
+          isTimeoutError(err) ||
+          isQuotaOrOverloadError(err) ||
+          isTransientNetworkError(err)
+        ) {
+          hadRetryableFailure = true;
+        }
 
         if (
           isUnsupportedOrNotFoundError(err) ||
@@ -402,7 +430,19 @@ export async function runCascadeSteps<T>(params: {
     }
   }
 
-  throw lastErr || new Error('All Gemini model tiers are currently busy.');
+  const finalErr =
+    lastErr instanceof Error
+      ? lastErr
+      : new Error(
+          typeof lastErr === 'string' && lastErr
+            ? lastErr
+            : 'All Gemini model tiers are currently busy.'
+        );
+  if (hadRetryableFailure) {
+    (finalErr as Error & { hadRetryableFailure?: boolean }).hadRetryableFailure =
+      true;
+  }
+  throw finalErr;
 }
 
 export async function executeDynamicEvaluationCall(params: {

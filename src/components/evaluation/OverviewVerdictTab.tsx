@@ -10,6 +10,7 @@ import type { EvaluationReportData } from '../EvaluationReportView';
 import { computePercentage, computeTotalScore } from '../../utils/analytics';
 import { computeProseDiagnostics } from '../../utils/proseDiagnostics';
 import { deriveEieEvaluationMetrics } from '../../utils/eieMetrics';
+import { isOfflineEvaluatedSession } from '../../utils/offlineAiQueue';
 
 interface OverviewVerdictTabProps {
   report: EvaluationReportData;
@@ -79,8 +80,16 @@ export function OverviewVerdictTab({
       <div className="p-4 rounded-lg border border-border-subtle bg-subtle/45 space-y-3">
         <div className="flex flex-wrap items-end justify-between gap-3">
           <div>
-            <div className="text-xs font-medium text-ink-muted">
-              Evaluation verdict · {report.modeLabel}
+            <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs font-medium text-ink-muted">
+              <span>Evaluation verdict · {report.modeLabel}</span>
+              {isOfflineEvaluatedSession(report) && (
+                <span
+                  data-testid="offline-report-queued-note"
+                  className="text-[11px] font-normal text-status-warning"
+                >
+                  · Offline estimate (auto-upgrades when AI is ready)
+                </span>
+              )}
             </div>
             <div className="mt-1 flex items-baseline gap-2">
               <span className="text-3xl font-semibold font-mono-tabular text-ink-primary">

@@ -94,6 +94,7 @@ import {
   inferSuitableTitle,
   resolveRandomTopicDismiss,
 } from '../utils/fastEvaluate';
+import { isOfflineEvaluatedSession } from '../utils/offlineAiQueue';
 import { selectDynamicEvaluationRoute } from '../utils/evaluationRouter';
 import { computeDailyInkProgress } from '../utils/inkGoal';
 import { InkDropGoalWell } from './InkDropGoalWell';
@@ -2196,6 +2197,8 @@ export function WriteStudio({
     resolvedVerdict?: DrillVerdict
   ) {
     const isQueued = evalPayload.evaluationStatus === 'queued_for_reset';
+    const isOfflineEval = isOfflineEvaluatedSession(evalPayload);
+    const shouldQueueForAi = isQueued || isOfflineEval;
     const totalScore = computeTotalScore(evalPayload.scores);
     const percentage = computePercentage(totalScore);
     const draftDiagnostics = analyzeDraftLocally(draftText);
@@ -2283,9 +2286,9 @@ export function WriteStudio({
       revisionOfSessionId: revisionContext?.pass1SessionId,
       revisionDelta,
       status: 'Completed',
-      evaluationPending: isQueued,
+      evaluationPending: shouldQueueForAi,
       modelUsed: evalPayload.modelUsed || 'gemini-4-hydrogen',
-      queuedAt: isQueued ? new Date().toISOString() : undefined,
+      queuedAt: shouldQueueForAi ? new Date().toISOString() : undefined,
       createdAt: new Date().toISOString(),
     };
 
@@ -2490,13 +2493,30 @@ export function WriteStudio({
       });
       window.clearTimeout(slowTimerId);
       const data = await safeParseJsonResponse<
-        EvaluationPayload & { error?: string }
+        EvaluationPayload & { error?: string | { message?: string }; errorMessage?: string }
       >(res);
+      if (res.status === 400 && data) {
+        const msg =
+          (typeof data.errorMessage === 'string' && data.errorMessage) ||
+          (typeof data.error === 'string'
+            ? data.error
+            : data.error && typeof data.error === 'object' && typeof data.error.message === 'string'
+              ? data.error.message
+              : 'Please write at least 20 characters before requesting an evaluation.');
+        setErrorMessage(msg);
+        return;
+      }
       if (!res.ok || !data) {
         throw new Error('Static host or API unavailable');
       }
       if (data.error) {
-        throw new Error(data.error);
+        const errText =
+          typeof data.error === 'string'
+            ? data.error
+            : typeof data.error.message === 'string'
+              ? data.error.message
+              : 'Evaluation failed';
+        throw new Error(errText);
       }
 
       let finalTopic = latestTopicRef.current.trim() || fallbackTopic;
@@ -2600,6 +2620,9 @@ export function WriteStudio({
         drillMeta,
         localDrillVerdict
       );
+      setSlowEvalNotice(
+        'Evaluated offline & logged — queued to automatically re-evaluate with AI as soon as it is available.'
+      );
       setResetCountdown(0);
       if (activeDrill === 'compression-432' && sprintRoundIdx === 2) {
         setSprintCompleted(true);
@@ -2613,6 +2636,50 @@ export function WriteStudio({
       setEvaluating(false);
     }
   }
+
+  // Live-refresh the open report in WriteStudio if the background worker upgrades an offline session with AI
+  useEffect(() => {
+    const activeId = activeLoggedSessionIdRef.current;
+    if (!activeId || !evaluation) return;
+    if (!isOfflineEvaluatedSession(evaluation) && evaluation.evaluationStatus !== 'queued_for_reset') {
+      return;
+    }
+    const upgraded = sessions.find(
+      (s) => s.id === activeId && !s.evaluationPending && !isOfflineEvaluatedSession(s)
+    );
+    if (!upgraded) return;
+    setEvaluation({
+      evaluationStatus: 'completed',
+      modelUsed: upgraded.modelUsed,
+      routingMeta: upgraded.routingMeta,
+      scores: upgraded.scores,
+      metricNotes: upgraded.metricNotes,
+      cefrLevel: upgraded.cefrLevel,
+      internationalMetrics: upgraded.internationalMetrics,
+      toneVerdict: upgraded.toneVerdict,
+      flowVerdict: upgraded.flowVerdict,
+      feedbackImplemented: upgraded.feedbackImplemented,
+      feedbackCheck: upgraded.feedbackCheck,
+      whatImproved: upgraded.whatImproved,
+      whatImprovedPoints: upgraded.whatImprovedPoints,
+      strictImprovements: upgraded.strictImprovements,
+      pinpointedRewrites: upgraded.pinpointedRewrites,
+      rewrittenSample: upgraded.rewrittenSample,
+      grammarFixes: upgraded.grammarFixes,
+      vocabUpgrades: upgraded.vocabUpgrades,
+      spokenReadinessScore: upgraded.spokenReadinessScore,
+      signalNoiseRatio: upgraded.signalNoiseRatio,
+      audienceReaction: upgraded.audienceReaction,
+      calqueFixes: upgraded.calqueFixes,
+      drillVerdict: upgraded.drillVerdict,
+      edits: upgraded.edits,
+      toneCheck: upgraded.toneCheck,
+      nextDraftPriority: upgraded.nextDraftPriority,
+      targetCheck: upgraded.targetCheck,
+      isProvisionalInstant: false,
+    });
+    setSlowEvalNotice(null);
+  }, [sessions, evaluation]);
 
   const evalIntl = evaluation
     ? deriveInternationalMetrics({

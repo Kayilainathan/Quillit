@@ -44,6 +44,12 @@ import { HeroFluencyPulseStrip } from './dashboard/HeroFluencyPulseStrip';
 import { MistakeRadarCard } from './dashboard/MistakeRadarCard';
 import { SkillPillarGrid } from './dashboard/SkillPillarGrid';
 import { FeedbackLoopCard } from './dashboard/FeedbackLoopCard';
+import {
+  isOfflineEvaluatedSession,
+  isSessionLoggedInLedger,
+  needsAiEvaluation,
+} from '../utils/offlineAiQueue';
+import { isStaticPagesWithoutApi } from '../utils/apiBase';
 
 interface DashboardViewProps {
   sessions: WritingSession[];
@@ -78,18 +84,23 @@ export function DashboardView({
   const [ledgerView, setLedgerView] = useState<'summary' | 'sheet'>('summary');
   const [mistakeWindow, setMistakeWindow] = useState<ErrorPatternWindow>('30d');
   const [showDeepBenchmarks, setShowDeepBenchmarks] = useState(false);
-  const [selectedSession, setSelectedSession] = useState<WritingSession | null>(
-    null
+  const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
+  const selectedSession = useMemo(
+    () => (selectedSessionId ? sessions.find((s) => s.id === selectedSessionId) ?? null : null),
+    [sessions, selectedSessionId]
   );
+  const setSelectedSession = (session: WritingSession | null) => {
+    setSelectedSessionId(session ? session.id : null);
+  };
 
   // Smooth Escape-to-close & body scroll lock while Diff & Report popup is open
   useEffect(() => {
-    if (!selectedSession) return;
+    if (!selectedSessionId) return;
     const prevOverflow = document.body.style.overflow;
     document.body.style.overflow = 'hidden';
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
-        setSelectedSession(null);
+        setSelectedSessionId(null);
       }
     };
     window.addEventListener('keydown', onKeyDown);
@@ -97,12 +108,12 @@ export function DashboardView({
       document.body.style.overflow = prevOverflow;
       window.removeEventListener('keydown', onKeyDown);
     };
-  }, [selectedSession]);
+  }, [selectedSessionId]);
 
   const completed = useMemo(
     () =>
       [...sessions]
-        .filter((s) => s.status === 'Completed' && !s.evaluationPending)
+        .filter((s) => isSessionLoggedInLedger(s))
         .sort(
           (a, b) =>
             b.date.localeCompare(a.date) || b.createdAt.localeCompare(a.createdAt)
@@ -152,12 +163,13 @@ export function DashboardView({
   const awaitingAiSessions = useMemo(
     () =>
       sessions
-        .filter((s) => Boolean(s.evaluationPending))
+        .filter((s) => needsAiEvaluation(s))
         .sort((a, b) =>
           (b.queuedAt || b.createdAt).localeCompare(a.queuedAt || a.createdAt)
         ),
     [sessions]
   );
+  const staticHostNoApi = isStaticPagesWithoutApi();
 
   const timeCapsuleStatus = useMemo(
     () => getTimeCapsuleStatus(sessions, todayISO),
@@ -251,10 +263,10 @@ export function DashboardView({
         </div>
       </div>
 
-      {/* Awaiting AI Evaluation Banner */}
+      {/* Awaiting AI Evaluation / Offline-to-AI Upgrade Banner */}
       {awaitingAiSessions.length > 0 && (
         <section
-          aria-label="Drafts awaiting AI evaluation"
+          aria-label="Sessions awaiting AI evaluation"
           data-testid="dashboard-awaiting-ai-banner"
           className="card-surface drawer-reveal border-status-warning-border bg-status-warning-soft/55 p-4 space-y-2.5"
         >
@@ -265,18 +277,21 @@ export function DashboardView({
                 aria-hidden="true"
               />
               <span>
-                Awaiting AI Evaluation ({awaitingAiSessions.length}{' '}
-                {awaitingAiSessions.length === 1 ? 'draft' : 'drafts'})
+                Queued for AI Evaluation ({awaitingAiSessions.length}{' '}
+                {awaitingAiSessions.length === 1 ? 'session' : 'sessions'})
               </span>
             </div>
             <span className="text-[11px] text-ink-secondary">
-              Saved safely to Drafts — scores update automatically while you use other features.
+              {staticHostNoApi
+                ? 'Logged offline on GitHub Pages — add your backend server URL in Settings (or open the hosted app) to auto-upgrade with AI.'
+                : 'Logged safely — automatically upgrades with full AI critique as soon as AI is available.'}
             </span>
           </div>
 
           <div className="divide-y divide-border-subtle/70 border-t border-border-subtle/70">
-            {awaitingAiSessions.slice(0, 3).map((draft) => {
+            {awaitingAiSessions.slice(0, 5).map((draft) => {
               const isRetrying = retryingSessionId === draft.id;
+              const isOfflineScored = isOfflineEvaluatedSession(draft) && draft.totalScore > 0;
               return (
                 <div
                   key={draft.id}
@@ -287,12 +302,22 @@ export function DashboardView({
                       {draft.topicDescription || 'Untitled Draft'}
                     </span>
                     <span className="font-mono-tabular text-[11px] text-ink-muted">
-                      {MODE_LABELS[draft.mode]} · {draft.wordCount}w · {draft.date}
+                      {MODE_LABELS[draft.mode]} · {draft.wordCount}w · {formatShortChartDate(draft.date)}
+                      {isOfflineScored ? ` · ${draft.totalScore}/60 offline` : ' · draft queued'}
                     </span>
                   </div>
 
                   <div className="flex items-center gap-1.5 shrink-0">
-                    {onRetryPendingEvaluation && (
+                    {isOfflineScored && (
+                      <button
+                        type="button"
+                        onClick={() => setSelectedSession(draft)}
+                        className="btn-ghost px-2 py-1 text-[11px] font-medium whitespace-nowrap"
+                      >
+                        Inspect
+                      </button>
+                    )}
+                    {onRetryPendingEvaluation && !staticHostNoApi && (
                       <button
                         type="button"
                         data-testid={`retry-pending-eval-${draft.id}`}
@@ -304,16 +329,9 @@ export function DashboardView({
                           className={`w-3 h-3 ${isRetrying ? 'animate-spin' : ''}`}
                           aria-hidden="true"
                         />
-                        <span>{isRetrying ? 'Evaluating...' : 'Retry Now'}</span>
+                        <span>{isRetrying ? 'Evaluating...' : 'Evaluate with AI'}</span>
                       </button>
                     )}
-                    <button
-                      type="button"
-                      onClick={onStartWriting}
-                      className="btn-ghost px-2 py-1 text-[11px] font-medium whitespace-nowrap"
-                    >
-                      Open Studio
-                    </button>
                   </div>
                 </div>
               );
@@ -515,8 +533,20 @@ export function DashboardView({
                             <span aria-hidden="true">·</span>
                             <span className="font-mono-tabular">CEFR {session.cefrLevel}</span>
                             <span aria-hidden="true">·</span>
-                            <span className={topTag ? 'text-ink-secondary' : 'text-status-success'}>
-                              {topTag ? ERROR_TAG_META[topTag].label : 'Clean pass'}
+                            <span
+                              className={
+                                needsAiEvaluation(session)
+                                  ? 'text-status-warning'
+                                  : topTag
+                                    ? 'text-ink-secondary'
+                                    : 'text-status-success'
+                              }
+                            >
+                              {needsAiEvaluation(session)
+                                ? 'Offline · AI queued'
+                                : topTag
+                                  ? ERROR_TAG_META[topTag].label
+                                  : 'Clean pass'}
                             </span>
                           </div>
                         </div>

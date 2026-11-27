@@ -34,6 +34,15 @@ import { exportSessionsToCsv } from '../utils/analytics';
 import { isEncryptedEnvelope } from '../utils/crypto';
 import { sanitizeCustomCoachPrompt } from '../utils/proseDiagnostics';
 import { playTactileClick } from '../utils/tactileSound';
+import {
+  apiFetch,
+  clearRuntimeApiBaseUrl,
+  getApiBaseUrl,
+  isGitHubPagesHost,
+  safeParseJsonResponse,
+  setRuntimeApiBaseUrl,
+} from '../utils/apiBase';
+import { parseHealthAvailability } from '../utils/offlineAiQueue';
 
 const COACH_PRESET_OPTIONS: Array<{
   id: CoachPresetId;
@@ -193,6 +202,79 @@ export function VaultSettingsView({
     });
     setCoachSavedNotice(true);
     window.setTimeout(() => setCoachSavedNotice(false), 2400);
+  }
+
+  const [apiServerInput, setApiServerInput] = useState<string>(() => getApiBaseUrl());
+  const [apiServerTesting, setApiServerTesting] = useState(false);
+  const [apiServerStatus, setApiServerStatus] = useState<{
+    tone: 'ok' | 'warn' | 'err';
+    message: string;
+  } | null>(null);
+  const onStaticPages = isGitHubPagesHost();
+
+  async function handleSaveAndTestApiServer(e: FormEvent) {
+    e.preventDefault();
+    setApiServerTesting(true);
+    setApiServerStatus(null);
+    const trimmed = apiServerInput.trim();
+    if (!trimmed) {
+      clearRuntimeApiBaseUrl();
+      setApiServerInput('');
+      setApiServerStatus({
+        tone: onStaticPages ? 'warn' : 'ok',
+        message: onStaticPages
+          ? 'Cleared custom server URL. GitHub Pages will stay in offline mode until a backend URL is configured.'
+          : 'Using same-origin API server.',
+      });
+      setApiServerTesting(false);
+      return;
+    }
+
+    const saved = setRuntimeApiBaseUrl(trimmed);
+    if (!saved) {
+      setApiServerStatus({
+        tone: 'err',
+        message: 'Enter a valid http(s) server URL (for example, https://your-quillit-server.run.app).',
+      });
+      setApiServerTesting(false);
+      return;
+    }
+    setApiServerInput(saved);
+
+    try {
+      const res = await apiFetch('/api/health', { method: 'GET' });
+      const json = res.ok
+        ? await safeParseJsonResponse<Record<string, unknown>>(res)
+        : null;
+      const health = parseHealthAvailability(json);
+      if (health.reachable && health.aiAvailable) {
+        setApiServerStatus({
+          tone: 'ok',
+          message: `Connected (${health.activeModel || 'Gemini AI'} ready). Queued offline sessions will upgrade automatically.`,
+        });
+        window.dispatchEvent(new Event('online'));
+      } else if (health.reachable) {
+        setApiServerStatus({
+          tone: 'warn',
+          message:
+            'Server reached, but AI tiers are briefly cooling down or unconfigured. Queued sessions will retry automatically.',
+        });
+      } else {
+        setApiServerStatus({
+          tone: 'err',
+          message:
+            'Could not reach /api/health on that server URL. Verify the hosted backend URL and CORS access.',
+        });
+      }
+    } catch {
+      setApiServerStatus({
+        tone: 'err',
+        message:
+          'Connection blocked or unreachable. Verify the server URL is online over HTTPS.',
+      });
+    } finally {
+      setApiServerTesting(false);
+    }
   }
 
   async function handleDownloadEncryptedBackup() {
@@ -897,6 +979,58 @@ export function VaultSettingsView({
           >
             Decrypt & Replace Offline Space
           </button>
+        </form>
+      </section>
+
+      {/* AI Backend Server Connection (for GitHub Pages / remote server setups) */}
+      <section className="card-surface p-6 space-y-3" data-testid="settings-api-server-card">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="flex items-center gap-2 text-sm font-semibold text-ink-primary">
+            <Cloud className="w-4 h-4 text-ink-secondary" aria-hidden="true" />
+            <span>AI Backend Server</span>
+          </div>
+          <span className="text-[11px] font-mono-tabular text-ink-muted">
+            {apiServerInput ? 'Remote backend' : onStaticPages ? 'Offline static host' : 'Same-origin server'}
+          </span>
+        </div>
+        <p className="text-xs text-ink-secondary leading-relaxed">
+          GitHub Pages hosts only static frontend files. To run live Gemini evaluations and auto-upgrade offline logs from GitHub Pages, point to your hosted Quillit Express server URL (or set <code className="font-mono-tabular">VITE_API_BASE_URL</code> in GitHub Actions Variables/Secrets).
+        </p>
+        <form onSubmit={handleSaveAndTestApiServer} className="space-y-2.5">
+          <div className="flex flex-wrap items-center gap-2">
+            <input
+              type="url"
+              value={apiServerInput}
+              onChange={(e) => setApiServerInput(e.target.value)}
+              placeholder="https://your-quillit-server.run.app"
+              aria-label="Hosted Quillit AI server URL"
+              className="input-tactile flex-1 min-w-[220px] px-3.5 py-2 text-xs font-mono-tabular"
+            />
+            <button
+              type="submit"
+              disabled={apiServerTesting}
+              className="btn-secondary inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-medium whitespace-nowrap"
+            >
+              <RefreshCw
+                className={`w-3.5 h-3.5 ${apiServerTesting ? 'animate-spin' : ''}`}
+                aria-hidden="true"
+              />
+              <span>{apiServerTesting ? 'Testing…' : 'Save & Test'}</span>
+            </button>
+          </div>
+          {apiServerStatus && (
+            <div
+              className={`text-xs ${
+                apiServerStatus.tone === 'ok'
+                  ? 'text-status-success'
+                  : apiServerStatus.tone === 'warn'
+                    ? 'text-status-warning'
+                    : 'text-status-danger'
+              }`}
+            >
+              {apiServerStatus.message}
+            </div>
+          )}
         </form>
       </section>
 

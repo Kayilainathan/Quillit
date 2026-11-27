@@ -36,6 +36,9 @@ function buildAllowedOrigins(isProd: boolean): Set<string> {
   return origins;
 }
 
+const GITHUB_PAGES_ORIGIN_RE =
+  /^https:\/\/[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.github\.io$/i;
+
 function createApiCorsMiddleware(isProd: boolean) {
   const allowedOrigins = buildAllowedOrigins(isProd);
   return (req: Request, res: Response, next: NextFunction): void => {
@@ -49,8 +52,9 @@ function createApiCorsMiddleware(isProd: boolean) {
       const isSameHost =
         Boolean(reqHost) &&
         (originHeader === `http://${reqHost}` || originHeader === `https://${reqHost}`);
+      const isGitHubPagesOrigin = GITHUB_PAGES_ORIGIN_RE.test(originHeader);
 
-      if (isSameHost || allowedOrigins.has(originHeader)) {
+      if (isSameHost || isGitHubPagesOrigin || allowedOrigins.has(originHeader)) {
         res.setHeader('Access-Control-Allow-Origin', originHeader);
         res.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
         res.setHeader('Access-Control-Allow-Headers', 'Content-Type,Authorization');

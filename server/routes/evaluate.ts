@@ -332,7 +332,12 @@ ${trimmedContent}
         ...mapped,
       });
     } catch (err) {
-      if (isQuotaOrOverloadError(err) || isTimeoutError(err)) {
+      const hadRetryableFailure = Boolean(
+        err &&
+          typeof err === 'object' &&
+          (err as { hadRetryableFailure?: boolean }).hadRetryableFailure
+      );
+      if (isQuotaOrOverloadError(err) || isTimeoutError(err) || hadRetryableFailure) {
         const provisional = buildServerQueuedEvaluation(
           trimmedContent,
           String(mode),

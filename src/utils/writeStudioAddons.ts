@@ -4,7 +4,7 @@ import {
   type SkeletonPassage,
 } from './skeletonDrill';
 
-export const SLOW_EVAL_THRESHOLD_MS = 9_000;
+export const SLOW_EVAL_THRESHOLD_MS = 24_000;
 
 export type WordWindowState = 'empty' | 'below' | 'in-zone' | 'over';
 

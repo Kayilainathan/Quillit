@@ -68,6 +68,7 @@ import { selectDynamicEvaluationRoute } from '../utils/evaluationRouter';
 import { buildInstantLocalEvaluation } from '../utils/fastEvaluate';
 import { runOfflineProofread } from '../utils/offlineProofreader';
 import { apiFetch, safeParseJsonResponse } from '../utils/apiBase';
+import { isOfflineEvaluatedSession } from '../utils/offlineAiQueue';
 import {
   EvaluationLoadingCard,
   EvaluationReportView,
@@ -839,8 +840,11 @@ export function ConverseStudio({
       vocabUpgrades: evalPayload.vocabUpgrades,
       routingMeta: evalPayload.routingMeta,
       status: 'Completed',
-      evaluationPending: false,
+      evaluationPending: isOfflineEvaluatedSession(evalPayload),
       modelUsed: evalPayload.modelUsed || 'gemini-4-hydrogen',
+      queuedAt: isOfflineEvaluatedSession(evalPayload)
+        ? new Date().toISOString()
+        : undefined,
       createdAt: new Date().toISOString(),
     };
 

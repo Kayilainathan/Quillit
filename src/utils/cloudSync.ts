@@ -506,7 +506,19 @@ export async function syncSessionToCloud(
       });
     } else {
       const existing = snap.data();
-      if (existing.status === 'Draft' || existing.evaluationPending === true) {
+      const existingModel =
+        typeof existing.modelUsed === 'string' ? existing.modelUsed.trim().toLowerCase() : '';
+      const existingWasOffline =
+        existingModel === 'offline-rubric' ||
+        existingModel === 'offline-local' ||
+        existingModel === 'local-offline' ||
+        existingModel === 'offline-conversation' ||
+        existingModel === 'queued-pending-reset';
+      if (
+        existing.status === 'Draft' ||
+        existing.evaluationPending === true ||
+        existingWasOffline
+      ) {
         await updateDoc(ref, {
           content: sanitized.content,
           wordCount: sanitized.wordCount,

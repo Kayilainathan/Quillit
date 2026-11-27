@@ -13,7 +13,9 @@ test('firestore.rules enforces default-deny, verified ownership, size bounds, an
   assert.ok(rules.includes('incoming().createdAt == request.time'));
   assert.ok(rules.includes('incoming().updatedAt == request.time'));
   assert.ok(rules.includes('resource.data.ownerId == request.auth.uid'));
-  assert.ok(rules.includes("existing().status == 'Draft' || existing().evaluationPending == true"));
+  assert.ok(rules.includes("existing().status == 'Draft'"));
+  assert.ok(rules.includes("existing().evaluationPending == true"));
+  assert.ok(rules.includes("'offline-rubric'"));
   assert.ok(rules.includes('data.collegeDegree is string && data.collegeDegree.size() <= 120'));
   assert.ok(rules.includes('data.age is number && data.age >= 14 && data.age <= 80'));
   assert.ok(rules.includes('data.googleSpreadsheetId is string'));

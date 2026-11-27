@@ -149,6 +149,13 @@ import {
   saveOfflineRecoveryLockbox,
   type SecurityQuestionSetup,
 } from './utils/offlineRecovery';
+import {
+  computeNextRetryDelayMs,
+  needsAiEvaluation,
+  parseHealthAvailability,
+} from './utils/offlineAiQueue';
+import { isStaticPagesWithoutApi } from './utils/apiBase';
+import { buildMechanicsCheck } from './utils/sessionBrief';
 
 const LOCAL_STORAGE_KEY = 'cadence_encrypted_vault_v1';
 const LOCAL_DESK_STORAGE_KEY = 'quillit_local_desk_idb';
@@ -446,7 +453,7 @@ export default function App() {
   );
 
   const pendingEvalSessions = useMemo(
-    () => (vault ? vault.sessions.filter((s) => s.evaluationPending) : []),
+    () => (vault ? vault.sessions.filter((s) => needsAiEvaluation(s)) : []),
     [vault]
   );
 
@@ -1701,10 +1708,16 @@ export default function App() {
     handleLoadMonthTriWeekly,
   ]);
 
-  // Reusable evaluator for pending/slow-API draft sessions (used by both auto-retry and Dashboard "Retry Now")
+  const evaluatePendingInFlightRef = useRef<boolean>(false);
+
+  // Reusable evaluator for offline-evaluated & slow-API pending sessions (used by both auto-upgrade worker and Dashboard "Evaluate with AI")
   const evaluatePendingSession = useCallback(
-    async (targetSession: WritingSession) => {
-      if (!vault) return;
+    async (
+      targetSession: WritingSession
+    ): Promise<{ status: 'completed' | 'queued' | 'unavailable'; retryAfterSec?: number }> => {
+      if (!vault) return { status: 'unavailable' };
+      if (evaluatePendingInFlightRef.current) return { status: 'queued', retryAfterSec: 6 };
+      evaluatePendingInFlightRef.current = true;
       setRetryingPendingEvalId(targetSession.id);
       try {
         const drillContext =
@@ -1724,6 +1737,16 @@ export default function App() {
               }
             : undefined;
 
+        const priorSessions = vault.sessions.filter((s) => s.id !== targetSession.id);
+        const activeMechanicsCheck = buildMechanicsCheck(priorSessions);
+        const practicingVocabList = Array.from(
+          new Set([
+            ...(targetSession.targetCheck?.vocabUsed ?? []),
+            ...(targetSession.targetCheck?.vocabMissed ?? []),
+            ...coachContext.practicingWords.map((v) => v.betterAlternative),
+          ])
+        ).slice(0, 12);
+
         const res = await apiFetch('/api/evaluate', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -1736,16 +1759,18 @@ export default function App() {
             customCoachPrompt: vault.settings.customCoachPrompt,
             coachPresets: vault.settings.coachPresets,
             previousSessionSummary: coachContext.previousSessionSummary,
-            practicingVocab: coachContext.practicingWords.map(
-              (v) => v.betterAlternative
-            ),
+            activeMechanicsCheck,
+            practicingVocab: practicingVocabList,
+            audience: targetSession.audience,
             drillContext,
           }),
         });
-        if (!res.ok) return;
+        if (!res.ok) return { status: 'unavailable' };
         const data = await safeParseJsonResponse<{
           evaluationStatus?: string;
+          quotaResetSeconds?: number;
           modelUsed?: string;
+          routingMeta?: WritingSession['routingMeta'];
           scores?: WritingSession['scores'];
           metricNotes?: WritingSession['metricNotes'];
           cefrLevel?: string;
@@ -1754,12 +1779,15 @@ export default function App() {
           flowVerdict?: string;
           drillVerdict?: WritingSession['drillVerdict'];
           feedbackImplemented?: WritingSession['feedbackImplemented'];
+          feedbackCheck?: WritingSession['feedbackCheck'];
           whatImproved?: string;
+          whatImprovedPoints?: WritingSession['whatImprovedPoints'];
           strictImprovements?: string;
           pinpointedRewrites?: WritingSession['pinpointedRewrites'];
           rewrittenSample?: WritingSession['rewrittenSample'];
           grammarFixes?: WritingSession['grammarFixes'];
           vocabUpgrades?: WritingSession['vocabUpgrades'];
+          masteredWordsUsed?: string[];
           spokenReadinessScore?: number;
           signalNoiseRatio?: number;
           audienceReaction?: string;
@@ -1767,9 +1795,17 @@ export default function App() {
           edits?: WritingSession['edits'];
           toneCheck?: WritingSession['toneCheck'];
           nextDraftPriority?: string;
+          targetCheck?: WritingSession['targetCheck'];
         }>(res);
-        if (!data || data.evaluationStatus !== 'completed' || !data.scores) {
-          return;
+        if (!data) return { status: 'unavailable' };
+        if (data.evaluationStatus === 'queued_for_reset') {
+          return {
+            status: 'queued',
+            retryAfterSec: data.quotaResetSeconds || 25,
+          };
+        }
+        if (data.evaluationStatus !== 'completed' || !data.scores) {
+          return { status: 'unavailable' };
         }
         const resolvedScores = data.scores;
         if (typeof data.modelUsed === 'string') {
@@ -1783,9 +1819,19 @@ export default function App() {
           internationalMetrics: data.internationalMetrics,
         });
 
-        await updateVaultState((prev) => ({
-          ...prev,
-          sessions: prev.sessions.map((s) => {
+        const verifiedVocabWords = Array.from(
+          new Set([
+            ...(data.masteredWordsUsed ?? []),
+            ...(data.targetCheck?.vocabUsed ?? []),
+          ])
+        )
+          .map((w) => w.trim().toLowerCase())
+          .filter(Boolean);
+
+        const updatedVocabDocsToSync: VocabEntry[] = [];
+
+        await updateVaultState((prev) => {
+          const nextSessions = prev.sessions.map((s) => {
             if (s.id !== targetSession.id) return s;
             const finalized: WritingSession = {
               ...s,
@@ -1801,7 +1847,13 @@ export default function App() {
               drillVerdict: data.drillVerdict || s.drillVerdict,
               feedbackImplemented:
                 data.feedbackImplemented || s.feedbackImplemented,
+              feedbackCheck: data.feedbackCheck || s.feedbackCheck,
               whatImproved: data.whatImproved || s.whatImproved,
+              whatImprovedPoints:
+                Array.isArray(data.whatImprovedPoints) &&
+                data.whatImprovedPoints.length > 0
+                  ? data.whatImprovedPoints
+                  : s.whatImprovedPoints,
               strictImprovements:
                 data.strictImprovements || s.strictImprovements,
               pinpointedRewrites: data.pinpointedRewrites || s.pinpointedRewrites,
@@ -1812,6 +1864,7 @@ export default function App() {
               vocabUpgrades: Array.isArray(data.vocabUpgrades)
                 ? data.vocabUpgrades
                 : s.vocabUpgrades,
+              routingMeta: data.routingMeta || s.routingMeta,
               spokenReadinessScore:
                 data.spokenReadinessScore ?? s.spokenReadinessScore,
               signalNoiseRatio: data.signalNoiseRatio ?? s.signalNoiseRatio,
@@ -1820,8 +1873,10 @@ export default function App() {
               edits: Array.isArray(data.edits) ? data.edits : s.edits,
               toneCheck: data.toneCheck || s.toneCheck,
               nextDraftPriority: data.nextDraftPriority || s.nextDraftPriority,
+              targetCheck: data.targetCheck || s.targetCheck,
               evaluationPending: false,
-              modelUsed: data.modelUsed || 'gemini-3.1-flash-lite',
+              queuedAt: undefined,
+              modelUsed: data.modelUsed || 'gemini-4-hydrogen',
             };
             if (canUseFirestore && cloudUser) {
               void syncSessionToCloud(cloudUser.uid, finalized).catch(
@@ -1829,11 +1884,55 @@ export default function App() {
               );
             }
             return finalized;
-          }),
-        }));
+          });
+
+          // Credit verified vocabulary targets used in the upgraded session
+          let nextVocabulary = prev.vocabulary;
+          if (verifiedVocabWords.length > 0) {
+            nextVocabulary = prev.vocabulary.map((entry) => {
+              const phraseLower = entry.betterAlternative.trim().toLowerCase();
+              const matched = verifiedVocabWords.some(
+                (w) => phraseLower === w || phraseLower.includes(w) || w.includes(phraseLower)
+              );
+              if (!matched) return entry;
+              const nextCount = Math.min(500, (entry.usageCount ?? 0) + 1);
+              const nextStage =
+                nextCount >= 3
+                  ? 'mastered'
+                  : nextCount === 2
+                    ? 'building'
+                    : 'emerging';
+              const updatedEntry: VocabEntry = {
+                ...entry,
+                usageCount: nextCount,
+                masteryStage: nextStage,
+                mastered: entry.mastered || nextCount >= 3,
+              };
+              updatedVocabDocsToSync.push(updatedEntry);
+              return updatedEntry;
+            });
+          }
+
+          return {
+            ...prev,
+            sessions: nextSessions,
+            vocabulary: nextVocabulary,
+          };
+        });
+
+        if (canUseFirestore && cloudUser && updatedVocabDocsToSync.length > 0) {
+          for (const vocabEntry of updatedVocabDocsToSync) {
+            void syncVocabToCloud(cloudUser.uid, vocabEntry).catch(
+              handleCloudSoftFailure
+            );
+          }
+        }
+
+        return { status: 'completed' };
       } catch {
-        // Silent retry on next window or manual Dashboard retry
+        return { status: 'unavailable' };
       } finally {
+        evaluatePendingInFlightRef.current = false;
         setRetryingPendingEvalId((curr) =>
           curr === targetSession.id ? null : curr
         );
@@ -1899,17 +1998,106 @@ export default function App() {
     []
   );
 
-  // Background auto-evaluator for any writing session saved to draft while API was delayed or quota-limited
+  // Automatic AI Availability Monitor & Offline-to-AI Upgrade Queue:
+  // Probes `/api/health` (0 Gemini tokens) on startup, browser `online`, tab focus, and bounded backoff.
+  // As soon as live AI is reachable, upgrades offline-evaluated & queued sessions sequentially in-place.
+  const pendingRetryFailuresRef = useRef(0);
   useEffect(() => {
     if (!vault || !activePassphrase || pendingEvalSessions.length === 0) {
+      pendingRetryFailuresRef.current = 0;
       return;
     }
-    const targetSession = pendingEvalSessions[0];
-    const timer = window.setTimeout(() => {
-      void evaluatePendingSession(targetSession);
-    }, 18_000);
 
-    return () => window.clearTimeout(timer);
+    let cancelled = false;
+    let timerId: number | undefined;
+
+    const scheduleNext = (delayMs: number) => {
+      if (cancelled) return;
+      if (timerId !== undefined) window.clearTimeout(timerId);
+      timerId = window.setTimeout(() => {
+        void attemptUpgradeNext();
+      }, delayMs);
+    };
+
+    const attemptUpgradeNext = async () => {
+      if (cancelled) return;
+      if (isStaticPagesWithoutApi()) {
+        // Static GitHub Pages without a configured backend cannot reach `/api/*`; wait until user configures a server URL or opens the hosted app
+        return;
+      }
+      if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+        return;
+      }
+
+      // 1. Cheap zero-token health probe first
+      try {
+        const healthRes = await apiFetch('/api/health', { method: 'GET' });
+        const healthJson = healthRes.ok
+          ? await safeParseJsonResponse<Record<string, unknown>>(healthRes)
+          : null;
+        const availability = parseHealthAvailability(healthJson);
+        if (!availability.reachable || !availability.aiAvailable) {
+          pendingRetryFailuresRef.current += 1;
+          scheduleNext(
+            computeNextRetryDelayMs(
+              pendingRetryFailuresRef.current,
+              availability.nextAvailableInSeconds || undefined
+            )
+          );
+          return;
+        }
+      } catch {
+        pendingRetryFailuresRef.current += 1;
+        scheduleNext(computeNextRetryDelayMs(pendingRetryFailuresRef.current));
+        return;
+      }
+
+      if (cancelled) return;
+
+      // 2. AI is live — upgrade the oldest/first pending offline session in-place
+      const targetSession = pendingEvalSessions[0];
+      if (!targetSession) return;
+      const outcome = await evaluatePendingSession(targetSession);
+      if (cancelled) return;
+
+      if (outcome.status === 'completed') {
+        pendingRetryFailuresRef.current = 0;
+        // Brief courtesy pause before upgrading any additional queued sessions
+        if (pendingEvalSessions.length > 1) {
+          scheduleNext(2_000);
+        }
+      } else {
+        pendingRetryFailuresRef.current += 1;
+        scheduleNext(
+          computeNextRetryDelayMs(
+            pendingRetryFailuresRef.current,
+            outcome.retryAfterSec
+          )
+        );
+      }
+    };
+
+    // Start probing promptly (3.5s after vault is ready or a new offline session lands)
+    scheduleNext(pendingRetryFailuresRef.current === 0 ? 3_500 : 10_000);
+
+    const handleWakeUp = () => {
+      if (cancelled) return;
+      if (typeof document !== 'undefined' && document.visibilityState === 'hidden') {
+        return;
+      }
+      pendingRetryFailuresRef.current = 0;
+      scheduleNext(1_200);
+    };
+
+    window.addEventListener('online', handleWakeUp);
+    document.addEventListener('visibilitychange', handleWakeUp);
+
+    return () => {
+      cancelled = true;
+      if (timerId !== undefined) window.clearTimeout(timerId);
+      window.removeEventListener('online', handleWakeUp);
+      document.removeEventListener('visibilitychange', handleWakeUp);
+    };
   }, [vault, activePassphrase, pendingEvalSessions, evaluatePendingSession]);
 
   async function handleCreateOfflineSpace(

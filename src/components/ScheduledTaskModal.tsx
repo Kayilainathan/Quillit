@@ -25,6 +25,7 @@ import {
   type CoachPerformanceContext,
 } from '../utils/analytics';
 import { apiFetch, safeParseJsonResponse } from '../utils/apiBase';
+import { isOfflineEvaluatedSession } from '../utils/offlineAiQueue';
 
 interface EvaluationPayload {
   evaluationStatus?: 'completed' | 'queued_for_reset';
@@ -264,9 +265,12 @@ export function ScheduledTaskModal({
       grammarFixes: evaluation.grammarFixes,
       vocabUpgrades: evaluation.vocabUpgrades,
       status: 'Completed',
-      evaluationPending: isQueued,
+      evaluationPending: isQueued || isOfflineEvaluatedSession(evaluation),
       modelUsed: evaluation.modelUsed,
-      queuedAt: isQueued ? new Date().toISOString() : undefined,
+      queuedAt:
+        isQueued || isOfflineEvaluatedSession(evaluation)
+          ? new Date().toISOString()
+          : undefined,
       createdAt: new Date().toISOString(),
     };
 
