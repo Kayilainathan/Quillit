@@ -111,6 +111,7 @@ service cloud.firestore {
           'spokenReadinessScore', 'signalNoiseRatio', 'audienceReaction',
           'audience', 'calqueFixes', 'drillType', 'drillMeta', 'drillVerdict',
           'revisionOfSessionId', 'revisionDelta',
+          'edits', 'toneCheck', 'nextDraftPriority',
           'status', 'evaluationPending', 'modelUsed', 'createdAt', 'updatedAt'
         ])
         && data.id == sessionId && isValidId(data.id)
@@ -151,6 +152,9 @@ service cloud.firestore {
         && (!('drillVerdict' in data) || (data.drillVerdict is map && data.drillVerdict.keys().size() <= 10))
         && (!('revisionOfSessionId' in data) || (data.revisionOfSessionId is string && data.revisionOfSessionId.size() <= 128))
         && (!('revisionDelta' in data) || (data.revisionDelta is number && data.revisionDelta >= -60 && data.revisionDelta <= 60))
+        && (!('edits' in data) || (data.edits is list && data.edits.size() <= 12 && (data.edits.size() == 0 || data.edits[0] is map)))
+        && (!('toneCheck' in data) || (data.toneCheck is map && data.toneCheck.keys().size() <= 5))
+        && (!('nextDraftPriority' in data) || (data.nextDraftPriority is string && data.nextDraftPriority.size() <= 240))
         && data.status in ['Completed', 'Draft']
         && (!('evaluationPending' in data) || data.evaluationPending is bool)
         && (!('modelUsed' in data) || (data.modelUsed is string && data.modelUsed.size() <= 64))
@@ -272,14 +276,16 @@ service cloud.firestore {
           && incoming().createdAt == existing().createdAt
           && incoming().updatedAt == request.time
           && incoming().diff(existing()).affectedKeys().hasOnly([
+            'content', 'wordCount', 'topicDescription',
             'scores', 'totalScore', 'percentage', 'cefrLevel',
             'internationalMetrics', 'toneVerdict', 'flowVerdict',
             'feedbackImplemented', 'whatImproved', 'strictImprovements',
             'grammarFixes', 'vocabUpgrades', 'spokenReadinessScore',
             'signalNoiseRatio', 'audienceReaction', 'audience',
             'calqueFixes', 'drillType', 'drillMeta', 'drillVerdict',
-            'revisionOfSessionId', 'revisionDelta', 'evaluationPending',
-            'modelUsed', 'status', 'updatedAt'
+            'revisionOfSessionId', 'revisionDelta',
+            'edits', 'toneCheck', 'nextDraftPriority',
+            'evaluationPending', 'modelUsed', 'status', 'updatedAt'
           ]);
         allow delete: if isValidId(userId) && isValidId(sessionId) && isVerifiedOwner(userId);
       }

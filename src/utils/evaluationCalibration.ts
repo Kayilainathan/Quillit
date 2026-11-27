@@ -1,5 +1,7 @@
 import type {
   CoachHighlightPoint,
+  EditDimension,
+  ErrorTag,
   FeedbackImplementationDetail,
   FeedbackImplementedStatus,
   GrammarFix,
@@ -7,8 +9,49 @@ import type {
   RewrittenSample,
   RubricMetricNotes,
   RubricScores,
+  UnifiedEdit,
   VocabSuggestion,
 } from '../types';
+
+export const VALID_ERROR_TAGS: readonly ErrorTag[] = [
+  'subject-verb',
+  'tense-shift',
+  'article-preposition',
+  'run-on-sentence',
+  'word-choice',
+  'regional-calque',
+  'hedging-passive',
+  'tone-mismatch',
+  'repetition-filler',
+  'punctuation-spacing',
+] as const;
+
+const ERROR_TAG_SET = new Set<string>(VALID_ERROR_TAGS);
+
+export function normalizeErrorTag(
+  rawTag?: unknown,
+  fallbackCategory?: unknown,
+  fallbackRule?: unknown
+): ErrorTag {
+  const direct = String(rawTag ?? '')
+    .trim()
+    .toLowerCase();
+  if (ERROR_TAG_SET.has(direct)) {
+    return direct as ErrorTag;
+  }
+
+  const hay = `${String(fallbackCategory ?? '')} ${String(fallbackRule ?? '')}`.toLowerCase();
+  if (/subject.?verb|agreement|plural|singular/.test(hay)) return 'subject-verb';
+  if (/tense|past|present|future|verb form|modal/.test(hay)) return 'tense-shift';
+  if (/article|preposition|\ban\b|\bthe\b|acronym/.test(hay)) return 'article-preposition';
+  if (/run.?on|comma splice|breathless|split|long sentence|clause|cadence/.test(hay)) return 'run-on-sentence';
+  if (/calque|literal|regional|idiom|revert back|prepone|cope up|discuss about/.test(hay)) return 'regional-calque';
+  if (/passive|hedge|hedging|weak verb|apolog/.test(hay)) return 'hedging-passive';
+  if (/tone|register|audience|formal|informal|stiff/.test(hay)) return 'tone-mismatch';
+  if (/filler|repetit|redundant|wordy|basically|actually|very|concise/.test(hay)) return 'repetition-filler';
+  if (/punctuat|spacing|comma|hyphen|capital|spell|unit|typo|si /.test(hay)) return 'punctuation-spacing';
+  return 'word-choice';
+}
 
 export interface DraftIntegrityReport {
   wordCount: number;
@@ -238,6 +281,7 @@ export function filterGroundedGrammarFixes(
       corrected: corr,
       rule: sanitizeCoachProse(String(fix.rule ?? 'Clarify grammar and flow.')),
       category: sanitizeCoachProse(String(fix.category ?? 'Mechanics')),
+      errorTag: normalizeErrorTag(fix.errorTag, fix.category, fix.rule),
     });
     if (out.length >= 6) break;
   }
@@ -338,6 +382,75 @@ export function filterGroundedPinpointedRewrites(
       category: item.category
         ? sanitizeCoachProse(String(item.category))
         : 'Grammar & Cadence',
+      dimension: item.dimension,
+      errorTag: normalizeErrorTag(item.errorTag, item.category, rule),
+    });
+    if (out.length >= 6) break;
+  }
+
+  return out;
+}
+
+const VALID_DIMENSIONS = new Set<EditDimension>([
+  'grammar',
+  'tone',
+  'flow',
+  'clarity',
+  'calque',
+]);
+
+export function filterGroundedUnifiedEdits(
+  content: string,
+  items: Array<Partial<UnifiedEdit> & { rewrite?: string; corrected?: string }>
+): UnifiedEdit[] {
+  const normalizedDraft = normalizeForProbe(content);
+  const seen = new Set<string>();
+  const out: UnifiedEdit[] = [];
+
+  for (const item of items) {
+    const original = String(item?.original ?? '')
+      .replace(/^["“]+|["”]+$/g, '')
+      .trim();
+    const improved = sanitizeCoachProse(
+      String(item?.improved ?? item?.rewrite ?? item?.corrected ?? '').replace(
+        /^["“]+|["”]+$/g,
+        ''
+      )
+    );
+    const rule = sanitizeCoachProse(String(item?.rule ?? ''));
+    if (!original || !improved) continue;
+    if (normalizeForProbe(original) === normalizeForProbe(improved)) continue;
+
+    const normOriginal = normalizeForProbe(original);
+    const probe = normOriginal.slice(0, Math.min(normOriginal.length, 28));
+    if (!normalizedDraft.includes(normOriginal) && !normalizedDraft.includes(probe)) {
+      continue;
+    }
+
+    const key = `${normOriginal.slice(0, 48)}->${normalizeForProbe(improved).slice(0, 48)}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+
+    const rawDim = String(item?.dimension ?? '').trim().toLowerCase() as EditDimension;
+    const errorTag = normalizeErrorTag(item?.errorTag, rawDim, rule);
+    const dimension: EditDimension = VALID_DIMENSIONS.has(rawDim)
+      ? rawDim
+      : errorTag === 'regional-calque'
+        ? 'calque'
+        : errorTag === 'tone-mismatch'
+          ? 'tone'
+          : errorTag === 'run-on-sentence' || errorTag === 'repetition-filler'
+            ? 'flow'
+            : errorTag === 'hedging-passive' || errorTag === 'word-choice'
+              ? 'clarity'
+              : 'grammar';
+
+    out.push({
+      original,
+      improved,
+      dimension,
+      errorTag,
+      rule: rule || 'Tighten phrasing for crisp, natural spoken English.',
     });
     if (out.length >= 6) break;
   }

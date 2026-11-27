@@ -67,7 +67,7 @@ import {
 import { selectDynamicEvaluationRoute } from '../utils/evaluationRouter';
 import { buildInstantLocalEvaluation } from '../utils/fastEvaluate';
 import { runOfflineProofread } from '../utils/offlineProofreader';
-import { getApiUrl, safeParseJsonResponse } from '../utils/apiBase';
+import { apiFetch, safeParseJsonResponse } from '../utils/apiBase';
 import {
   EvaluationLoadingCard,
   EvaluationReportView,
@@ -413,7 +413,7 @@ export function ConverseStudio({
     const timeoutId = window.setTimeout(() => controller.abort(), 7500);
 
     try {
-      const res = await fetch(getApiUrl('/api/converse-opening'), {
+      const res = await apiFetch('/api/converse-opening', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         signal: controller.signal,
@@ -655,7 +655,7 @@ export function ConverseStudio({
     setPartnerTyping(true);
 
     try {
-      const res = await fetch(getApiUrl('/api/converse'), {
+      const res = await apiFetch('/api/converse', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -1005,7 +1005,7 @@ export function ConverseStudio({
     setEvaluating(true);
 
     try {
-      const res = await fetch(getApiUrl('/api/evaluate-conversation'), {
+      const res = await apiFetch('/api/evaluate-conversation', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

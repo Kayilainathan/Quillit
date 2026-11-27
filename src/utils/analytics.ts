@@ -2846,4 +2846,25 @@ export function getVisibleWritePageTasks(
   };
 }
 
+export {
+  computeErrorPatternAnalytics,
+  computeFeedbackAppliedRate,
+  computeHeroFluencyPulse,
+  computeSkillPillarPlaybooks,
+  extractSessionIssues,
+  getSessionTopIssueTag,
+  ERROR_TAG_META,
+  type ErrorPatternAnalyticsResult,
+  type ErrorPatternExample,
+  type ErrorPatternItem,
+  type ErrorPatternWindow,
+  type ErrorTrend,
+  type FeedbackAppliedSummary,
+  type HeroFluencyPulse,
+  type PracticeWeaknessPayload,
+  type SkillPillarKey,
+  type SkillPillarPlaybook,
+} from './errorPatternAnalytics';
+
+
 

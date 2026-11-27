@@ -27,6 +27,7 @@ import {
   recordModelSuccess,
 } from '../lib/geminiCascade';
 import {
+  ConverseOpeningRequestSchema,
   ConverseTurnRequestSchema,
   buildErrorEnvelope,
   createRequestId,
@@ -39,22 +40,14 @@ export function createConverseRouter(): Router {
   router.post('/api/converse-opening', async (req, res) => {
     const requestId = createRequestId();
     const startedAt = Date.now();
-    const {
-      scenario,
-      pace = 'natural',
-      studentProfile,
-      avoidOpenings = [],
-    } = req.body ?? {};
-
-    if (
-      !scenario ||
-      typeof scenario !== 'object' ||
-      typeof scenario.personaName !== 'string'
-    ) {
+    const parsedReq = ConverseOpeningRequestSchema.safeParse(req.body ?? {});
+    if (!parsedReq.success) {
+      const firstIssue =
+        parsedReq.error.issues[0]?.message || 'Valid conversation scenario is required.';
       res.status(400).json(
         buildErrorEnvelope({
           code: 'INVALID_SCENARIO',
-          message: 'Valid conversation scenario is required.',
+          message: firstIssue,
           requestId,
           startedAtMs: startedAt,
         })
@@ -62,12 +55,13 @@ export function createConverseRouter(): Router {
       return;
     }
 
-    const safePace: ConversationPace =
-      pace === 'relaxed' || pace === 'challenging' ? pace : 'natural';
-    const typedScenario = scenario as ConversationScenario;
-    const avoidList = Array.isArray(avoidOpenings)
-      ? avoidOpenings.map((s) => String(s || '').trim()).filter(Boolean).slice(0, 12)
-      : [];
+    const { scenario, pace, studentProfile, avoidOpenings } = parsedReq.data;
+    const safePace: ConversationPace = pace;
+    const typedScenario = scenario as unknown as ConversationScenario;
+    const avoidList = avoidOpenings
+      .map((s) => s.trim())
+      .filter(Boolean)
+      .slice(0, 12);
 
     const profileHint = studentProfile?.collegeDegree
       ? `Learner is a ${studentProfile.semester || 'college'} ${studentProfile.collegeDegree} student.`
@@ -136,7 +130,7 @@ ${avoidList.length > 0 ? avoidList.map((o, i) => `${i + 1}. "${o}"`).join('\n') 
     } catch {
       const localFresh = pickFreshOpeningLine({
         scenario: typedScenario,
-        studentProfile,
+        studentProfile: studentProfile as unknown as Parameters<typeof pickFreshOpeningLine>[0]['studentProfile'],
         avoidOpenings: avoidList,
       });
       res.json({

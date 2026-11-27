@@ -43,10 +43,16 @@ import {
   modelUnsupportedUntil,
 } from '../lib/geminiCascade';
 import {
+  EvaluateConversationRequestSchema,
   EvaluateRequestSchema,
   buildErrorEnvelope,
   createRequestId,
 } from '../lib/validation';
+import {
+  buildSlimEvaluateSchema,
+  buildSlimEvaluateSystemInstruction,
+  mapSlimEvaluateResponse,
+} from '../lib/evaluateMapper';
 
 function buildDrillInstructionBlock(drillContext?: {
   drillType?: string;
@@ -129,38 +135,6 @@ The writer re-answered this exact past topic blind today (Draft below).
   }
 
   return '';
-}
-
-function mergeCalqueFixes(
-  localFixes: CalqueFix[],
-  aiRaw: unknown
-): CalqueFix[] {
-  const merged: CalqueFix[] = [...localFixes];
-  const seen = new Set(localFixes.map((f) => f.phrase.toLowerCase()));
-
-  if (Array.isArray(aiRaw)) {
-    for (const item of aiRaw) {
-      if (!item || typeof item !== 'object') continue;
-      const obj = item as Record<string, unknown>;
-      const phrase = String(obj.phrase ?? '').trim();
-      const naturalAlternative = sanitizeCoachProse(
-        String(obj.naturalAlternative ?? '')
-      );
-      const reason = sanitizeCoachProse(String(obj.reason ?? ''));
-      if (!phrase || !naturalAlternative) continue;
-      const key = phrase.toLowerCase();
-      if (seen.has(key)) continue;
-      seen.add(key);
-      merged.push({
-        phrase,
-        naturalAlternative,
-        reason: reason || 'More natural everyday English phrasing.',
-      });
-      if (merged.length >= 6) break;
-    }
-  }
-
-  return merged;
 }
 
 export function createEvaluateRouter(): Router {
@@ -248,7 +222,14 @@ export function createEvaluateRouter(): Router {
       unsupportedUntil: modelUnsupportedUntil,
     });
 
-    const cacheKey = makeCacheKey('evaluate-coach-v7', {
+    const hasDrill = Boolean(
+      drillContext &&
+        ((drillContext.drillType && drillContext.drillType !== 'standard') ||
+          drillContext.drillPayload?.constraintLabel)
+    );
+    const hasPreviousSummary = previousSessionSummary.trim().length > 0;
+
+    const cacheKey = makeCacheKey('evaluate-coach-v8-slim', {
       content: trimmedContent,
       mode,
       tone,
@@ -263,40 +244,22 @@ export function createEvaluateRouter(): Router {
       routePrimary: `${routePlan.primary.model}:${routePlan.primary.thinkingLabel}`,
     });
 
-    const systemInstruction = `You are a strict, perceptive senior writing coach and spoken-English fluency mentor evaluating a ${studentDescriptor}.
-Deliver an authoritative, deeply insightful editorial critique in the exact caliber of a top human writing mentor—never generic, never robotic, and never inflated.
+    const systemInstruction = buildSlimEvaluateSystemInstruction({
+      studentDescriptor,
+      mode: String(mode),
+      tone: String(tone),
+      targetAudience,
+      shouldInferTitle,
+      hasPreviousSummary,
+      drillInstructionBlock,
+      fencedPreferences,
+    });
 
-EVALUATION PRIORITY & WEIGHTAGE ORDER:
-1. SCORECARD & RUBRIC ACCURACY (Highest Weightage): Natural Voice & Flow, Clarity & Simplicity, Grammar & Mechanics, Tone & Engagement, Sentence Variety & Cadence, and Conciseness & Directness. Plain, crisp, natural spoken English scores HIGH.
-2. PINPOINTED GRAMMAR FLAWS, ERROR CORRECTIONS & SENTENCE REWRITES (Primary Coaching Value): Catch real subject-verb agreement errors, wrong word usage (e.g., "improvise" instead of "improve/stabilize"), compound-word/spacing typos, missing articles, tense breaks, 40-50 word breathless run-ons, and phrase repetition. Quote the writer's exact flawed sentences and provide natural spoken-ready rewrites + crystal-clear grammar/cadence rules.
-3. SPOKEN-READINESS, CALQUES & READER GUT-REACTION:
-   - spokenReadinessScore (0-100 integer): How natural, confident, and idiomatic this sounds spoken out loud. Deduct for stiff textbook transitions, robotic phrasing, or literal/regional calques (e.g., "revert back", "discuss about", "do a mistake", "prepone", "cope up with").
-   - calqueFixes: Flag any stiff textbook phrases or non-native calques verbatim from the draft with crisp idiomatic alternatives (return [] if none exist).
-   - audienceReaction: Exactly ONE sharp, honest 1-sentence gut-reaction from the perspective of a real **${targetAudience}** reading or hearing this draft right now (concrete, specific to this text, zero generic praise).
-4. ALTERNATIVE VOCABULARY & PHRASING UPGRADES (LOWEST WEIGHTAGE): Vocabulary polish is a bonus layer ONLY. Never penalize clear plain English for not using fancy words. Suggest 2-4 crisp, natural real-world upgrades for vague/wordy phrases that actually appear in the draft. STRICTLY BANNED thesaurus-slop words: utilize, delve, tapestry, myriad, plethora, endeavor, commence, facilitate, synergy, leverage, paramount.
-
-SCORING RUBRIC (1-10 integers, honest strict grading with ZERO score inflation):
-- 1-2: Gibberish, random keystrokes, spam, or unintelligible fragments.
-- 3-4: Severely off-topic, incomplete stub, or broken grammar that obscures meaning.
-- 5: Understandable core idea, but flat, repetitive, or heavily error-prone.
-- 6: Clear underlying logic and good intent, yet held back by noticeable grammar/agreement slips, breathless 40+ word sentences, or repeated words.
-- 7: Solid, well-structured, natural spoken communication with only minor polish needed.
-- 8: Crisp, confident, rhythmic prose tailored cleanly to ${mode} (${tone}) that sounds effortless out loud.
-- 9-10: Rare, memorable, publication- or executive-interview-ready command of voice and precision.
-
-STRICT OUTPUT REQUIREMENTS:
-1. metricNotes: Sharp 1-sentence note for EACH of the 6 metrics referencing specific evidence from THIS draft.
-2. feedbackCheck: status ('Baseline' | 'Yes' | 'Partial' | 'No'), implemented, missed.
-3. whatImprovedPoints: 2-3 crisp highlight bullets (title + detail quoting draft) plus summary in whatImproved.
-4. pinpointedRewrites: 2-5 verbatim sentence-level critique blocks (original copied verbatim, rewrite, rule, category).
-5. grammarFixes: Up to 6 surgical verbatim substring fixes (original MUST exist verbatim in draft). If clean, return [].
-6. rewrittenSample: Mirror the #1 highest-impact item from pinpointedRewrites into { original, improved, why }.
-7. strictImprovements: 1-2 tight imperative coaching priorities.
-8. vocabUpgrades: 2-4 grounded pairs from the draft (lowest weightage).
-9. Title: ${shouldInferTitle ? 'The writer left the title blank: craft a sharp 3-7 word editorial title in suggestedTitle.' : 'Echo or lightly sharpen the existing topic in suggestedTitle.'}
-10. Benchmarks: Keep cefrLevel, ieltsBand (4.0-9.0 in 0.5 steps), toeflEquivalent (8-30), lexicalResource, coherenceCohesion, taskAchievement, and registerControl mathematically aligned with the 6 scores.
-${drillInstructionBlock}
-${fencedPreferences ? `\n${fencedPreferences}` : ''}`;
+    const responseSchema = buildSlimEvaluateSchema({
+      includeSuggestedTitle: shouldInferTitle,
+      includeDrillVerdict: hasDrill,
+      includeFeedbackNote: hasPreviousSummary,
+    });
 
     const convContextBlock =
       conversationContext &&
@@ -311,9 +274,9 @@ ${String(conversationContext.dialogueTranscript).slice(0, 3200)}
 `
         : '';
 
-    const prompt = `Mode: ${mode} | Tone: ${tone} | Target Audience: ${targetAudience} | Word Count: ${wordCount} | Longest Sentence: ${integrity.longestSentenceWords}w | Local Signal-to-Noise: ${localDiagnostics.signalNoiseRatio}%
-Topic: ${trimmedTopic || '(blank - infer sharp editorial title)'}
-${topicPrimer ? `Topic Brief: ${topicPrimer}\n` : ''}${previousSessionSummary ? `Previous Coaching Note: ${previousSessionSummary}\n` : ''}${vocabList.length > 0 ? `To Practice Vocabulary Targets: ${vocabList.join(', ')}\n` : ''}${convContextBlock}Draft:
+    const prompt = `Mode: ${mode} | Tone: ${tone} | Audience: ${targetAudience} | Words: ${wordCount} | MaxSentence: ${integrity.longestSentenceWords}w | SignalNoise: ${localDiagnostics.signalNoiseRatio}%
+Topic: ${trimmedTopic || '(blank - infer 3-7 word editorial title)'}
+${topicPrimer ? `Brief: ${topicPrimer}\n` : ''}${previousSessionSummary ? `PrevPriority: ${previousSessionSummary}\n` : ''}${vocabList.length > 0 ? `PracticeVocab: ${vocabList.join(', ')}\n` : ''}${convContextBlock}Draft:
 """
 ${trimmedContent}
 """`;
@@ -325,325 +288,18 @@ ${trimmedContent}
           contents: prompt,
           systemInstruction,
           cascade: routePlan.cascade,
-          responseSchema: {
-            type: Type.OBJECT,
-            properties: {
-              suggestedTitle: { type: Type.STRING },
-              spokenReadinessScore: { type: Type.INTEGER },
-              audienceReaction: { type: Type.STRING },
-              calqueFixes: {
-                type: Type.ARRAY,
-                items: {
-                  type: Type.OBJECT,
-                  properties: {
-                    phrase: { type: Type.STRING },
-                    naturalAlternative: { type: Type.STRING },
-                    reason: { type: Type.STRING },
-                  },
-                  required: ['phrase', 'naturalAlternative', 'reason'],
-                },
-              },
-              drillVerdict: {
-                type: Type.OBJECT,
-                properties: {
-                  headline: { type: Type.STRING },
-                  summary: { type: Type.STRING },
-                  registerShiftScore: { type: Type.INTEGER },
-                },
-                required: ['headline', 'summary'],
-              },
-              scores: {
-                type: Type.OBJECT,
-                properties: {
-                  naturalVoiceFlow: { type: Type.INTEGER },
-                  claritySimplicity: { type: Type.INTEGER },
-                  grammarMechanics: { type: Type.INTEGER },
-                  toneEngagement: { type: Type.INTEGER },
-                  sentenceVarietyCadence: { type: Type.INTEGER },
-                  concisenessDirectness: { type: Type.INTEGER },
-                },
-                required: [
-                  'naturalVoiceFlow',
-                  'claritySimplicity',
-                  'grammarMechanics',
-                  'toneEngagement',
-                  'sentenceVarietyCadence',
-                  'concisenessDirectness',
-                ],
-              },
-              metricNotes: {
-                type: Type.OBJECT,
-                properties: {
-                  naturalVoiceFlow: { type: Type.STRING },
-                  claritySimplicity: { type: Type.STRING },
-                  grammarMechanics: { type: Type.STRING },
-                  toneEngagement: { type: Type.STRING },
-                  sentenceVarietyCadence: { type: Type.STRING },
-                  concisenessDirectness: { type: Type.STRING },
-                },
-                required: [
-                  'naturalVoiceFlow',
-                  'claritySimplicity',
-                  'grammarMechanics',
-                  'toneEngagement',
-                  'sentenceVarietyCadence',
-                  'concisenessDirectness',
-                ],
-              },
-              cefrLevel: { type: Type.STRING },
-              ieltsBand: { type: Type.NUMBER },
-              toeflEquivalent: { type: Type.INTEGER },
-              lexicalResource: { type: Type.INTEGER },
-              coherenceCohesion: { type: Type.INTEGER },
-              taskAchievement: { type: Type.INTEGER },
-              registerControl: { type: Type.INTEGER },
-              toneVerdict: { type: Type.STRING },
-              flowVerdict: { type: Type.STRING },
-              feedbackImplemented: { type: Type.STRING },
-              feedbackCheck: {
-                type: Type.OBJECT,
-                properties: {
-                  implemented: { type: Type.STRING },
-                  missed: { type: Type.STRING },
-                },
-                required: ['implemented', 'missed'],
-              },
-              whatImproved: { type: Type.STRING },
-              whatImprovedPoints: {
-                type: Type.ARRAY,
-                items: {
-                  type: Type.OBJECT,
-                  properties: {
-                    title: { type: Type.STRING },
-                    detail: { type: Type.STRING },
-                  },
-                  required: ['title', 'detail'],
-                },
-              },
-              strictImprovements: { type: Type.STRING },
-              pinpointedRewrites: {
-                type: Type.ARRAY,
-                items: {
-                  type: Type.OBJECT,
-                  properties: {
-                    original: { type: Type.STRING },
-                    rewrite: { type: Type.STRING },
-                    rule: { type: Type.STRING },
-                    category: { type: Type.STRING },
-                  },
-                  required: ['original', 'rewrite', 'rule', 'category'],
-                },
-              },
-              rewrittenSample: {
-                type: Type.OBJECT,
-                properties: {
-                  original: { type: Type.STRING },
-                  improved: { type: Type.STRING },
-                  why: { type: Type.STRING },
-                },
-                required: ['original', 'improved', 'why'],
-              },
-              masteredWordsUsed: {
-                type: Type.ARRAY,
-                items: { type: Type.STRING },
-              },
-              grammarFixes: {
-                type: Type.ARRAY,
-                items: {
-                  type: Type.OBJECT,
-                  properties: {
-                    original: { type: Type.STRING },
-                    corrected: { type: Type.STRING },
-                    rule: { type: Type.STRING },
-                    category: { type: Type.STRING },
-                  },
-                  required: ['original', 'corrected', 'rule', 'category'],
-                },
-              },
-              vocabUpgrades: {
-                type: Type.ARRAY,
-                items: {
-                  type: Type.OBJECT,
-                  properties: {
-                    used: { type: Type.STRING },
-                    betterAlternative: { type: Type.STRING },
-                    explanation: { type: Type.STRING },
-                    contextSnippet: { type: Type.STRING },
-                    contextTag: { type: Type.STRING },
-                  },
-                  required: [
-                    'used',
-                    'betterAlternative',
-                    'explanation',
-                    'contextSnippet',
-                    'contextTag',
-                  ],
-                },
-              },
-            },
-            required: [
-              'suggestedTitle',
-              'spokenReadinessScore',
-              'audienceReaction',
-              'scores',
-              'metricNotes',
-              'cefrLevel',
-              'ieltsBand',
-              'toeflEquivalent',
-              'lexicalResource',
-              'coherenceCohesion',
-              'taskAchievement',
-              'registerControl',
-              'toneVerdict',
-              'flowVerdict',
-              'feedbackImplemented',
-              'feedbackCheck',
-              'whatImproved',
-              'whatImprovedPoints',
-              'strictImprovements',
-              'pinpointedRewrites',
-              'rewrittenSample',
-              'grammarFixes',
-              'vocabUpgrades',
-            ],
-          },
+          responseSchema,
         });
 
-      const rawScores = (parsed.scores ?? {}) as Record<string, unknown>;
-      const uncalibratedScores = {
-        naturalVoiceFlow: clampScore(rawScores.naturalVoiceFlow),
-        claritySimplicity: clampScore(rawScores.claritySimplicity),
-        grammarMechanics: clampScore(rawScores.grammarMechanics),
-        toneEngagement: clampScore(rawScores.toneEngagement),
-        sentenceVarietyCadence: clampScore(rawScores.sentenceVarietyCadence),
-        concisenessDirectness: clampScore(rawScores.concisenessDirectness),
-      };
-
-      const groundedFixes = filterGroundedGrammarFixes(
+      const mapped = mapSlimEvaluateResponse({
+        parsed,
         trimmedContent,
-        Array.isArray(parsed.grammarFixes)
-          ? (parsed.grammarFixes as Parameters<typeof filterGroundedGrammarFixes>[1])
-          : []
-      );
-
-      const groundedPinpoints = filterGroundedPinpointedRewrites(
-        trimmedContent,
-        Array.isArray(parsed.pinpointedRewrites)
-          ? (parsed.pinpointedRewrites as Parameters<
-              typeof filterGroundedPinpointedRewrites
-            >[1])
-          : []
-      );
-
-      const groundedVocab = filterGroundedVocabUpgrades(
-        trimmedContent,
-        Array.isArray(parsed.vocabUpgrades)
-          ? (parsed.vocabUpgrades as Parameters<typeof filterGroundedVocabUpgrades>[1])
-          : []
-      );
-
-      const groundedRewrite =
-        sanitizeRewrittenSample(
-          trimmedContent,
-          parsed.rewrittenSample as
-            | { original: string; improved: string; why: string }
-            | undefined
-        ) ??
-        (groundedPinpoints[0]
-          ? {
-              original: groundedPinpoints[0].original,
-              improved: groundedPinpoints[0].rewrite,
-              why: groundedPinpoints[0].rule,
-            }
-          : undefined);
-
-      const calibrated = calibrateEvaluationScores({
-        content: trimmedContent,
-        scores: uncalibratedScores,
-        grammarFixesCount: Math.max(groundedFixes.length, groundedPinpoints.length),
-        rawIeltsBand: Number(parsed.ieltsBand),
-        rawToefl: Number(parsed.toeflEquivalent),
+        trimmedTopic,
+        targetAudience,
+        previousSessionSummary,
+        localDiagnostics,
+        drillContext,
       });
-
-      const validImpl = (
-        ['Baseline', 'Yes', 'Partial', 'No'].includes(
-          String(parsed.feedbackImplemented)
-        )
-          ? String(parsed.feedbackImplemented)
-          : previousSessionSummary
-            ? 'Partial'
-            : 'Baseline'
-      ) as 'Baseline' | 'Yes' | 'Partial' | 'No';
-
-      const metricNotes = sanitizeMetricNotes(
-        parsed.metricNotes as Record<string, unknown> | undefined
-      );
-      const whatImprovedPoints = sanitizeWhatImprovedPoints(
-        parsed.whatImprovedPoints as
-          | Array<{ title?: unknown; detail?: unknown }>
-          | undefined
-      );
-      const feedbackCheck = sanitizeFeedbackCheck({
-        status: validImpl,
-        raw: parsed.feedbackCheck as
-          | { implemented?: unknown; missed?: unknown }
-          | undefined,
-        fallbackImplemented: String(parsed.whatImproved || ''),
-      });
-
-      const suggestedTitle = sanitizeCoachProse(
-        String(parsed.suggestedTitle || '')
-          .replace(/^["']+|["']+$/g, '')
-          .trim()
-      ).slice(0, 72);
-
-      const isGibberish = calibrated.integrity.isGibberishOrLowEffort;
-
-      // Blend AI spoken-readiness (75%) with deterministic local spoken-readiness (25%)
-      const aiSpoken = clampPercentage(
-        parsed.spokenReadinessScore,
-        localDiagnostics.baselineSpokenReadiness
-      );
-      const spokenReadinessScore = isGibberish
-        ? Math.min(25, aiSpoken)
-        : Math.max(
-            15,
-            Math.min(
-              99,
-              Math.round(aiSpoken * 0.75 + localDiagnostics.baselineSpokenReadiness * 0.25)
-            )
-          );
-
-      const calqueFixes = mergeCalqueFixes(
-        localDiagnostics.calqueFixes,
-        parsed.calqueFixes
-      );
-
-      const audienceReaction = sanitizeCoachProse(
-        String(parsed.audienceReaction || '')
-      ).slice(0, 380);
-
-      let drillVerdict: DrillVerdict | undefined;
-      if (
-        drillContext &&
-        (drillContext.drillType && drillContext.drillType !== 'standard' ||
-          drillContext.drillPayload?.constraintLabel)
-      ) {
-        const rawVerdict =
-          parsed.drillVerdict && typeof parsed.drillVerdict === 'object'
-            ? (parsed.drillVerdict as Record<string, unknown>)
-            : null;
-        if (rawVerdict && typeof rawVerdict.headline === 'string' && rawVerdict.headline.trim()) {
-          drillVerdict = {
-            headline: sanitizeCoachProse(rawVerdict.headline).slice(0, 140),
-            summary: sanitizeCoachProse(String(rawVerdict.summary || '')).slice(0, 420),
-            registerShiftScore:
-              typeof rawVerdict.registerShiftScore === 'number'
-                ? clampPercentage(rawVerdict.registerShiftScore, 75)
-                : undefined,
-          };
-        }
-      }
 
       res.json({
         ok: true,
@@ -664,53 +320,7 @@ ${trimmedContent}
         },
         downgraded,
         cached,
-        suggestedTitle,
-        spokenReadinessScore,
-        signalNoiseRatio: localDiagnostics.signalNoiseRatio,
-        audienceReaction:
-          audienceReaction ||
-          `As a ${targetAudience}, the main point comes through clearly — tightening one or two verbose clauses would make it sound even more effortless.`,
-        audience: targetAudience,
-        calqueFixes,
-        drillVerdict,
-        scores: calibrated.scores,
-        metricNotes,
-        cefrLevel: calibrated.cefrLevel,
-        internationalMetrics: {
-          ieltsBand: calibrated.ieltsBand,
-          toeflEquivalent: calibrated.toeflEquivalent,
-          lexicalResource: isGibberish
-            ? Math.min(2, clampScore(parsed.lexicalResource))
-            : clampScore(parsed.lexicalResource),
-          coherenceCohesion: isGibberish
-            ? Math.min(2, clampScore(parsed.coherenceCohesion))
-            : clampScore(parsed.coherenceCohesion),
-          taskAchievement: isGibberish
-            ? Math.min(2, clampScore(parsed.taskAchievement))
-            : clampScore(parsed.taskAchievement),
-          registerControl: isGibberish
-            ? Math.min(2, clampScore(parsed.registerControl))
-            : clampScore(parsed.registerControl),
-          grammarAccuracy: calibrated.scores.grammarMechanics,
-          fleschReadingEase: 0,
-          fkGradeLevel: 0,
-        },
-        toneVerdict: sanitizeCoachProse(String(parsed.toneVerdict || '')),
-        flowVerdict: sanitizeCoachProse(String(parsed.flowVerdict || '')),
-        feedbackImplemented: validImpl,
-        feedbackCheck,
-        whatImproved: sanitizeCoachProse(String(parsed.whatImproved || '')),
-        whatImprovedPoints,
-        strictImprovements: sanitizeCoachProse(
-          String(parsed.strictImprovements || '')
-        ),
-        pinpointedRewrites: groundedPinpoints,
-        rewrittenSample: groundedRewrite,
-        masteredWordsUsed: Array.isArray(parsed.masteredWordsUsed)
-          ? parsed.masteredWordsUsed.map(String)
-          : [],
-        grammarFixes: groundedFixes,
-        vocabUpgrades: groundedVocab,
+        ...mapped,
       });
     } catch (err) {
       if (isQuotaOrOverloadError(err) || isTimeoutError(err)) {
@@ -762,27 +372,14 @@ ${trimmedContent}
   router.post('/api/evaluate-conversation', async (req, res) => {
     const requestId = createRequestId();
     const startedAt = Date.now();
-    const {
-      scenario,
-      pace = 'natural',
-      messages = [],
-      elapsedSeconds = 0,
-      previousSessionSummary = '',
-      practicingVocab = [],
-      studentProfile,
-      customCoachPrompt,
-      coachPresets,
-    } = req.body ?? {};
-
-    if (
-      !scenario ||
-      typeof scenario !== 'object' ||
-      typeof scenario.title !== 'string'
-    ) {
+    const parsedReq = EvaluateConversationRequestSchema.safeParse(req.body ?? {});
+    if (!parsedReq.success) {
+      const firstIssue =
+        parsedReq.error.issues[0]?.message || 'Valid conversation scenario is required.';
       res.status(400).json(
         buildErrorEnvelope({
           code: 'INVALID_SCENARIO',
-          message: 'Valid conversation scenario is required.',
+          message: firstIssue,
           requestId,
           startedAtMs: startedAt,
         })
@@ -790,11 +387,22 @@ ${trimmedContent}
       return;
     }
 
-    const typedScenario = scenario as ConversationScenario;
-    const safePace: ConversationPace =
-      pace === 'relaxed' || pace === 'challenging' ? pace : 'natural';
+    const {
+      scenario,
+      pace,
+      messages,
+      elapsedSeconds,
+      previousSessionSummary,
+      practicingVocab,
+      studentProfile,
+      customCoachPrompt,
+      coachPresets,
+    } = parsedReq.data;
+
+    const typedScenario = scenario as unknown as ConversationScenario;
+    const safePace: ConversationPace = pace;
     const rawMessages: ConversationMessage[] = Array.isArray(messages)
-      ? messages.slice(0, 60)
+      ? (messages.slice(0, 60) as unknown as ConversationMessage[])
       : [];
     const userMessages = rawMessages.filter(
       (m) => m && m.role === 'user' && typeof m.text === 'string' && m.text.trim().length > 0

@@ -27,6 +27,7 @@ import {
   mergeVaultPayloads,
   stripPredefinedSeedData,
   summarizeCoachContext,
+  type PracticeWeaknessPayload,
 } from './utils/analytics';
 import {
   buildAdaptivePromptContext,
@@ -54,7 +55,7 @@ import {
 } from './utils/vocabMastery';
 import { formatWritingDaysSummary } from './utils/fastEvaluate';
 import { decryptVault, encryptVault, isEncryptedEnvelope } from './utils/crypto';
-import { getApiUrl, safeParseJsonResponse } from './utils/apiBase';
+import { apiFetch, safeParseJsonResponse } from './utils/apiBase';
 import {
   auth,
   getWorkspaceAccessToken,
@@ -285,6 +286,10 @@ export default function App() {
     drill: DrillType;
     nonce: number;
     originSession?: WritingSession | null;
+  } | null>(null);
+  const [requestedWeaknessToken, setRequestedWeaknessToken] = useState<{
+    payload: PracticeWeaknessPayload;
+    nonce: number;
   } | null>(null);
   const [retryingPendingEvalId, setRetryingPendingEvalId] = useState<string | null>(
     null
@@ -1385,7 +1390,7 @@ export default function App() {
           vault.vocabulary,
           todayISO
         );
-        const res = await fetch(getApiUrl('/api/schedule-triweekly'), {
+        const res = await apiFetch('/api/schedule-triweekly', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -1509,7 +1514,7 @@ export default function App() {
           todayISO
         );
 
-        const res = await fetch(getApiUrl('/api/schedule-triweekly'), {
+        const res = await apiFetch('/api/schedule-triweekly', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -1719,7 +1724,7 @@ export default function App() {
               }
             : undefined;
 
-        const res = await fetch(getApiUrl('/api/evaluate'), {
+        const res = await apiFetch('/api/evaluate', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -1742,6 +1747,7 @@ export default function App() {
           evaluationStatus?: string;
           modelUsed?: string;
           scores?: WritingSession['scores'];
+          metricNotes?: WritingSession['metricNotes'];
           cefrLevel?: string;
           internationalMetrics?: WritingSession['internationalMetrics'];
           toneVerdict?: string;
@@ -1750,8 +1756,17 @@ export default function App() {
           feedbackImplemented?: WritingSession['feedbackImplemented'];
           whatImproved?: string;
           strictImprovements?: string;
+          pinpointedRewrites?: WritingSession['pinpointedRewrites'];
+          rewrittenSample?: WritingSession['rewrittenSample'];
           grammarFixes?: WritingSession['grammarFixes'];
           vocabUpgrades?: WritingSession['vocabUpgrades'];
+          spokenReadinessScore?: number;
+          signalNoiseRatio?: number;
+          audienceReaction?: string;
+          calqueFixes?: WritingSession['calqueFixes'];
+          edits?: WritingSession['edits'];
+          toneCheck?: WritingSession['toneCheck'];
+          nextDraftPriority?: string;
         }>(res);
         if (!data || data.evaluationStatus !== 'completed' || !data.scores) {
           return;
@@ -1776,6 +1791,7 @@ export default function App() {
               ...s,
               status: 'Completed',
               scores: resolvedScores,
+              metricNotes: data.metricNotes || s.metricNotes,
               totalScore,
               percentage,
               cefrLevel: data.cefrLevel || s.cefrLevel,
@@ -1788,12 +1804,22 @@ export default function App() {
               whatImproved: data.whatImproved || s.whatImproved,
               strictImprovements:
                 data.strictImprovements || s.strictImprovements,
+              pinpointedRewrites: data.pinpointedRewrites || s.pinpointedRewrites,
+              rewrittenSample: data.rewrittenSample || s.rewrittenSample,
               grammarFixes: Array.isArray(data.grammarFixes)
                 ? data.grammarFixes
                 : s.grammarFixes,
               vocabUpgrades: Array.isArray(data.vocabUpgrades)
                 ? data.vocabUpgrades
                 : s.vocabUpgrades,
+              spokenReadinessScore:
+                data.spokenReadinessScore ?? s.spokenReadinessScore,
+              signalNoiseRatio: data.signalNoiseRatio ?? s.signalNoiseRatio,
+              audienceReaction: data.audienceReaction || s.audienceReaction,
+              calqueFixes: data.calqueFixes || s.calqueFixes,
+              edits: Array.isArray(data.edits) ? data.edits : s.edits,
+              toneCheck: data.toneCheck || s.toneCheck,
+              nextDraftPriority: data.nextDraftPriority || s.nextDraftPriority,
               evaluationPending: false,
               modelUsed: data.modelUsed || 'gemini-3.1-flash-lite',
             };
@@ -1858,6 +1884,19 @@ export default function App() {
       window.scrollTo({ top: 0, behavior: 'instant' as ScrollBehavior });
     },
     [handleLaunchSlotInStudio]
+  );
+
+  const handlePracticeWeakness = useCallback(
+    (payload: PracticeWeaknessPayload) => {
+      setFocusMode(false);
+      setActiveView('write');
+      setRequestedWeaknessToken({
+        payload,
+        nonce: Date.now(),
+      });
+      window.scrollTo({ top: 0, behavior: 'instant' as ScrollBehavior });
+    },
+    []
   );
 
   // Background auto-evaluator for any writing session saved to draft while API was delayed or quota-limited
@@ -2386,7 +2425,7 @@ export default function App() {
     let usedAI = false;
 
     try {
-      const res = await fetch(getApiUrl('/api/categorize-vocab'), {
+      const res = await apiFetch('/api/categorize-vocab', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -2839,7 +2878,7 @@ export default function App() {
           vault.vocabulary,
           todayISO
         );
-        const res = await fetch(getApiUrl('/api/suggest-first-month'), {
+        const res = await apiFetch('/api/suggest-first-month', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -3121,6 +3160,7 @@ export default function App() {
             requestedPracticeWord={requestedPracticeWord}
             onClearRequestedPracticeWord={() => setRequestedPracticeWord(null)}
             requestedDrillToken={requestedDrillToken}
+            requestedWeaknessToken={requestedWeaknessToken}
           />
         </div>
 
@@ -3152,6 +3192,7 @@ export default function App() {
             onStartWriting={() => setActiveView('write')}
             onStartConverse={() => setActiveView('converse')}
             onLaunchTimeCapsule={handleLaunchTimeCapsule}
+            onPracticeWeakness={handlePracticeWeakness}
             onRetryPendingEvaluation={handleRetryPendingEvaluation}
             retryingSessionId={retryingPendingEvalId}
           />

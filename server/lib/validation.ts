@@ -209,3 +209,115 @@ export const ConverseTurnRequestSchema = z.object({
   customCoachPrompt: z.string().max(500).optional(),
   coachPresets: z.array(CoachPresetIdSchema).max(8).optional(),
 });
+
+const ConversationScenarioLooseSchema = z.object({
+  id: z.string().max(120).optional().default('custom'),
+  title: z.string().trim().min(1).max(240),
+  personaName: z.string().trim().min(1).max(120),
+  personaRole: z.string().max(160).optional().default('Conversation Partner'),
+  settingBrief: z.string().max(1200).optional().default(''),
+  mode: z.string().max(60).optional().default('technical'),
+  tone: z.string().max(60).optional().default('conversational'),
+  openingLine: z.string().max(1000).optional().default(''),
+  initialSparks: z.array(z.string().max(160)).max(6).optional().default([]),
+  subtitle: z.string().max(240).optional().default(''),
+  personaInitials: z.string().max(8).optional().default('AI'),
+});
+
+export const EvaluateConversationRequestSchema = z.object({
+  scenario: ConversationScenarioLooseSchema,
+  pace: z.enum(['relaxed', 'natural', 'challenging']).optional().default('natural'),
+  messages: z.array(z.record(z.string(), z.unknown())).max(60).optional().default([]),
+  elapsedSeconds: z.number().min(0).max(14400).optional().default(0),
+  previousSessionSummary: z.string().max(1500).optional().default(''),
+  practicingVocab: z.array(z.string().max(120)).max(24).optional().default([]),
+  studentProfile: z.record(z.string(), z.unknown()).optional(),
+  customCoachPrompt: z.string().max(500).optional(),
+  coachPresets: z.array(CoachPresetIdSchema).max(8).optional(),
+});
+
+export const ConverseOpeningRequestSchema = z.object({
+  scenario: ConversationScenarioLooseSchema,
+  pace: z.enum(['relaxed', 'natural', 'challenging']).optional().default('natural'),
+  studentProfile: z.record(z.string(), z.unknown()).optional(),
+  avoidOpenings: z.array(z.string().max(400)).max(20).optional().default([]),
+});
+
+export const TopicsRequestSchema = z.object({
+  mode: z.string().max(80).optional().default('Technical & Interview'),
+  tone: z.string().max(80).optional().default('Professional-Warm'),
+  focusArea: z.string().max(260).optional(),
+  existingTopics: z.array(z.string().max(300)).max(120).optional().default([]),
+  studentProfile: z.record(z.string(), z.unknown()).optional(),
+  adaptiveWritingProfile: z.record(z.string(), z.unknown()).optional(),
+});
+
+const DateSpecInputSchema = z.object({
+  scheduledDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  dayOfWeek: z.string().max(24).optional().default('Wednesday'),
+  pillar: z.string().max(40).optional(),
+});
+
+export const ScheduleTriweeklyRequestSchema = z.object({
+  cycleDates: z
+    .object({
+      wednesday: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+      friday: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+      sunday: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+    })
+    .optional(),
+  customDates: z.array(DateSpecInputSchema).max(31).optional(),
+  todayISO: z.string().max(20).optional(),
+  existingTopics: z.array(z.string().max(300)).max(200).optional().default([]),
+  focusNote: z.string().max(400).optional(),
+  performanceContext: z.record(z.string(), z.unknown()).optional(),
+  studentProfile: z.record(z.string(), z.unknown()).optional(),
+  adaptiveWritingProfile: z.record(z.string(), z.unknown()).optional(),
+});
+
+export const PivotTopicRequestSchema = z.object({
+  slot: z.object({
+    mode: z.string().max(60).optional().default('technical'),
+    tone: z.string().max(60).optional().default('professional-warm'),
+    dayOfWeek: z.string().max(40).optional(),
+  }),
+  customFocus: z
+    .string()
+    .trim()
+    .min(3, 'Provide a topic or gadget focus to pivot onto.')
+    .max(240, 'Focus prompt is too long (max 240 characters).'),
+});
+
+export const SuggestFirstMonthRequestSchema = z.object({
+  todayISO: z.string().max(20).optional(),
+  targetSpecs: z
+    .array(
+      z.object({
+        scheduledDate: z.string().max(20).optional(),
+        dayOfWeek: z.string().max(24).optional(),
+        pillar: z.string().max(40).optional(),
+      })
+    )
+    .max(31)
+    .optional()
+    .default([]),
+  studentProfile: z.record(z.string(), z.unknown()).optional(),
+  adaptiveWritingProfile: z.record(z.string(), z.unknown()).optional(),
+  existingTopics: z.array(z.string().max(300)).max(120).optional().default([]),
+});
+
+export const CategorizeVocabRequestSchema = z.object({
+  entries: z
+    .array(
+      z.object({
+        id: z.string().max(120),
+        betterAlternative: z.string().max(160).optional().default(''),
+        used: z.string().max(160).optional().default(''),
+        explanation: z.string().max(400).optional().default(''),
+        mode: z.string().max(60).optional().default('journal'),
+      })
+    )
+    .max(120)
+    .optional()
+    .default([]),
+});

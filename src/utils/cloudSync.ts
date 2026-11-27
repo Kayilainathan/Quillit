@@ -25,6 +25,19 @@ import type {
   WritingSession,
 } from '../types';
 import { mergeVaultPayloads } from './analytics';
+import {
+  VALID_CLOUD_MODES,
+  mergeHydratedProfileSettings,
+  normalizeCloudMode,
+  parseFirestoreTimestamp,
+} from './cloudSyncHelpers';
+
+export {
+  VALID_CLOUD_MODES,
+  mergeHydratedProfileSettings,
+  normalizeCloudMode,
+  parseFirestoreTimestamp,
+};
 
 export enum OperationType {
   CREATE = 'create',
@@ -94,14 +107,6 @@ function validISODate(value: string): string {
     : new Date().toISOString().slice(0, 10);
 }
 
-const VALID_MODES: WritingMode[] = [
-  'journal',
-  'linkedin',
-  'email',
-  'friend',
-  'technical',
-  'creative',
-];
 const VALID_TONES: ToneSetting[] = [
   'professional-warm',
   'conversational',
@@ -111,8 +116,8 @@ const VALID_TONES: ToneSetting[] = [
   'narrative-vivid',
 ];
 
-function validMode(m: WritingMode): WritingMode {
-  return VALID_MODES.includes(m) ? m : 'technical';
+function validMode(m: WritingMode | 'converse'): WritingMode | 'converse' {
+  return normalizeCloudMode(m);
 }
 
 function validTone(t: ToneSetting): ToneSetting {
@@ -241,6 +246,25 @@ function sanitizeSessionPayload(
   }
   if (typeof session.revisionDelta === 'number' && Number.isFinite(session.revisionDelta)) {
     payload.revisionDelta = Math.max(-60, Math.min(60, Number(session.revisionDelta.toFixed(1))));
+  }
+  if (Array.isArray(session.edits) && session.edits.length > 0) {
+    payload.edits = session.edits.slice(0, 12).map((e) => ({
+      original: clip(e.original, 220),
+      improved: clip(e.improved, 220),
+      dimension: clip(e.dimension, 24),
+      errorTag: clip(e.errorTag, 40),
+      rule: clip(e.rule, 200),
+    }));
+  }
+  if (session.toneCheck && typeof session.toneCheck === 'object') {
+    payload.toneCheck = {
+      match: clip(session.toneCheck.match, 24),
+      audienceReaction: clip(session.toneCheck.audienceReaction, 260),
+      toneFix: clip(session.toneCheck.toneFix, 200),
+    };
+  }
+  if (session.nextDraftPriority) {
+    payload.nextDraftPriority = clip(session.nextDraftPriority, 240);
   }
   if (typeof session.evaluationPending === 'boolean') {
     payload.evaluationPending = session.evaluationPending;
@@ -420,84 +444,31 @@ export async function ensureUserProfileDoc(
     }
 
     const existing = snap.data() as Record<string, unknown>;
-    const hydrated: Partial<UserSettings> = {};
+    const hydrated = mergeHydratedProfileSettings(settings, existing);
 
-    // Hydrate remote student profile onto a newly signed-in device if local onboarding isn't set yet
-    if (
-      !settings.studentProfile?.onboardingCompleted &&
-      existing.onboardingCompleted === true &&
-      typeof existing.collegeDegree === 'string' &&
-      typeof existing.semester === 'string' &&
-      typeof existing.collegeName === 'string'
-    ) {
-      hydrated.studentProfile = {
-        collegeDegree: existing.collegeDegree,
-        semester: existing.semester,
-        collegeName: existing.collegeName,
-        age:
-          typeof existing.age === 'number' && existing.age >= 14 && existing.age <= 80
-            ? existing.age
-            : 20,
-        onboardingCompleted: true,
-      };
-      if (typeof existing.semesterLabel === 'string' && existing.semesterLabel) {
-        hydrated.semesterLabel = existing.semesterLabel;
-      }
-    }
-
-    if (
-      !settings.googleSpreadsheetId &&
-      typeof existing.googleSpreadsheetId === 'string' &&
-      existing.googleSpreadsheetId
-    ) {
-      hydrated.googleSpreadsheetId = existing.googleSpreadsheetId;
-      hydrated.googleSpreadsheetUrl = `https://docs.google.com/spreadsheets/d/${existing.googleSpreadsheetId}/edit`;
-    }
-    if (
-      !settings.googleDocId &&
-      typeof existing.googleDocId === 'string' &&
-      existing.googleDocId
-    ) {
-      hydrated.googleDocId = existing.googleDocId;
-      hydrated.googleDocUrl = `https://docs.google.com/document/d/${existing.googleDocId}/edit`;
-    }
-    if (
-      !settings.customCoachPrompt &&
-      typeof existing.customCoachPrompt === 'string' &&
-      existing.customCoachPrompt
-    ) {
-      hydrated.customCoachPrompt = existing.customCoachPrompt.slice(0, 500);
-    }
-    if (
-      (!settings.coachPresets || settings.coachPresets.length === 0) &&
-      Array.isArray(existing.coachPresets)
-    ) {
-      hydrated.coachPresets = existing.coachPresets.slice(0, 8) as UserSettings['coachPresets'];
-    }
-    if (
-      typeof settings.tactileSoundEnabled !== 'boolean' &&
-      typeof existing.tactileSoundEnabled === 'boolean'
-    ) {
-      hydrated.tactileSoundEnabled = existing.tactileSoundEnabled;
-    }
-    if (
-      typeof settings.vaultLatchEnabled !== 'boolean' &&
-      typeof existing.vaultLatchEnabled === 'boolean'
-    ) {
-      hydrated.vaultLatchEnabled = existing.vaultLatchEnabled;
-    }
-
-    // Preserve existing cloud profile fields when updating from a fresh device
+    // Preserve hydrated cloud settings when updating from a fresh device instead of clobbering with local defaults
     const updatePayload: Record<string, unknown> = { ...baseFields };
+    if (hydrated.semesterLabel) {
+      updatePayload.semesterLabel = clip(hydrated.semesterLabel, 120);
+    }
+    if (typeof hydrated.dailyWordGoal === 'number') {
+      updatePayload.dailyWordGoal = hydrated.dailyWordGoal;
+    }
+    if (typeof hydrated.autoSaveVocab === 'boolean') {
+      updatePayload.autoSaveVocab = hydrated.autoSaveVocab;
+    }
+    if (typeof hydrated.focusModeDefault === 'boolean') {
+      updatePayload.focusModeDefault = hydrated.focusModeDefault;
+    }
+    if (typeof hydrated.autoReloadSchedule === 'boolean') {
+      updatePayload.autoReloadSchedule = hydrated.autoReloadSchedule;
+    }
     if (hydrated.studentProfile) {
       updatePayload.collegeDegree = clip(hydrated.studentProfile.collegeDegree, 120);
       updatePayload.semester = clip(hydrated.studentProfile.semester, 40);
       updatePayload.collegeName = clip(hydrated.studentProfile.collegeName, 140);
       updatePayload.age = hydrated.studentProfile.age;
       updatePayload.onboardingCompleted = true;
-      if (hydrated.semesterLabel) {
-        updatePayload.semesterLabel = clip(hydrated.semesterLabel, 120);
-      }
     }
 
     await updateDoc(ref, updatePayload);
@@ -529,6 +500,9 @@ export async function syncSessionToCloud(
       const existing = snap.data();
       if (existing.status === 'Draft' || existing.evaluationPending === true) {
         await updateDoc(ref, {
+          content: sanitized.content,
+          wordCount: sanitized.wordCount,
+          topicDescription: sanitized.topicDescription,
           scores: sanitized.scores,
           totalScore: sanitized.totalScore,
           percentage: sanitized.percentage,
@@ -555,6 +529,11 @@ export async function syncSessionToCloud(
             : {}),
           ...(typeof sanitized.revisionDelta === 'number'
             ? { revisionDelta: sanitized.revisionDelta }
+            : {}),
+          ...(sanitized.edits ? { edits: sanitized.edits } : {}),
+          ...(sanitized.toneCheck ? { toneCheck: sanitized.toneCheck } : {}),
+          ...(sanitized.nextDraftPriority
+            ? { nextDraftPriority: sanitized.nextDraftPriority }
             : {}),
           toneVerdict: sanitized.toneVerdict,
           flowVerdict: sanitized.flowVerdict,
@@ -758,16 +737,24 @@ function docToSession(raw: Record<string, unknown>): WritingSession {
         : undefined,
     revisionDelta:
       typeof raw.revisionDelta === 'number' ? raw.revisionDelta : undefined,
+    edits: Array.isArray(raw.edits)
+      ? (raw.edits as WritingSession['edits'])
+      : undefined,
+    toneCheck:
+      raw.toneCheck && typeof raw.toneCheck === 'object'
+        ? (raw.toneCheck as WritingSession['toneCheck'])
+        : undefined,
+    nextDraftPriority:
+      typeof raw.nextDraftPriority === 'string'
+        ? raw.nextDraftPriority
+        : undefined,
     status: raw.status === 'Draft' ? 'Draft' : 'Completed',
     evaluationPending:
       typeof raw.evaluationPending === 'boolean'
         ? raw.evaluationPending
         : undefined,
     modelUsed: typeof raw.modelUsed === 'string' ? raw.modelUsed : undefined,
-    createdAt:
-      typeof raw.createdAt === 'string'
-        ? raw.createdAt
-        : new Date().toISOString(),
+    createdAt: parseFirestoreTimestamp(raw.createdAt),
   };
 }
 

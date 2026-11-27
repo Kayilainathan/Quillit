@@ -1,35 +1,31 @@
 import { useMemo, useState } from 'react';
 import {
-  ArrowRight,
-  ArrowUpRight,
-  Award,
-  Clock,
+  ChevronDown,
+  ChevronUp,
   Download,
-  History,
-  Lock,
   RefreshCw,
   Search,
   Table2,
-  Target,
   X,
 } from 'lucide-react';
 import type { CalendarSlot, VocabEntry, WritingSession } from '../types';
 import {
   MODE_LABELS,
-  RUBRIC_DIMENSIONS,
   computeAverageInternationalMetrics,
-  computeAverageRubric,
   computeModeBreakdown,
-  computeMonthlyEntries,
-  computePercentage,
-  computeStreaks,
-  computeTaskStreak,
-  computeVocabularyStats,
   deriveInternationalMetrics,
   exportSessionsToCsv,
-  findGrowthLever,
-  formatLocalDateISO,
 } from '../utils/analytics';
+import {
+  ERROR_TAG_META,
+  computeErrorPatternAnalytics,
+  computeFeedbackAppliedRate,
+  computeHeroFluencyPulse,
+  computeSkillPillarPlaybooks,
+  getSessionTopIssueTag,
+  type ErrorPatternWindow,
+  type PracticeWeaknessPayload,
+} from '../utils/errorPatternAnalytics';
 import {
   ConsistencyGrid,
   RubricProfileChart,
@@ -41,6 +37,10 @@ import { FluencyHeatmap } from './FluencyHeatmap';
 import { EvaluationReportView } from './EvaluationReportView';
 import { isConverseSession } from '../utils/converseAnalytics';
 import { getTimeCapsuleStatus } from '../utils/timeCapsule';
+import { HeroFluencyPulseStrip } from './dashboard/HeroFluencyPulseStrip';
+import { MistakeRadarCard } from './dashboard/MistakeRadarCard';
+import { SkillPillarGrid } from './dashboard/SkillPillarGrid';
+import { FeedbackLoopCard } from './dashboard/FeedbackLoopCard';
 
 interface DashboardViewProps {
   sessions: WritingSession[];
@@ -51,6 +51,7 @@ interface DashboardViewProps {
   onStartWriting: () => void;
   onStartConverse?: () => void;
   onLaunchTimeCapsule?: (originSession: WritingSession) => void;
+  onPracticeWeakness?: (payload: PracticeWeaknessPayload) => void;
   onRetryPendingEvaluation?: (sessionId: string) => void;
   retryingSessionId?: string | null;
 }
@@ -64,12 +65,15 @@ export function DashboardView({
   onStartWriting,
   onStartConverse,
   onLaunchTimeCapsule,
+  onPracticeWeakness,
   onRetryPendingEvaluation,
   retryingSessionId = null,
 }: DashboardViewProps) {
   const [searchQuery, setSearchQuery] = useState('');
   const [modeFilter, setModeFilter] = useState<string>('all');
   const [ledgerView, setLedgerView] = useState<'summary' | 'sheet'>('summary');
+  const [mistakeWindow, setMistakeWindow] = useState<ErrorPatternWindow>('30d');
+  const [showDeepBenchmarks, setShowDeepBenchmarks] = useState(false);
   const [selectedSession, setSelectedSession] = useState<WritingSession | null>(
     null
   );
@@ -77,84 +81,60 @@ export function DashboardView({
   const completed = useMemo(
     () =>
       [...sessions]
-        .filter((s) => s.status === 'Completed')
-        .sort((a, b) => b.date.localeCompare(a.date)),
+        .filter((s) => s.status === 'Completed' && !s.evaluationPending)
+        .sort(
+          (a, b) =>
+            b.date.localeCompare(a.date) || b.createdAt.localeCompare(a.createdAt)
+        ),
     [sessions]
   );
 
-  const metrics = useMemo(() => {
-    const totalSessions = completed.length;
-    const totalWords = completed.reduce((acc, s) => acc + s.wordCount, 0);
-    const avgScore =
-      totalSessions > 0
-        ? Number(
-            (
-              completed.reduce((acc, s) => acc + s.totalScore, 0) / totalSessions
-            ).toFixed(1)
-          )
-        : 0;
-    const avgPct = totalSessions > 0 ? computePercentage(avgScore) : 0;
-    const streaks = computeStreaks(completed, todayISO);
-    const taskStreak = computeTaskStreak(calendarSlots, todayISO);
-    const monthlyEntries = computeMonthlyEntries(completed, todayISO);
-    const vocabStats = computeVocabularyStats(vocabulary, todayISO);
-    const avgRubric = computeAverageRubric(completed);
-    const avgIntl = computeAverageInternationalMetrics(completed);
-    const growthLever = findGrowthLever(avgRubric);
-    const modeBreakdown = computeModeBreakdown(completed);
-    const latestCefr = completed[0]?.cefrLevel ?? '—';
-    const bestSession =
-      completed.length > 0
-        ? [...completed].sort((a, b) => b.totalScore - a.totalScore)[0]
-        : null;
-    return {
-      totalSessions,
-      totalWords,
-      avgScore,
-      avgPct,
-      streaks,
-      taskStreak,
-      monthlyEntries,
-      vocabStats,
-      avgIntl,
-      growthLever,
-      modeBreakdown,
-      latestCefr,
-      bestSession,
-    };
-  }, [completed, vocabulary, calendarSlots, todayISO]);
+  const totalWords = useMemo(
+    () => completed.reduce((acc, s) => acc + s.wordCount, 0),
+    [completed]
+  );
 
-  // Weekly 10-Min Cadence (4 core sessions Mon/Wed/Fri/Sun + optional Sat Converse)
-  const weeklyCadence = useMemo(() => {
-    const [y, m, d] = todayISO.split('-').map(Number);
-    const dt = new Date(y || 2026, (m || 1) - 1, d || 1);
-    const mondayOffset = (dt.getDay() + 6) % 7;
-    const startDt = new Date(dt.getFullYear(), dt.getMonth(), dt.getDate() - mondayOffset);
-    const endDt = new Date(startDt.getFullYear(), startDt.getMonth(), startDt.getDate() + 6);
-    const weekStartISO = formatLocalDateISO(startDt);
-    const weekEndISO = formatLocalDateISO(endDt);
+  const heroPulse = useMemo(
+    () => computeHeroFluencyPulse(completed, calendarSlots, todayISO),
+    [completed, calendarSlots, todayISO]
+  );
 
-    const thisWeekSessions = completed.filter(
-      (s) => s.date >= weekStartISO && s.date <= weekEndISO
-    );
-    const hasConverseThisWeek = thisWeekSessions.some((s) => isConverseSession(s));
-    const coreCount = Math.min(4, thisWeekSessions.filter((s) => !isConverseSession(s)).length);
-    const totalCount = thisWeekSessions.length;
-    const ringPct = Math.min(100, Math.round((Math.min(4, totalCount) / 4) * 100));
+  const errorPatterns = useMemo(
+    () =>
+      computeErrorPatternAnalytics(completed, {
+        window: mistakeWindow,
+        referenceDateISO: todayISO,
+      }),
+    [completed, mistakeWindow, todayISO]
+  );
 
-    return {
-      coreCount,
-      totalCount,
-      hasConverseThisWeek,
-      ringPct,
-    };
-  }, [completed, todayISO]);
+  const skillPillars = useMemo(
+    () => computeSkillPillarPlaybooks(completed, todayISO),
+    [completed, todayISO]
+  );
+
+  const feedbackLoop = useMemo(
+    () => computeFeedbackAppliedRate(completed),
+    [completed]
+  );
+
+  const avgIntl = useMemo(
+    () => computeAverageInternationalMetrics(completed),
+    [completed]
+  );
+
+  const modeBreakdown = useMemo(
+    () => computeModeBreakdown(completed),
+    [completed]
+  );
 
   const awaitingAiSessions = useMemo(
     () =>
       sessions
         .filter((s) => Boolean(s.evaluationPending))
-        .sort((a, b) => (b.queuedAt || b.createdAt).localeCompare(a.queuedAt || a.createdAt)),
+        .sort((a, b) =>
+          (b.queuedAt || b.createdAt).localeCompare(a.queuedAt || a.createdAt)
+        ),
     [sessions]
   );
 
@@ -162,7 +142,6 @@ export function DashboardView({
     () => getTimeCapsuleStatus(sessions, todayISO),
     [sessions, todayISO]
   );
-  const timeCapsuleCandidate = timeCapsuleStatus.candidate;
 
   const latestTimeCapsuleSession = useMemo(
     () =>
@@ -205,33 +184,13 @@ export function DashboardView({
     URL.revokeObjectURL(url);
   }
 
-  const internationalBars = [
-    {
-      label: 'Tone & Register Control',
-      value: metrics.avgIntl.registerControl,
-      standard: 'Cambridge / Pragmatics',
-    },
-    {
-      label: 'Grammar & Syntactic Accuracy',
-      value: metrics.avgIntl.grammarAccuracy,
-      standard: 'IELTS Grammatical Range',
-    },
-    {
-      label: 'Lexical Resource & Range',
-      value: metrics.avgIntl.lexicalResource,
-      standard: 'IELTS / CEFR Vocabulary',
-    },
-    {
-      label: 'Coherence & Cohesion',
-      value: metrics.avgIntl.coherenceCohesion,
-      standard: 'IELTS Discourse Flow',
-    },
-    {
-      label: 'Task Achievement & Clarity',
-      value: metrics.avgIntl.taskAchievement,
-      standard: 'TOEFL Independent Rubric',
-    },
-  ];
+  function handlePracticeTrigger(payload: PracticeWeaknessPayload) {
+    if (onPracticeWeakness) {
+      onPracticeWeakness(payload);
+    } else {
+      onStartWriting();
+    }
+  }
 
   const selectedSessionIntl = selectedSession
     ? deriveInternationalMetrics(selectedSession)
@@ -239,13 +198,14 @@ export function DashboardView({
 
   return (
     <div className="editorial-enter max-w-6xl mx-auto px-3 sm:px-6 py-5 sm:py-8 space-y-6 sm:space-y-8">
+      {/* Header */}
       <div className="flex flex-wrap items-end justify-between gap-4">
         <div>
           <h1 className="font-display text-2xl sm:text-3xl font-medium text-ink-primary">
-            Progress & Fluency Insights
+            Diagnostic Progress Dashboard
           </h1>
           <p className="text-sm text-ink-secondary mt-1">
-            Multidimensional rubric tracking, international language benchmarks, task streaks, and vocabulary growth.
+            Spot recurring bottlenecks, drill your weakest skill pillar, and track closed-loop fluency gains.
           </p>
         </div>
 
@@ -268,7 +228,7 @@ export function DashboardView({
         </div>
       </div>
 
-      {/* Awaiting AI Evaluation Indicator (shown only when a slow-API draft or queued entry is pending) */}
+      {/* Awaiting AI Evaluation Banner */}
       {awaitingAiSessions.length > 0 && (
         <section
           aria-label="Drafts awaiting AI evaluation"
@@ -339,218 +299,37 @@ export function DashboardView({
         </section>
       )}
 
-      {/* Primary KPI Strip */}
-      <section
-        aria-label="Key writing metrics"
-        className="grid grid-cols-2 lg:grid-cols-5 gap-2.5 sm:gap-4"
-      >
-        <div className="card-surface p-3.5 sm:p-5">
-          <div className="text-xs text-ink-muted">
-            Average Score
-          </div>
-          <div className="mt-1.5 text-2xl font-semibold font-mono-tabular text-ink-primary">
-            {metrics.avgScore}
-            <span className="text-sm font-normal text-ink-muted">/60</span>
-          </div>
-          <div className="mt-1 text-xs font-mono-tabular text-status-success">
-            {metrics.avgPct.toFixed(1)}% mastery
-          </div>
-        </div>
+      {/* Module 1: Hero Fluency Pulse (4 KPIs) */}
+      <HeroFluencyPulseStrip
+        pulse={heroPulse}
+        totalSessions={completed.length}
+        totalWords={totalWords}
+        onStartWriting={onStartWriting}
+      />
 
-        <div className="card-surface p-4 sm:p-5">
-          <div className="text-xs text-ink-muted">
-            Task & Writing Streak
-          </div>
-          <div className="mt-1.5 text-2xl font-semibold font-mono-tabular text-ink-primary">
-            {metrics.taskStreak.currentTaskStreak}
-            <span className="text-sm font-normal text-ink-muted"> tasks</span>
-          </div>
-          <div className="mt-1 text-xs font-mono-tabular text-ink-muted">
-            Best task: {metrics.taskStreak.longestTaskStreak} · Daily best:{' '}
-            {metrics.streaks.longestStreak}d
-          </div>
-        </div>
+      {/* Module 2: Recurring Mistake Radar ("What Is Holding You Back") */}
+      <MistakeRadarCard
+        analytics={errorPatterns}
+        windowFilter={mistakeWindow}
+        onChangeWindow={setMistakeWindow}
+        onPracticeWeakness={handlePracticeTrigger}
+      />
 
-        <div className="card-surface p-4 sm:p-5">
-          <div className="text-xs text-ink-muted">
-            Monthly Entries
-          </div>
-          <div className="mt-1.5 text-2xl font-semibold font-mono-tabular text-ink-primary">
-            {metrics.monthlyEntries}
-          </div>
-          <div className="mt-1 text-xs font-mono-tabular text-ink-muted">
-            {metrics.totalSessions} sessions all-time
-          </div>
-        </div>
+      {/* Module 3: 6 Skill Pillars + "How to Improvise" Playbook */}
+      <SkillPillarGrid
+        pillars={skillPillars}
+        onPracticeWeakness={handlePracticeTrigger}
+      />
 
-        <div className="card-surface p-4 sm:p-5">
-          <div className="text-xs text-ink-muted">
-            Words Written
-          </div>
-          <div className="mt-1.5 text-2xl font-semibold font-mono-tabular text-ink-primary">
-            {metrics.totalWords.toLocaleString()}
-          </div>
-          <div className="mt-1 text-xs font-mono-tabular text-ink-muted">
-            Avg{' '}
-            {metrics.totalSessions > 0
-              ? Math.round(metrics.totalWords / metrics.totalSessions)
-              : 0}{' '}
-            words/session
-          </div>
-        </div>
+      {/* Module 4: Closed-Loop Feedback Applied Rate & Time Capsule */}
+      <FeedbackLoopCard
+        feedback={feedbackLoop}
+        timeCapsuleStatus={timeCapsuleStatus}
+        latestTimeCapsuleSession={latestTimeCapsuleSession}
+        onLaunchTimeCapsule={onLaunchTimeCapsule}
+      />
 
-        <div className="card-surface col-span-2 lg:col-span-1 p-4 sm:p-5">
-          <div className="text-xs text-ink-muted">
-            Vocabulary Learned
-          </div>
-          <div className="mt-1.5 text-2xl font-semibold font-mono-tabular text-ink-primary">
-            {metrics.vocabStats.yearCount}
-            <span className="text-sm font-normal text-ink-muted"> this year</span>
-          </div>
-          <div className="mt-1 text-xs font-mono-tabular text-ink-muted">
-            {metrics.vocabStats.weekCount} wk · {metrics.vocabStats.monthCount} mo
-          </div>
-        </div>
-      </section>
-
-      {/* Weekly 10-Min Cadence Ring & Blind Time Capsule Readiness */}
-      <section
-        aria-label="Weekly cadence and time capsule"
-        className="grid grid-cols-1 lg:grid-cols-12 gap-4"
-      >
-        <div
-          data-testid="dashboard-cadence-ring"
-          className="card-surface lg:col-span-6 p-4 sm:p-5 flex flex-wrap sm:flex-nowrap items-center justify-between gap-4 sm:gap-5"
-        >
-          <div className="flex items-center gap-4 min-w-0">
-            <div className="relative w-14 h-14 shrink-0">
-              <svg viewBox="0 0 48 48" className="w-14 h-14 -rotate-90" aria-hidden="true">
-                <circle
-                  cx="24"
-                  cy="24"
-                  r="19"
-                  fill="none"
-                  stroke="var(--border-subtle)"
-                  strokeWidth="4"
-                />
-                <circle
-                  cx="24"
-                  cy="24"
-                  r="19"
-                  fill="none"
-                  stroke="var(--accent)"
-                  strokeWidth="4"
-                  strokeLinecap="round"
-                  strokeDasharray={2 * Math.PI * 19}
-                  strokeDashoffset={
-                    2 * Math.PI * 19 * (1 - weeklyCadence.ringPct / 100)
-                  }
-                />
-              </svg>
-              <div className="absolute inset-0 flex items-center justify-center font-mono-tabular text-xs font-semibold text-ink-primary">
-                {Math.min(4, weeklyCadence.totalCount)}/4
-              </div>
-            </div>
-
-            <div className="min-w-0 space-y-1">
-              <div className="inline-flex items-center gap-1.5 text-xs font-medium text-ink-secondary">
-                <Clock className="w-3.5 h-3.5 text-ink-muted" aria-hidden="true" />
-                <span>Weekly 10-Min Cadence</span>
-              </div>
-              <div className="text-sm font-semibold text-ink-primary">
-                {weeklyCadence.totalCount >= 4
-                  ? 'Weekly fluency target complete'
-                  : `${Math.max(0, 4 - weeklyCadence.totalCount)} quick 10-min ${4 - weeklyCadence.totalCount === 1 ? 'session' : 'sessions'} left this week`}
-              </div>
-              <div className="text-[11px] font-mono-tabular text-ink-muted">
-                Mon Skeleton · Wed 4/3/2 · Fri 3 Rooms · Sun Flow
-                {weeklyCadence.hasConverseThisWeek ? ' · Sat Converse ✓' : ' · Sat Converse optional'}
-              </div>
-            </div>
-          </div>
-
-          <button
-            type="button"
-            onClick={onStartWriting}
-            className="btn-secondary px-3 py-1.5 text-xs font-medium whitespace-nowrap shrink-0"
-          >
-            10-Min Desk
-          </button>
-        </div>
-
-        <div
-          data-testid="dashboard-time-capsule"
-          className="card-surface lg:col-span-6 p-5 flex flex-wrap items-center justify-between gap-4"
-        >
-          <div className="space-y-1 min-w-0 flex-1">
-            <div className="inline-flex items-center gap-1.5 text-xs font-medium text-ink-secondary">
-              <History className="w-3.5 h-3.5 text-ink-muted" aria-hidden="true" />
-              <span>30-Day Blind Time Capsule</span>
-            </div>
-            {timeCapsuleCandidate ? (
-              <>
-                <div className="text-sm font-semibold text-ink-primary truncate">
-                  {!timeCapsuleCandidate.isFull30Day
-                    ? `Early Retest Ready · "${timeCapsuleCandidate.session.topicDescription}"`
-                    : `${timeCapsuleCandidate.daysOld}d Retest Ready · "${timeCapsuleCandidate.session.topicDescription}"`}
-                </div>
-                <div className="text-[11px] text-ink-muted font-mono-tabular">
-                  Original draft sealed ({timeCapsuleCandidate.session.totalScore}/60 on{' '}
-                  {timeCapsuleCandidate.session.date}) · Rewrite blind to measure real growth
-                </div>
-              </>
-            ) : latestTimeCapsuleSession ? (
-              <>
-                <div className="text-sm font-semibold text-ink-primary">
-                  {latestTimeCapsuleSession.drillVerdict?.headline ||
-                    'Blind Retest Logged'}
-                </div>
-                <div className="text-[11px] text-ink-secondary">
-                  {latestTimeCapsuleSession.drillVerdict?.summary}
-                </div>
-              </>
-            ) : (
-              <div className="space-y-1.5">
-                <div className="flex items-center gap-1.5 text-sm font-semibold text-ink-primary">
-                  <Lock className="w-3.5 h-3.5 text-ink-muted shrink-0" aria-hidden="true" />
-                  <span>
-                    {timeCapsuleStatus.completedCount} of {timeCapsuleStatus.requiredCount} entries sealed
-                  </span>
-                </div>
-                <p className="text-[11px] text-ink-muted leading-relaxed">
-                  {timeCapsuleStatus.naturalMessage}
-                </p>
-                <div className="flex items-center gap-1.5 max-w-[180px] pt-0.5">
-                  {Array.from({ length: timeCapsuleStatus.requiredCount }).map((_, idx) => (
-                    <span
-                      key={idx}
-                      className={`h-1.5 flex-1 rounded-full ${
-                        idx < timeCapsuleStatus.completedCount
-                          ? 'bg-accent'
-                          : 'bg-border-default'
-                      }`}
-                    />
-                  ))}
-                </div>
-              </div>
-            )}
-          </div>
-
-          {timeCapsuleCandidate && onLaunchTimeCapsule && (
-            <button
-              type="button"
-              data-testid="dashboard-launch-time-capsule"
-              onClick={() => onLaunchTimeCapsule(timeCapsuleCandidate.session)}
-              className="btn-primary inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-medium whitespace-nowrap shrink-0"
-            >
-              <span>Blind Retest</span>
-              <ArrowRight className="w-3.5 h-3.5" aria-hidden="true" />
-            </button>
-          )}
-        </div>
-      </section>
-
-      {/* Visual Analytics Grid */}
+      {/* Primary Trend & Spoken Fluency Charts */}
       <section className="grid grid-cols-1 lg:grid-cols-12 gap-4 sm:gap-6">
         <div className="card-surface lg:col-span-7 p-4 sm:p-6">
           <ScoreTrendChart sessions={completed} />
@@ -560,216 +339,99 @@ export function DashboardView({
         </div>
       </section>
 
-      {/* Converse Spoken Interaction Fluency vs Written Sessions (Recharts) */}
       <ConverseFluencyChart
         sessions={completed}
         onStartConverse={onStartConverse}
         onStartWriting={onStartWriting}
       />
 
-      {/* International Evaluation & Proficiency Standards */}
-      <section
-        aria-label="International English evaluation standards"
-        className="card-surface p-4 sm:p-6 space-y-5"
-      >
-        <div className="flex flex-wrap items-center justify-between gap-4">
+      {/* Collapsible Deep Benchmarks & History (IELTS/TOEFL, D3 Heatmap, Mode Breakdown, Consistency) */}
+      <section className="card-surface overflow-hidden">
+        <button
+          type="button"
+          data-testid="toggle-deep-benchmarks"
+          aria-expanded={showDeepBenchmarks}
+          onClick={() => setShowDeepBenchmarks((v) => !v)}
+          className="w-full px-4 sm:px-6 py-4 flex items-center justify-between gap-3 text-left hover:bg-subtle/40 transition-colors cursor-pointer"
+        >
           <div>
-            <div className="inline-flex items-center gap-1.5 text-xs font-medium text-ink-secondary">
-              <Award className="w-4 h-4 text-ink-primary" aria-hidden="true" />
-              <span>International Validation Standards</span>
+            <div className="text-sm font-semibold text-ink-primary">
+              International Benchmarks, Fluency Heatmap &amp; Activity History
             </div>
-            <h2 className="text-base font-semibold text-ink-primary mt-0.5">
-              CEFR, IELTS & TOEFL Writing Calibration
-            </h2>
-          </div>
-
-          <div className="grid grid-cols-2 sm:flex sm:flex-wrap items-center gap-x-5 gap-y-2 sm:gap-6 text-xs font-mono-tabular w-full sm:w-auto">
-            <div>
-              <span className="text-ink-muted">CEFR </span>
-              <span className="text-sm font-semibold text-ink-primary">
-                {metrics.latestCefr}
-              </span>
-            </div>
-            <div>
-              <span className="text-ink-muted">IELTS Band </span>
-              <span className="text-sm font-semibold text-status-success">
-                {metrics.avgIntl.ieltsBand.toFixed(1)}
-              </span>
-            </div>
-            <div>
-              <span className="text-ink-muted">TOEFL </span>
-              <span className="text-sm font-semibold text-ink-primary">
-                {metrics.avgIntl.toeflEquivalent}/30
-              </span>
-            </div>
-            <div>
-              <span className="text-ink-muted">Flesch Ease </span>
-              <span className="text-sm font-semibold text-ink-primary">
-                {metrics.avgIntl.fleschReadingEase}
-              </span>
-            </div>
-            <div>
-              <span className="text-ink-muted">FK Grade </span>
-              <span className="text-sm font-semibold text-ink-primary">
-                {metrics.avgIntl.fkGradeLevel}
-              </span>
+            <div className="text-xs font-mono-tabular text-ink-muted mt-0.5">
+              CEFR {heroPulse.latestCefr} · IELTS {avgIntl.ieltsBand.toFixed(1)} · TOEFL{' '}
+              {avgIntl.toeflEquivalent}/30 · {vocabulary.length} lexicon entries
             </div>
           </div>
-        </div>
-
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4">
-          {internationalBars.map((item) => (
-            <div
-              key={item.label}
-              className="p-3.5 rounded-lg border border-border-subtle bg-subtle space-y-2"
-            >
-              <div className="text-xs font-medium text-ink-primary leading-snug">
-                {item.label}
-              </div>
-              <div className="text-xl font-semibold font-mono-tabular text-ink-primary">
-                {item.value}
-                <span className="text-xs font-normal text-ink-muted">/10</span>
-              </div>
-              <div className="h-1.5 rounded-full bg-border-subtle overflow-hidden">
-                <div
-                  className="h-full bg-accent rounded-full"
-                  style={{ width: `${Math.min(100, item.value * 10)}%` }}
-                />
-              </div>
-              <div className="text-[11px] text-ink-muted">
-                {item.standard}
-              </div>
-            </div>
-          ))}
-        </div>
-      </section>
-
-      {/* 3-Month D3 Fluency Heatmap of 6 International Evaluation Metrics */}
-      <FluencyHeatmap
-        sessions={completed}
-        referenceDateISO={todayISO}
-        theme={theme}
-        onStartWriting={onStartWriting}
-      />
-
-      {/* Deep Fluency Insights: Mode Breakdown + Word Volume + Growth Lever */}
-      <section className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-        <div className="card-surface lg:col-span-5 p-6 space-y-4">
-          <div className="flex items-baseline justify-between gap-2">
-            <div>
-              <h3 className="text-sm font-semibold text-ink-primary">
-                Performance by Writing Mode
-              </h3>
-              <p className="text-xs text-ink-muted">
-                Mastery & word output across technical and creative genres
-              </p>
-            </div>
-            <span className="text-xs font-mono-tabular text-ink-muted">
-              CEFR {metrics.latestCefr}
-            </span>
-          </div>
-
-          <div className="space-y-3">
-            {metrics.modeBreakdown.map((item) => (
-              <div key={item.mode} className="space-y-1">
-                <div className="flex items-center justify-between text-xs">
-                  <span className="font-medium text-ink-primary">
-                    {item.label}
-                  </span>
-                  <span className="font-mono-tabular text-ink-secondary">
-                    {item.sessionCount > 0
-                      ? `${item.avgScore}/60 · ${item.avgPercentage.toFixed(0)}% · ${item.sessionCount}x`
-                      : 'No sessions yet'}
-                  </span>
-                </div>
-                <div className="h-2 rounded-sm bg-subtle overflow-hidden">
-                  <div
-                    className={`h-full rounded-sm transition-all duration-200 ${
-                      item.sessionCount > 0 ? 'bg-accent' : 'bg-transparent'
-                    }`}
-                    style={{ width: `${item.avgPercentage}%` }}
-                  />
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-
-        <div className="card-surface lg:col-span-4 p-6">
-          <WordVolumeChart sessions={completed} />
-        </div>
-
-        <div className="card-surface lg:col-span-3 p-6 flex flex-col justify-between gap-4">
-          <div className="space-y-3">
-            <div className="flex items-center gap-2 text-xs font-medium text-ink-secondary">
-              <Target className="w-4 h-4 text-ink-primary" aria-hidden="true" />
-              <span>Primary Growth Lever</span>
-            </div>
-
-            {metrics.growthLever ? (
-              <>
-                <div>
-                  <div className="font-display text-lg font-medium text-ink-primary">
-                    {metrics.growthLever.label}
-                  </div>
-                  <div className="mt-1 text-2xl font-semibold font-mono-tabular text-ink-primary">
-                    {metrics.growthLever.score}
-                    <span className="text-sm font-normal text-ink-muted">/10 avg</span>
-                  </div>
-                </div>
-                <p className="text-xs text-ink-secondary leading-relaxed">
-                  Raising your lowest pillar by +1.5 points pushes overall mastery above{' '}
-                  <span className="font-mono-tabular font-medium text-ink-primary">
-                    {Math.min(100, metrics.avgPct + 2.5).toFixed(1)}%
-                  </span>
-                  .
-                </p>
-              </>
+          <span className="inline-flex items-center gap-1 text-xs font-medium text-ink-secondary shrink-0">
+            <span>{showDeepBenchmarks ? 'Hide' : 'Expand'}</span>
+            {showDeepBenchmarks ? (
+              <ChevronUp className="w-4 h-4" aria-hidden="true" />
             ) : (
-              <p className="text-xs text-ink-muted leading-relaxed">
-                Complete your first evaluated draft to unlock your personalized growth lever.
-              </p>
+              <ChevronDown className="w-4 h-4" aria-hidden="true" />
             )}
+          </span>
+        </button>
 
-            {metrics.bestSession && (
-              <div className="pt-3 border-t border-border-subtle text-xs">
-                <div className="text-ink-muted">
-                  Personal Best
-                </div>
-                <div className="font-medium text-ink-primary mt-0.5 truncate">
-                  {metrics.bestSession.topicDescription}
-                </div>
-                <div className="font-mono-tabular text-status-success mt-0.5">
-                  {metrics.bestSession.totalScore}/60 ({metrics.bestSession.percentage.toFixed(1)}%)
+        {showDeepBenchmarks && (
+          <div className="px-4 sm:px-6 pb-6 pt-2 border-t border-border-subtle space-y-6 drawer-reveal">
+            <FluencyHeatmap
+              sessions={completed}
+              referenceDateISO={todayISO}
+              theme={theme}
+              onStartWriting={onStartWriting}
+            />
+
+            <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+              <div className="lg:col-span-6 space-y-3">
+                <h3 className="text-sm font-semibold text-ink-primary">
+                  Performance by Writing Mode
+                </h3>
+                <div className="space-y-2.5">
+                  {modeBreakdown.map((item) => (
+                    <div key={item.mode} className="space-y-1">
+                      <div className="flex items-center justify-between text-xs">
+                        <span className="font-medium text-ink-primary">
+                          {item.label}
+                        </span>
+                        <span className="font-mono-tabular text-ink-secondary">
+                          {item.sessionCount > 0
+                            ? `${item.avgScore}/60 · ${item.avgPercentage.toFixed(0)}% · ${item.sessionCount}x`
+                            : 'No sessions yet'}
+                        </span>
+                      </div>
+                      <div className="h-1.5 rounded-sm bg-subtle overflow-hidden">
+                        <div
+                          className={`h-full rounded-sm ${
+                            item.sessionCount > 0 ? 'bg-accent' : 'bg-transparent'
+                          }`}
+                          style={{ width: `${item.avgPercentage}%` }}
+                        />
+                      </div>
+                    </div>
+                  ))}
                 </div>
               </div>
-            )}
+
+              <div className="lg:col-span-6">
+                <WordVolumeChart sessions={completed} />
+              </div>
+            </div>
+
+            <ConsistencyGrid sessions={completed} referenceDateISO={todayISO} />
           </div>
-
-          <button
-            type="button"
-            onClick={onStartWriting}
-            className="btn-secondary w-full inline-flex items-center justify-center gap-1.5 px-3.5 py-2 text-xs font-medium"
-          >
-            <span>Practice Focus Area</span>
-            <ArrowUpRight className="w-3.5 h-3.5" aria-hidden="true" />
-          </button>
-        </div>
+        )}
       </section>
 
-      <section className="card-surface p-6">
-        <ConsistencyGrid sessions={completed} referenceDateISO={todayISO} />
-      </section>
-
-      {/* Session Ledger */}
-      <section className="card-surface p-6">
+      {/* Scannable Session Ledger */}
+      <section className="card-surface p-4 sm:p-6">
         <div className="flex flex-wrap items-center justify-between gap-4 mb-5">
           <div>
             <h2 className="text-base font-semibold text-ink-primary">
               Session Evaluation Ledger
             </h2>
             <p className="text-xs text-ink-muted mt-0.5">
-              Select any session to inspect rubric scores, international benchmarks, grammar fixes, and vocabulary upgrades.
+              Scan score, spoken readiness, and top issue tag at a glance — click any row for Before→After diff and full report.
             </p>
           </div>
 
@@ -787,7 +449,7 @@ export function DashboardView({
                 onClick={() => setLedgerView('summary')}
                 className="segmented-item px-2.5 py-1 text-xs font-medium"
               >
-                Summary Ledger
+                Scannable Ledger
               </button>
               <button
                 type="button"
@@ -798,7 +460,7 @@ export function DashboardView({
                 className="segmented-item inline-flex items-center gap-1 px-2.5 py-1 text-xs font-medium"
               >
                 <Table2 className="w-3.5 h-3.5" aria-hidden="true" />
-                <span>Cloud Tracker Sheet</span>
+                <span>Full Sheet</span>
               </button>
             </div>
 
@@ -830,7 +492,7 @@ export function DashboardView({
               <option value="linkedin">LinkedIn Post</option>
               <option value="email">Professional Email</option>
               <option value="friend">Friend Exchange</option>
-              <option value="technical">Technical & Interview</option>
+              <option value="technical">Technical &amp; Interview</option>
               <option value="creative">Creative Writing</option>
             </select>
           </div>
@@ -846,49 +508,63 @@ export function DashboardView({
               <thead>
                 <tr className="border-b border-border-subtle text-xs text-ink-muted">
                   <th className="py-2.5 pr-4 font-medium">Date</th>
-                  <th className="py-2.5 pr-4 font-medium">Category & Topic</th>
-                  <th className="py-2.5 pr-4 font-medium text-right">Words</th>
+                  <th className="py-2.5 pr-4 font-medium">Title &amp; Mode</th>
                   <th className="py-2.5 pr-4 font-medium text-right">Score</th>
-                  <th className="py-2.5 pr-4 font-medium text-right">Mastery</th>
-                  <th className="py-2.5 font-medium text-right">Action</th>
+                  <th className="py-2.5 pr-4 font-medium text-right">Spoken</th>
+                  <th className="py-2.5 pr-4 font-medium">Top Issue Tag</th>
+                  <th className="py-2.5 font-medium text-right">Inspect</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-border-subtle text-sm">
                 {filteredSessions.map((session) => {
-                  const intl = deriveInternationalMetrics(session);
+                  const topTag = getSessionTopIssueTag(session);
+                  const spokenPct =
+                    typeof session.spokenReadinessScore === 'number'
+                      ? session.spokenReadinessScore
+                      : Math.round(session.percentage);
                   return (
                     <tr
                       key={session.id}
-                      className="row-tactile"
+                      onClick={() => setSelectedSession(session)}
+                      className="row-tactile cursor-pointer"
                     >
                       <td className="py-3 pr-4 font-mono-tabular text-xs text-ink-secondary whitespace-nowrap">
                         {session.date}
                       </td>
-                      <td className="py-3 pr-4">
+                      <td className="py-3 pr-4 min-w-[200px]">
                         <div className="font-medium text-ink-primary">
                           {session.topicDescription}
                         </div>
                         <div className="text-xs text-ink-muted mt-0.5">
-                          {session.promptCategory} · {session.daySlot} · CEFR{' '}
-                          {session.cefrLevel} · IELTS {intl.ieltsBand.toFixed(1)}
+                          {MODE_LABELS[session.mode]} · {session.wordCount}w · CEFR{' '}
+                          {session.cefrLevel}
                         </div>
                       </td>
-                      <td className="py-3 pr-4 text-right font-mono-tabular text-xs text-ink-secondary">
-                        {session.wordCount}
-                      </td>
-                      <td className="py-3 pr-4 text-right font-mono-tabular text-xs font-medium text-ink-primary">
+                      <td className="py-3 pr-4 text-right font-mono-tabular text-xs font-medium text-ink-primary whitespace-nowrap">
                         {session.totalScore}/60
                       </td>
-                      <td className="py-3 pr-4 text-right font-mono-tabular text-xs text-status-success font-medium">
-                        {session.percentage.toFixed(1)}%
+                      <td className="py-3 pr-4 text-right font-mono-tabular text-xs text-ink-secondary whitespace-nowrap">
+                        {spokenPct}%
+                      </td>
+                      <td className="py-3 pr-4 text-xs text-ink-secondary whitespace-nowrap">
+                        {topTag ? (
+                          <span className="inline-block px-2 py-0.5 rounded border border-border-subtle bg-subtle text-[11px]">
+                            {ERROR_TAG_META[topTag].label}
+                          </span>
+                        ) : (
+                          <span className="text-ink-muted">Clean pass</span>
+                        )}
                       </td>
                       <td className="py-3 text-right">
                         <button
                           type="button"
-                          onClick={() => setSelectedSession(session)}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setSelectedSession(session);
+                          }}
                           className="inline-link-tactile text-xs font-medium whitespace-nowrap"
                         >
-                          Inspect
+                          Diff &amp; Report
                         </button>
                       </td>
                     </tr>
@@ -902,121 +578,89 @@ export function DashboardView({
             <table className="w-max min-w-full text-left border-collapse text-xs">
               <thead>
                 <tr className="border-b border-border-subtle bg-subtle text-[11px] text-ink-secondary">
-                  <th className="py-2.5 px-3 font-semibold whitespace-nowrap">Session ID</th>
                   <th className="py-2.5 px-3 font-semibold whitespace-nowrap">Date</th>
-                  <th className="py-2.5 px-3 font-semibold whitespace-nowrap">Day &amp; Slot</th>
-                  <th className="py-2.5 px-3 font-semibold whitespace-nowrap">Prompt Category</th>
-                  <th className="py-2.5 px-3 font-semibold whitespace-nowrap">Topic Description</th>
-                  <th className="py-2.5 px-3 font-semibold text-right whitespace-nowrap">Word Count</th>
-                  <th className="py-2.5 px-3 font-semibold text-right whitespace-nowrap">Natural Voice &amp; Flow (/10)</th>
-                  <th className="py-2.5 px-3 font-semibold text-right whitespace-nowrap">Clarity &amp; Simplicity (/10)</th>
-                  <th className="py-2.5 px-3 font-semibold text-right whitespace-nowrap">Grammar &amp; Mechanics (/10)</th>
-                  <th className="py-2.5 px-3 font-semibold text-right whitespace-nowrap">Tone &amp; Engagement (/10)</th>
-                  <th className="py-2.5 px-3 font-semibold text-right whitespace-nowrap">Sentence Variety &amp; Cadence (/10)</th>
-                  <th className="py-2.5 px-3 font-semibold text-right whitespace-nowrap">Conciseness &amp; Directness (/10)</th>
-                  <th className="py-2.5 px-3 font-semibold text-right whitespace-nowrap">Total Score (/60)</th>
-                  <th className="py-2.5 px-3 font-semibold text-right whitespace-nowrap">Percentage (%)</th>
-                  <th className="py-2.5 px-3 font-semibold whitespace-nowrap">Feedback Implemented?</th>
-                  <th className="py-2.5 px-3 font-semibold whitespace-nowrap">What Improved Since Last Session</th>
-                  <th className="py-2.5 px-3 font-semibold whitespace-nowrap">Strict Improvements &amp; Pinpointed Fixes</th>
-                  <th className="py-2.5 px-3 font-semibold whitespace-nowrap">Vocabulary Upgrades (Used -&gt; Better Alternative)</th>
-                  <th className="py-2.5 px-3 font-semibold whitespace-nowrap">Status</th>
+                  <th className="py-2.5 px-3 font-semibold whitespace-nowrap">Mode</th>
+                  <th className="py-2.5 px-3 font-semibold whitespace-nowrap">Topic</th>
+                  <th className="py-2.5 px-3 font-semibold text-right whitespace-nowrap">Words</th>
+                  <th className="py-2.5 px-3 font-semibold text-right whitespace-nowrap">Voice</th>
+                  <th className="py-2.5 px-3 font-semibold text-right whitespace-nowrap">Clarity</th>
+                  <th className="py-2.5 px-3 font-semibold text-right whitespace-nowrap">Grammar</th>
+                  <th className="py-2.5 px-3 font-semibold text-right whitespace-nowrap">Tone</th>
+                  <th className="py-2.5 px-3 font-semibold text-right whitespace-nowrap">Cadence</th>
+                  <th className="py-2.5 px-3 font-semibold text-right whitespace-nowrap">Concise</th>
+                  <th className="py-2.5 px-3 font-semibold text-right whitespace-nowrap">Total</th>
+                  <th className="py-2.5 px-3 font-semibold whitespace-nowrap">Feedback</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-border-subtle">
-                {filteredSessions.map((session) => {
-                  const vocabText =
-                    session.vocabUpgrades.length > 0
-                      ? session.vocabUpgrades
-                          .map((v) => `${v.used} -> ${v.betterAlternative}`)
-                          .join('; ')
-                      : '—';
-                  return (
-                    <tr
-                      key={session.id}
-                      onClick={() => setSelectedSession(session)}
-                      className="row-tactile cursor-pointer align-top"
-                    >
-                      <td className="py-2.5 px-3 font-mono-tabular text-[11px] text-ink-muted whitespace-nowrap">
-                        {session.id}
-                      </td>
-                      <td className="py-2.5 px-3 font-mono-tabular whitespace-nowrap text-ink-secondary">
-                        {session.date}
-                      </td>
-                      <td className="py-2.5 px-3 whitespace-nowrap text-ink-secondary">
-                        {session.daySlot}
-                      </td>
-                      <td className="py-2.5 px-3 whitespace-nowrap text-ink-secondary">
-                        {session.promptCategory}
-                      </td>
-                      <td className="py-2.5 px-3 min-w-[220px] max-w-[280px] font-medium text-ink-primary">
-                        {session.topicDescription}
-                      </td>
-                      <td className="py-2.5 px-3 text-right font-mono-tabular text-ink-secondary">
-                        {session.wordCount}
-                      </td>
-                      <td className="py-2.5 px-3 text-right font-mono-tabular text-ink-secondary">
-                        {session.scores.naturalVoiceFlow}
-                      </td>
-                      <td className="py-2.5 px-3 text-right font-mono-tabular text-ink-secondary">
-                        {session.scores.claritySimplicity}
-                      </td>
-                      <td className="py-2.5 px-3 text-right font-mono-tabular text-ink-secondary">
-                        {session.scores.grammarMechanics}
-                      </td>
-                      <td className="py-2.5 px-3 text-right font-mono-tabular text-ink-secondary">
-                        {session.scores.toneEngagement}
-                      </td>
-                      <td className="py-2.5 px-3 text-right font-mono-tabular text-ink-secondary">
-                        {session.scores.sentenceVarietyCadence}
-                      </td>
-                      <td className="py-2.5 px-3 text-right font-mono-tabular text-ink-secondary">
-                        {session.scores.concisenessDirectness}
-                      </td>
-                      <td className="py-2.5 px-3 text-right font-mono-tabular font-semibold text-ink-primary">
-                        {session.totalScore}
-                      </td>
-                      <td className="py-2.5 px-3 text-right font-mono-tabular font-semibold text-status-success">
-                        {session.percentage.toFixed(1)}%
-                      </td>
-                      <td className="py-2.5 px-3 whitespace-nowrap text-ink-secondary">
-                        {session.feedbackImplemented}
-                      </td>
-                      <td className="py-2.5 px-3 min-w-[240px] max-w-[300px] text-ink-secondary">
-                        {session.whatImproved}
-                      </td>
-                      <td className="py-2.5 px-3 min-w-[240px] max-w-[300px] text-ink-secondary">
-                        {session.strictImprovements}
-                      </td>
-                      <td className="py-2.5 px-3 min-w-[220px] max-w-[280px] text-ink-secondary">
-                        {vocabText}
-                      </td>
-                      <td className="py-2.5 px-3 whitespace-nowrap font-medium text-status-success">
-                        {session.evaluationPending ? 'Queued (AI Reset)' : session.status}
-                      </td>
-                    </tr>
-                  );
-                })}
+                {filteredSessions.map((session) => (
+                  <tr
+                    key={session.id}
+                    onClick={() => setSelectedSession(session)}
+                    className="row-tactile cursor-pointer align-top"
+                  >
+                    <td className="py-2.5 px-3 font-mono-tabular whitespace-nowrap text-ink-secondary">
+                      {session.date}
+                    </td>
+                    <td className="py-2.5 px-3 whitespace-nowrap text-ink-secondary">
+                      {MODE_LABELS[session.mode]}
+                    </td>
+                    <td className="py-2.5 px-3 min-w-[200px] max-w-[280px] font-medium text-ink-primary">
+                      {session.topicDescription}
+                    </td>
+                    <td className="py-2.5 px-3 text-right font-mono-tabular text-ink-secondary">
+                      {session.wordCount}
+                    </td>
+                    <td className="py-2.5 px-3 text-right font-mono-tabular text-ink-secondary">
+                      {session.scores.naturalVoiceFlow}
+                    </td>
+                    <td className="py-2.5 px-3 text-right font-mono-tabular text-ink-secondary">
+                      {session.scores.claritySimplicity}
+                    </td>
+                    <td className="py-2.5 px-3 text-right font-mono-tabular text-ink-secondary">
+                      {session.scores.grammarMechanics}
+                    </td>
+                    <td className="py-2.5 px-3 text-right font-mono-tabular text-ink-secondary">
+                      {session.scores.toneEngagement}
+                    </td>
+                    <td className="py-2.5 px-3 text-right font-mono-tabular text-ink-secondary">
+                      {session.scores.sentenceVarietyCadence}
+                    </td>
+                    <td className="py-2.5 px-3 text-right font-mono-tabular text-ink-secondary">
+                      {session.scores.concisenessDirectness}
+                    </td>
+                    <td className="py-2.5 px-3 text-right font-mono-tabular font-semibold text-ink-primary">
+                      {session.totalScore}/60
+                    </td>
+                    <td className="py-2.5 px-3 whitespace-nowrap text-ink-secondary">
+                      {session.feedbackImplemented}
+                    </td>
+                  </tr>
+                ))}
               </tbody>
             </table>
           </div>
         )}
       </section>
 
-      {/* Session Inspection Modal */}
+      {/* Slide-over Session Inspection Drawer */}
       {selectedSession && selectedSessionIntl && (
         <div
           role="dialog"
           aria-modal="true"
           aria-labelledby="session-modal-title"
-          className="modal-scrim fixed inset-0 z-50 flex items-center justify-center p-4"
+          className="modal-scrim fixed inset-0 z-50 flex justify-end"
+          onClick={() => setSelectedSession(null)}
         >
-          <div className="modal-panel max-w-3xl w-full max-h-[88vh] overflow-y-auto p-6 space-y-5">
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className="modal-panel w-full max-w-2xl h-full overflow-y-auto p-5 sm:p-6 space-y-5 rounded-none sm:rounded-l-xl"
+          >
             <div className="flex items-start justify-between gap-4 pb-3 border-b border-border-subtle">
               <div>
                 <div className="text-xs text-ink-muted font-mono-tabular">
-                  {selectedSession.id} · {selectedSession.date} ·{' '}
-                  {MODE_LABELS[selectedSession.mode]} · {selectedSession.wordCount} words
+                  {selectedSession.date} · {MODE_LABELS[selectedSession.mode]} ·{' '}
+                  {selectedSession.wordCount} words
                 </div>
                 <h2
                   id="session-modal-title"
@@ -1037,6 +681,7 @@ export function DashboardView({
 
             <EvaluationReportView
               defaultView="detailed"
+              draftContent={selectedSession.content}
               report={{
                 topic: selectedSession.topicDescription,
                 modeLabel: MODE_LABELS[selectedSession.mode],
@@ -1057,17 +702,20 @@ export function DashboardView({
                 vocabUpgrades: selectedSession.vocabUpgrades,
                 routingMeta: selectedSession.routingMeta,
                 modelUsed: selectedSession.modelUsed,
+                spokenReadinessScore: selectedSession.spokenReadinessScore,
+                signalNoiseRatio: selectedSession.signalNoiseRatio,
+                audienceReaction: selectedSession.audienceReaction,
+                audience: selectedSession.audience,
+                calqueFixes: selectedSession.calqueFixes,
+                drillType: selectedSession.drillType,
+                drillMeta: selectedSession.drillMeta,
+                drillVerdict: selectedSession.drillVerdict,
+                revisionDelta: selectedSession.revisionDelta,
+                edits: selectedSession.edits,
+                toneCheck: selectedSession.toneCheck,
+                nextDraftPriority: selectedSession.nextDraftPriority,
               }}
             />
-
-            <div className="pt-3 border-t border-border-subtle">
-              <h3 className="text-xs font-semibold text-ink-muted mb-1.5">
-                Saved Draft
-              </h3>
-              <div className="p-4 rounded-lg bg-subtle border border-border-subtle text-sm leading-relaxed whitespace-pre-wrap text-ink-primary">
-                {selectedSession.content}
-              </div>
-            </div>
           </div>
         </div>
       )}

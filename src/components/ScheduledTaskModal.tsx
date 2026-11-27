@@ -24,7 +24,7 @@ import {
   deriveInternationalMetrics,
   type CoachPerformanceContext,
 } from '../utils/analytics';
-import { getApiUrl, safeParseJsonResponse } from '../utils/apiBase';
+import { apiFetch, safeParseJsonResponse } from '../utils/apiBase';
 
 interface EvaluationPayload {
   evaluationStatus?: 'completed' | 'queued_for_reset';
@@ -99,7 +99,7 @@ export function ScheduledTaskModal({
     setPivoting(true);
     setError(null);
     try {
-      const res = await fetch(getApiUrl('/api/pivot-topic'), {
+      const res = await apiFetch('/api/pivot-topic', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -141,7 +141,7 @@ export function ScheduledTaskModal({
     }
     setRealtimeLoading(true);
     try {
-      const res = await fetch(getApiUrl('/api/realtime-assist'), {
+      const res = await apiFetch('/api/realtime-assist', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -194,7 +194,7 @@ export function ScheduledTaskModal({
     }
     setEvaluating(true);
     try {
-      const res = await fetch(getApiUrl('/api/evaluate'), {
+      const res = await apiFetch('/api/evaluate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

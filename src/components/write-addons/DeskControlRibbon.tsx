@@ -2,6 +2,7 @@ import React, { useRef, useState } from 'react';
 import {
   ChevronDown,
   Feather,
+  Focus,
   History,
   Lock,
   SlidersHorizontal,
@@ -218,6 +219,8 @@ interface DeskControlRibbonProps {
   onRollConstraint: () => void;
   onCloseConstraintPicker: () => void;
   onToggleFlowSprint: () => void;
+  sentenceFocusMode?: boolean;
+  onToggleSentenceFocus?: () => void;
   onToggleMobileControls: () => void;
 }
 
@@ -244,6 +247,8 @@ export const DeskControlRibbon: React.FC<DeskControlRibbonProps> = ({
   onRollConstraint,
   onCloseConstraintPicker,
   onToggleFlowSprint,
+  sentenceFocusMode = false,
+  onToggleSentenceFocus,
   onToggleMobileControls,
 }) => {
   const [styleTrayOpen, setStyleTrayOpen] = useState(false);
@@ -497,6 +502,26 @@ export const DeskControlRibbon: React.FC<DeskControlRibbonProps> = ({
                 {flowLockActive ? `Flow ${flowSecondsLabel}` : '3m Flow'}
               </span>
             </button>
+
+            {/* Optional Sentence Focus Mode Toggle */}
+            {onToggleSentenceFocus && (
+              <button
+                type="button"
+                data-testid="sentence-focus-toggle"
+                data-active={sentenceFocusMode ? 'true' : 'false'}
+                aria-pressed={sentenceFocusMode}
+                onClick={onToggleSentenceFocus}
+                title="Sentence Focus Mode: softly dims surrounding paragraphs so only your active thought stands out"
+                className={`inline-flex items-center gap-1 px-2 py-1.5 rounded-md text-[11px] font-medium whitespace-nowrap transition-all cursor-pointer ${
+                  sentenceFocusMode
+                    ? 'bg-surface border border-ink-primary/40 text-ink-primary shadow-xs'
+                    : 'bg-transparent border border-transparent hover:border-border-default hover:bg-surface/70 text-ink-secondary hover:text-ink-primary'
+                }`}
+              >
+                <Focus className="w-3 h-3 shrink-0" aria-hidden="true" />
+                <span className="hidden md:inline">Focus</span>
+              </button>
+            )}
           </div>
         </div>
 

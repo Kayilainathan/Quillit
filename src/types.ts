@@ -123,11 +123,40 @@ export interface InternationalMetrics {
   fkGradeLevel: number; // e.g., 9.2
 }
 
+export type ErrorTag =
+  | 'subject-verb'
+  | 'tense-shift'
+  | 'article-preposition'
+  | 'run-on-sentence'
+  | 'word-choice'
+  | 'regional-calque'
+  | 'hedging-passive'
+  | 'tone-mismatch'
+  | 'repetition-filler'
+  | 'punctuation-spacing';
+
+export type EditDimension = 'grammar' | 'tone' | 'flow' | 'clarity' | 'calque';
+
+export interface UnifiedEdit {
+  original: string;
+  improved: string;
+  dimension: EditDimension;
+  errorTag: ErrorTag;
+  rule: string;
+}
+
+export interface ToneCheck {
+  match: 'On Target' | 'Slightly Off' | 'Mismatch';
+  audienceReaction: string;
+  toneFix: string;
+}
+
 export interface GrammarFix {
   original: string;
   corrected: string;
   rule: string;
   category: string;
+  errorTag?: ErrorTag;
 }
 
 export interface VocabSuggestion {
@@ -181,6 +210,8 @@ export interface PinpointedRewrite {
   rewrite: string;
   rule: string;
   category?: string;
+  dimension?: EditDimension;
+  errorTag?: ErrorTag;
 }
 
 export interface EvaluationRoutingMeta {
@@ -230,6 +261,10 @@ export interface WritingSession {
   drillVerdict?: DrillVerdict;
   revisionOfSessionId?: string;
   revisionDelta?: number; // Pass 2 - Pass 1 total score delta (-60..60)
+  /** v4.0 Unified Diagnostic Evaluation fields */
+  edits?: UnifiedEdit[];
+  toneCheck?: ToneCheck;
+  nextDraftPriority?: string;
   status: 'Completed' | 'Draft';
   evaluationPending?: boolean;
   modelUsed?: string;

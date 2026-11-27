@@ -47,7 +47,9 @@ import type {
   RubricMetricNotes,
   RubricScores,
   StudentProfile,
+  ToneCheck,
   ToneSetting,
+  UnifiedEdit,
   VocabEntry,
   VocabSuggestion,
   WritingMode,
@@ -63,6 +65,7 @@ import {
   deriveInternationalMetrics,
   getVisibleWritePageTasks,
   type CoachPerformanceContext,
+  type PracticeWeaknessPayload,
 } from '../utils/analytics';
 import {
   drawNextCurriculumRandomTopic,
@@ -72,7 +75,7 @@ import {
   type CuratedRandomTopic,
 } from '../utils/topicDeck';
 import { buildAdaptivePromptContext } from '../utils/adaptivePromptProfile';
-import { getApiUrl, safeParseJsonResponse } from '../utils/apiBase';
+import { apiFetch, safeParseJsonResponse } from '../utils/apiBase';
 import { QuickAddVocabModal } from './QuickAddVocabModal';
 import {
   applyAllOfflineIssues,
@@ -129,6 +132,8 @@ import { PracticeAddonStage } from './write-addons/PracticeAddonStage';
 import { TextAnalysisDrawer } from './write-addons/TextAnalysisDrawer';
 import { ThreeRoomsDesk } from './write-addons/ThreeRoomsDesk';
 import { WritingFlowMeter } from './write-addons/WritingFlowMeter';
+import { SentenceFocusOverlay } from './write-addons/SentenceFocusOverlay';
+import { findPhraseRangeInDraft } from '../utils/sentenceFocus';
 import {
   analyzeWritingSample,
   type ProfessionalVocabAlternative,
@@ -199,12 +204,15 @@ interface EvaluationPayload {
   masteredWordsUsed?: string[];
   grammarFixes: GrammarFix[];
   vocabUpgrades: VocabSuggestion[];
-  // v3.1 fields
+  // v3.1 & v4.0 fields
   spokenReadinessScore?: number;
   signalNoiseRatio?: number;
   audienceReaction?: string;
   calqueFixes?: CalqueFix[];
   drillVerdict?: DrillVerdict;
+  edits?: UnifiedEdit[];
+  toneCheck?: ToneCheck;
+  nextDraftPriority?: string;
 }
 
 interface WriteStudioProps {
@@ -266,6 +274,10 @@ interface WriteStudioProps {
     nonce: number;
     originSession?: WritingSession | null;
   } | null;
+  requestedWeaknessToken?: {
+    payload: PracticeWeaknessPayload;
+    nonce: number;
+  } | null;
 }
 
 const COMPLETED_SKELETON_IDS_KEY = 'quillit_completed_skeleton_ids_v1';
@@ -321,6 +333,7 @@ export function WriteStudio({
   requestedPracticeWord = null,
   onClearRequestedPracticeWord,
   requestedDrillToken = null,
+  requestedWeaknessToken = null,
 }: WriteStudioProps) {
   const [mode, setMode] = useState<WritingMode>(initialMode);
   const [tone, setTone] = useState<ToneSetting>(initialTone);
@@ -750,6 +763,48 @@ export function WriteStudio({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [requestedDrillToken?.nonce]);
 
+  const [activeWeaknessReminder, setActiveWeaknessReminder] = useState<{
+    pillarLabel: string;
+    feedbackReminder: string;
+  } | null>(null);
+
+  // Sync external "Practice This Weakness" launch from Diagnostic Dashboard
+  useEffect(() => {
+    if (!requestedWeaknessToken) return;
+    const p = requestedWeaknessToken.payload;
+    setActiveDrill('standard');
+    setMode(p.mode);
+    setTone(p.tone);
+    setAudience(p.audience);
+    setTopic(p.topic);
+    setContent('');
+    setEvaluation(null);
+    setSavedSuccess(false);
+    setRevisionContext(null);
+    setSuggestedTopicMeta(null);
+    setActiveWeaknessReminder({
+      pillarLabel: p.pillarLabel,
+      feedbackReminder: p.feedbackReminder,
+    });
+    window.setTimeout(() => document.getElementById('writing-editor')?.focus(), 60);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [requestedWeaknessToken?.nonce]);
+
+  const [sentenceFocusMode, setSentenceFocusMode] = useState(false);
+  const [editorCaretIndex, setEditorCaretIndex] = useState(0);
+  const [editorScrollTop, setEditorScrollTop] = useState(0);
+
+  function handleLocateEvaluationPhrase(phrase: string) {
+    if (activeDrill === 'three-rooms') return;
+    const range = findPhraseRangeInDraft(content, phrase);
+    if (!range) return;
+    const el = document.getElementById('writing-editor') as HTMLTextAreaElement | null;
+    if (!el) return;
+    el.focus();
+    el.setSelectionRange(range.start, range.end);
+    setEditorCaretIndex(range.start);
+  }
+
   function applySkeletonPassage(
     picked: SkeletonPassage,
     options?: { preserveUserTopic?: boolean; explicitClues?: string[] }
@@ -834,7 +889,7 @@ export function WriteStudio({
     const shouldUseTopic = options.adaptToActiveTopic || Boolean(activeTopicStr);
 
     try {
-      const res = await fetch(getApiUrl('/api/skeleton-passage'), {
+      const res = await apiFetch('/api/skeleton-passage', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -1402,7 +1457,7 @@ export function WriteStudio({
               vocabulary,
               todayISO
             );
-            const res = await fetch(getApiUrl('/api/topics'), {
+            const res = await apiFetch('/api/topics', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({
@@ -1495,7 +1550,7 @@ export function WriteStudio({
         vocabulary,
         todayISO
       );
-      const res = await fetch(getApiUrl('/api/topics'), {
+      const res = await apiFetch('/api/topics', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -1755,7 +1810,7 @@ export function WriteStudio({
     setPivoting(true);
     setErrorMessage(null);
     try {
-      const res = await fetch(getApiUrl('/api/pivot-topic'), {
+      const res = await apiFetch('/api/pivot-topic', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -2136,6 +2191,9 @@ export function WriteStudio({
       drillType: activeDrill,
       drillMeta,
       drillVerdict: finalVerdict,
+      edits: evalPayload.edits,
+      toneCheck: evalPayload.toneCheck,
+      nextDraftPriority: evalPayload.nextDraftPriority,
       revisionOfSessionId: revisionContext?.pass1SessionId,
       revisionDelta,
       status: 'Completed',
@@ -2306,7 +2364,7 @@ export function WriteStudio({
     }, SLOW_EVAL_THRESHOLD_MS);
 
     try {
-      const res = await fetch(getApiUrl('/api/evaluate'), {
+      const res = await apiFetch('/api/evaluate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -3042,6 +3100,11 @@ export function WriteStudio({
                   }}
                   onCloseConstraintPicker={() => setShowConstraintPicker(false)}
                   onToggleFlowSprint={handleToggleFlowSprint}
+                  sentenceFocusMode={sentenceFocusMode}
+                  onToggleSentenceFocus={() => {
+                    playTactileClick(tactileSoundEnabled);
+                    setSentenceFocusMode((v) => !v);
+                  }}
                   onToggleMobileControls={() => {
                     playTactileClick(tactileSoundEnabled);
                     setMobileControlsOpen((v) => !v);
@@ -3362,6 +3425,29 @@ export function WriteStudio({
                 </div>
               )}
 
+              {/* Active Targeted Weakness Coaching Reminder (launched from Dashboard) */}
+              {activeWeaknessReminder && (
+                <div
+                  data-testid="active-weakness-reminder"
+                  className="drawer-reveal flex items-start justify-between gap-2 pb-3 border-b border-border-subtle text-xs"
+                >
+                  <div className="text-ink-secondary leading-relaxed">
+                    <span className="font-semibold text-ink-primary">
+                      Targeted Drill ({activeWeaknessReminder.pillarLabel}):{' '}
+                    </span>
+                    {activeWeaknessReminder.feedbackReminder}
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setActiveWeaknessReminder(null)}
+                    aria-label="Dismiss targeted drill reminder"
+                    className="btn-ghost p-1 shrink-0"
+                  >
+                    <X className="w-3.5 h-3.5" aria-hidden="true" />
+                  </button>
+                </div>
+              )}
+
               {/* Draft Title (Auto-resizes vertically so long topics never clip) */}
               <div className="border-b border-border-subtle pb-3">
                 <label htmlFor="draft-topic" className="sr-only">
@@ -3479,16 +3565,38 @@ export function WriteStudio({
                 ) : (
                   <div
                     key={flowShakeTick}
-                    className={flowShakeTick > 0 && flowHintVisible ? 'flow-shake' : ''}
+                    className={`relative mx-auto w-full max-w-[65ch] py-1 sm:py-2 ${
+                      flowShakeTick > 0 && flowHintVisible ? 'flow-shake' : ''
+                    }`}
                   >
                     <label htmlFor="writing-editor" className="sr-only">
                       Writing editor
                     </label>
+                    {sentenceFocusMode && content.length > 0 && (
+                      <SentenceFocusOverlay
+                        text={content}
+                        caretIndex={editorCaretIndex}
+                        scrollTop={editorScrollTop}
+                      />
+                    )}
                     <textarea
                       id="writing-editor"
                       value={content}
+                      onSelect={(e) => {
+                        setEditorCaretIndex(e.currentTarget.selectionStart ?? 0);
+                      }}
+                      onKeyUp={(e) => {
+                        setEditorCaretIndex(e.currentTarget.selectionStart ?? 0);
+                      }}
+                      onClick={(e) => {
+                        setEditorCaretIndex(e.currentTarget.selectionStart ?? 0);
+                      }}
+                      onScroll={(e) => {
+                        setEditorScrollTop(e.currentTarget.scrollTop);
+                      }}
                       onChange={(e) => {
                         const nextVal = e.target.value;
+                        setEditorCaretIndex(e.currentTarget.selectionStart ?? nextVal.length);
                         trackEditorTyping(content, nextVal);
                         setContent(nextVal);
                         setSavedSuccess(false);
@@ -3543,7 +3651,7 @@ export function WriteStudio({
                         triggerFlowBlockFeedback();
                       }
                     }}
-                    rows={focusMode ? 17 : 9}
+                    rows={focusMode ? 17 : 10}
                     placeholder={
                       activeDrill === 'skeleton'
                         ? `Reconstruct the passage from your ${skeletonClues.length || 3} skeleton beats in your own natural words...`
@@ -3561,7 +3669,11 @@ export function WriteStudio({
                                     ? 'Begin with a concrete image, sound, or turning point...'
                                     : 'Begin writing freely. Your words stay private on this device...'
                     }
-                    className="w-full max-w-[66ch] bg-transparent text-[16px] sm:text-base leading-[1.82] sm:leading-[1.85] text-ink-primary placeholder:text-ink-muted resize-y focus:outline-none"
+                    className={`relative z-10 w-full bg-transparent text-[16px] sm:text-base leading-[1.82] sm:leading-[1.85] placeholder:text-ink-muted resize-y focus:outline-none ${
+                      sentenceFocusMode && content.length > 0
+                        ? 'text-transparent caret-ink-primary'
+                        : 'text-ink-primary'
+                    }`}
                   />
                 </div>
               )}
@@ -4043,6 +4155,9 @@ export function WriteStudio({
                     routingMeta: evaluation.routingMeta,
                     modelUsed: evaluation.modelUsed,
                     spokenReadinessScore: evaluation.spokenReadinessScore,
+                    edits: evaluation.edits,
+                    toneCheck: evaluation.toneCheck,
+                    nextDraftPriority: evaluation.nextDraftPriority,
                     signalNoiseRatio: evaluation.signalNoiseRatio,
                     audienceReaction: evaluation.audienceReaction,
                     audience,
@@ -4062,6 +4177,7 @@ export function WriteStudio({
                   onApplyAllGrammarFixes={handleApplyAllEvaluationFixes}
                   onSaveVocabItem={(v) => handleSaveVocabItem(v)}
                   onStartRevision={handleStartRevisionPass}
+                  onLocatePhrase={handleLocateEvaluationPhrase}
                 />
               </div>
             ) : null}

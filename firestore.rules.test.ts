@@ -62,3 +62,15 @@ test('firestore.rules validates all v3.1 UserProfile, WritingSession, CalendarSl
     'mastered',
   ]);
 });
+
+test('firestore.rules validates v4.0 Draft updates and unified edits/toneCheck/nextDraftPriority in lockstep with blueprint', () => {
+  assert.ok(rules.includes("'content', 'wordCount', 'topicDescription'"));
+  assert.ok(rules.includes("data.edits is list && data.edits.size() <= 12"));
+  assert.ok(rules.includes("data.toneCheck is map && data.toneCheck.keys().size() <= 5"));
+  assert.ok(rules.includes("data.nextDraftPriority is string && data.nextDraftPriority.size() <= 240"));
+
+  assert.equal(blueprint.entities.WritingSessionDoc.properties.edits.type, 'array');
+  assert.equal(blueprint.entities.WritingSessionDoc.properties.toneCheck.type, 'object');
+  assert.equal(blueprint.entities.WritingSessionDoc.properties.nextDraftPriority.maxLength, 240);
+});
+

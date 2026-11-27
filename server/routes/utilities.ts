@@ -8,7 +8,12 @@ import {
   makeCacheKey,
 } from '../lib/geminiCascade';
 import {
+  CategorizeVocabRequestSchema,
+  PivotTopicRequestSchema,
   RealtimeAssistRequestSchema,
+  ScheduleTriweeklyRequestSchema,
+  SuggestFirstMonthRequestSchema,
+  TopicsRequestSchema,
   buildErrorEnvelope,
   createRequestId,
 } from '../lib/validation';
@@ -321,17 +326,29 @@ export function createUtilitiesRouter(): Router {
   });
 
   router.post('/api/topics', async (req, res) => {
+    const requestId = createRequestId();
+    const startedAt = Date.now();
+    const parsedReq = TopicsRequestSchema.safeParse(req.body ?? {});
+    if (!parsedReq.success) {
+      res.status(400).json(
+        buildErrorEnvelope({
+          code: 'INVALID_TOPICS_REQUEST',
+          message: parsedReq.error.issues[0]?.message || 'Invalid topics request payload.',
+          requestId,
+          startedAtMs: startedAt,
+        })
+      );
+      return;
+    }
     const {
-      mode = 'Technical & Interview',
-      tone = 'Professional-Warm',
+      mode,
+      tone,
       focusArea,
-      existingTopics = [],
+      existingTopics,
       studentProfile,
       adaptiveWritingProfile,
-    } = req.body ?? {};
-    const avoidSample = Array.isArray(existingTopics)
-      ? existingTopics.slice(-40).map(String).join('; ')
-      : '';
+    } = parsedReq.data;
+    const avoidSample = existingTopics.slice(-40).join('; ');
     const persona =
       adaptiveWritingProfile?.personaSummary ||
       (studentProfile?.collegeDegree
@@ -425,6 +442,20 @@ Strictly avoid repeating any of these past/scheduled topics: ${avoidSample || 'n
   });
 
   router.post('/api/schedule-triweekly', async (req, res) => {
+    const requestId = createRequestId();
+    const startedAt = Date.now();
+    const parsedReq = ScheduleTriweeklyRequestSchema.safeParse(req.body ?? {});
+    if (!parsedReq.success) {
+      res.status(400).json(
+        buildErrorEnvelope({
+          code: 'INVALID_SCHEDULE_REQUEST',
+          message: parsedReq.error.issues[0]?.message || 'Invalid schedule request payload.',
+          requestId,
+          startedAtMs: startedAt,
+        })
+      );
+      return;
+    }
     const {
       cycleDates,
       customDates,
@@ -434,7 +465,7 @@ Strictly avoid repeating any of these past/scheduled topics: ${avoidSample || 'n
       performanceContext,
       studentProfile,
       adaptiveWritingProfile,
-    } = req.body ?? {};
+    } = parsedReq.data;
 
     type DateSpec = {
       scheduledDate: string;
@@ -725,13 +756,25 @@ Focus note: ${focusNote || 'Fresh 10-minute spoken-first expressive rotation'}`,
     req: Parameters<Parameters<Router['post']>[1]>[0],
     res: Parameters<Parameters<Router['post']>[1]>[1]
   ) => {
-    const { slot, customFocus } = req.body ?? {};
-    if (!slot || typeof customFocus !== 'string' || customFocus.trim().length < 3) {
-      res.status(400).json({ error: 'Provide a topic or gadget focus to pivot onto.' });
+    const requestId = createRequestId();
+    const startedAt = Date.now();
+    const parsedReq = PivotTopicRequestSchema.safeParse(req.body ?? {});
+    if (!parsedReq.success) {
+      res.status(400).json(
+        buildErrorEnvelope({
+          code: 'INVALID_PIVOT_REQUEST',
+          message:
+            parsedReq.error.issues[0]?.message ||
+            'Provide a topic or gadget focus to pivot onto.',
+          requestId,
+          startedAtMs: startedAt,
+        })
+      );
       return;
     }
 
-    const focus = customFocus.trim();
+    const { slot, customFocus } = parsedReq.data;
+    const focus = customFocus;
     const cacheKey = makeCacheKey('pivot-topic', {
       mode: slot.mode,
       tone: slot.tone,
@@ -796,13 +839,28 @@ Target Mode: ${slot.mode} | Target Tone: ${slot.tone} | Day: ${slot.dayOfWeek ||
   router.post('/api/pivot', handlePivotTopic);
 
   router.post('/api/suggest-first-month', async (req, res) => {
+    const requestId = createRequestId();
+    const startedAt = Date.now();
+    const parsedReq = SuggestFirstMonthRequestSchema.safeParse(req.body ?? {});
+    if (!parsedReq.success) {
+      res.status(400).json(
+        buildErrorEnvelope({
+          code: 'INVALID_FIRST_MONTH_REQUEST',
+          message:
+            parsedReq.error.issues[0]?.message || 'Invalid first-month schedule request.',
+          requestId,
+          startedAtMs: startedAt,
+        })
+      );
+      return;
+    }
     const {
       todayISO,
-      targetSpecs = [],
+      targetSpecs,
       studentProfile,
       adaptiveWritingProfile,
-      existingTopics = [],
-    } = req.body ?? {};
+      existingTopics,
+    } = parsedReq.data;
 
     const minDate =
       typeof todayISO === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(todayISO)
@@ -973,8 +1031,23 @@ Never repeat any topic within this list or from: ${avoidSample || 'none'}.`,
   });
 
   router.post('/api/categorize-vocab', async (req, res) => {
-    const { entries = [] } = req.body ?? {};
-    if (!Array.isArray(entries) || entries.length === 0) {
+    const requestId = createRequestId();
+    const startedAt = Date.now();
+    const parsedReq = CategorizeVocabRequestSchema.safeParse(req.body ?? {});
+    if (!parsedReq.success) {
+      res.status(400).json(
+        buildErrorEnvelope({
+          code: 'INVALID_VOCAB_REQUEST',
+          message:
+            parsedReq.error.issues[0]?.message || 'Invalid vocabulary categorization payload.',
+          requestId,
+          startedAtMs: startedAt,
+        })
+      );
+      return;
+    }
+    const { entries } = parsedReq.data;
+    if (entries.length === 0) {
       res.json({ ok: true, categories: {}, modelUsed: 'none', downgraded: false });
       return;
     }

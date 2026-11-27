@@ -9,7 +9,9 @@ import type {
   RewrittenSample,
   RubricMetricNotes,
   RubricScores,
+  ToneCheck,
   ToneSetting,
+  UnifiedEdit,
   VocabEntry,
   VocabSuggestion,
   WritingMode,
@@ -25,7 +27,9 @@ import {
   calibrateEvaluationScores,
   computeTopicOverlap,
   filterGroundedGrammarFixes,
+  normalizeErrorTag,
 } from './evaluationCalibration';
+import { computeProseDiagnostics } from './proseDiagnostics';
 import type { OfflineProofIssue } from './offlineProofreader';
 import { analyzeWritingSample } from './textAnalysis';
 
@@ -46,6 +50,9 @@ export interface InstantEvaluationResult {
   whatImproved: string;
   whatImprovedPoints?: CoachHighlightPoint[];
   strictImprovements: string;
+  nextDraftPriority?: string;
+  toneCheck?: ToneCheck;
+  edits?: UnifiedEdit[];
   pinpointedRewrites?: PinpointedRewrite[];
   rewrittenSample?: RewrittenSample;
   grammarFixes: GrammarFix[];
@@ -509,6 +516,7 @@ export function buildInstantLocalEvaluation(
       corrected: issue.replacement,
       rule: issue.rule,
       category: issue.category,
+      errorTag: normalizeErrorTag(undefined, issue.category, issue.rule),
     }))
   );
 
@@ -738,23 +746,68 @@ export function buildInstantLocalEvaluation(
         : 'Tight phrasing with low filler density.',
   };
 
-  const pinpointedRewrites: PinpointedRewrite[] = [];
+  const localProse = computeProseDiagnostics(content);
+  const unifiedEdits: UnifiedEdit[] = [];
+  const seenOrig = new Set<string>();
+
   if (rewrittenSample) {
-    pinpointedRewrites.push({
+    seenOrig.add(rewrittenSample.original.toLowerCase());
+    unifiedEdits.push({
       original: rewrittenSample.original,
-      rewrite: rewrittenSample.improved,
+      improved: rewrittenSample.improved,
+      dimension: 'flow',
+      errorTag: 'repetition-filler',
       rule: rewrittenSample.why,
-      category: 'Sentence Flow & Conciseness',
     });
   }
-  for (const fix of grammarFixes.slice(0, 3)) {
-    pinpointedRewrites.push({
+  for (const fix of grammarFixes.slice(0, 4)) {
+    const key = fix.original.toLowerCase();
+    if (seenOrig.has(key)) continue;
+    seenOrig.add(key);
+    const tag = fix.errorTag ?? normalizeErrorTag(undefined, fix.category, fix.rule);
+    unifiedEdits.push({
       original: fix.original,
-      rewrite: fix.corrected,
+      improved: fix.corrected,
+      dimension:
+        tag === 'regional-calque'
+          ? 'calque'
+          : tag === 'tone-mismatch'
+            ? 'tone'
+            : tag === 'run-on-sentence' || tag === 'repetition-filler'
+              ? 'flow'
+              : tag === 'hedging-passive' || tag === 'word-choice'
+                ? 'clarity'
+                : 'grammar',
+      errorTag: tag,
       rule: fix.rule,
-      category: fix.category,
     });
   }
+  for (const cf of localProse.calqueFixes.slice(0, 2)) {
+    const key = cf.phrase.toLowerCase();
+    if (seenOrig.has(key)) continue;
+    seenOrig.add(key);
+    unifiedEdits.push({
+      original: cf.phrase,
+      improved: cf.naturalAlternative,
+      dimension: 'calque',
+      errorTag: 'regional-calque',
+      rule: cf.reason,
+    });
+  }
+
+  const pinpointedRewrites: PinpointedRewrite[] = unifiedEdits.map((e) => ({
+    original: e.original,
+    rewrite: e.improved,
+    rule: e.rule,
+    category:
+      e.dimension === 'calque'
+        ? 'Idiomatic Phrasing'
+        : e.dimension === 'flow'
+          ? 'Sentence Flow & Conciseness'
+          : 'Grammar & Mechanics',
+    dimension: e.dimension,
+    errorTag: e.errorTag,
+  }));
 
   const whatImprovedPoints: CoachHighlightPoint[] = [
     {
@@ -779,6 +832,21 @@ export function buildInstantLocalEvaluation(
     contextTag: MODE_LABELS[mode],
   }));
 
+  const nextDraftPriority = strictParts[0] || 'Keep sentences crisp and active.';
+  const toneCheck: ToneCheck = {
+    match:
+      topicPenalty < 0
+        ? 'Slightly Off'
+        : calibrated.scores.toneEngagement >= 7
+          ? 'On Target'
+          : 'Slightly Off',
+    audienceReaction:
+      topicPenalty < 0
+        ? `Your ${TONE_LABELS[tone].toLowerCase()} voice is steady, though anchoring one concrete example to the prompt would strengthen conviction.`
+        : `Reads clearly in a ${TONE_LABELS[tone].toLowerCase()} voice suited for ${MODE_LABELS[mode]}.`,
+    toneFix: nextDraftPriority,
+  };
+
   return {
     evaluationStatus: 'completed',
     modelUsed: 'offline-rubric',
@@ -789,6 +857,7 @@ export function buildInstantLocalEvaluation(
     metricNotes,
     cefrLevel: calibrated.cefrLevel,
     internationalMetrics,
+    toneCheck,
     toneVerdict:
       topicPenalty < 0
         ? `Reads in a ${TONE_LABELS[tone].toLowerCase()} voice, though topical alignment with the prompt looks light.`
@@ -804,6 +873,8 @@ export function buildInstantLocalEvaluation(
     whatImproved: strengthParts.join(' '),
     whatImprovedPoints,
     strictImprovements: strictParts.slice(0, 2).join(' '),
+    nextDraftPriority,
+    edits: unifiedEdits,
     pinpointedRewrites,
     rewrittenSample,
     grammarFixes,
