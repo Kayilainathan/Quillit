@@ -38,7 +38,9 @@ import {
   apiFetch,
   clearRuntimeApiBaseUrl,
   getApiBaseUrl,
-  isGitHubPagesHost,
+  isAiStudioPreviewUrl,
+  isStaticHostingEnvironment,
+  isStaticHostNoBackendError,
   safeParseJsonResponse,
   setRuntimeApiBaseUrl,
 } from '../utils/apiBase';
@@ -210,7 +212,7 @@ export function VaultSettingsView({
     tone: 'ok' | 'warn' | 'err';
     message: string;
   } | null>(null);
-  const onStaticPages = isGitHubPagesHost();
+  const onStaticPages = isStaticHostingEnvironment();
 
   async function handleSaveAndTestApiServer(e: FormEvent) {
     e.preventDefault();
@@ -223,8 +225,18 @@ export function VaultSettingsView({
       setApiServerStatus({
         tone: onStaticPages ? 'warn' : 'ok',
         message: onStaticPages
-          ? 'Cleared custom server URL. GitHub Pages will stay in offline mode until a backend URL is configured.'
+          ? 'Cleared custom server URL. Static hosting will run in offline-first mode until a public backend URL is configured.'
           : 'Using same-origin API server.',
+      });
+      setApiServerTesting(false);
+      return;
+    }
+
+    if (isAiStudioPreviewUrl(trimmed)) {
+      setApiServerStatus({
+        tone: 'err',
+        message:
+          'AI Studio preview URLs (ais-pre / ais-dev) sit behind a Google login proxy and block cross-origin GitHub Pages requests. Deploy this repo to a public host (Render via render.yaml, Cloud Run via Dockerfile, or Railway) with GEMINI_API_KEY, then paste that public URL here.',
       });
       setApiServerTesting(false);
       return;
@@ -234,7 +246,8 @@ export function VaultSettingsView({
     if (!saved) {
       setApiServerStatus({
         tone: 'err',
-        message: 'Enter a valid http(s) server URL (for example, https://your-quillit-server.run.app).',
+        message:
+          'Enter a valid public Node backend URL (for example, https://quillit-api.onrender.com or https://your-service.a.run.app — not a github.io URL).',
       });
       setApiServerTesting(false);
       return;
@@ -242,7 +255,7 @@ export function VaultSettingsView({
     setApiServerInput(saved);
 
     try {
-      const res = await apiFetch('/api/health', { method: 'GET' });
+      const res = await apiFetch('/api/health', { method: 'GET', timeoutMs: 10_000 });
       const json = res.ok
         ? await safeParseJsonResponse<Record<string, unknown>>(res)
         : null;
@@ -257,20 +270,21 @@ export function VaultSettingsView({
         setApiServerStatus({
           tone: 'warn',
           message:
-            'Server reached, but AI tiers are briefly cooling down or unconfigured. Queued sessions will retry automatically.',
+            'Server reached, but GEMINI_API_KEY is missing or AI tiers are briefly cooling down. Queued sessions will retry automatically.',
         });
       } else {
         setApiServerStatus({
           tone: 'err',
           message:
-            'Could not reach /api/health on that server URL. Verify the hosted backend URL and CORS access.',
+            'Could not reach /api/health on that server URL. Verify the hosted backend is online and publicly accessible.',
         });
       }
-    } catch {
+    } catch (err) {
       setApiServerStatus({
         tone: 'err',
-        message:
-          'Connection blocked or unreachable. Verify the server URL is online over HTTPS.',
+        message: isStaticHostNoBackendError(err)
+          ? err.message
+          : 'Connection blocked or unreachable. Verify the backend is publicly reachable over HTTPS with GEMINI_API_KEY configured.',
       });
     } finally {
       setApiServerTesting(false);
@@ -994,7 +1008,7 @@ export function VaultSettingsView({
           </span>
         </div>
         <p className="text-xs text-ink-secondary leading-relaxed">
-          GitHub Pages hosts only static frontend files. To run live Gemini evaluations and auto-upgrade offline logs from GitHub Pages, point to your hosted Quillit Express server URL (or set <code className="font-mono-tabular">VITE_API_BASE_URL</code> in GitHub Actions Variables/Secrets).
+          GitHub Pages serves only static frontend files and runs offline-first by default. To enable live Gemini AI on your hosted page, deploy this repo&apos;s Node backend once (using <code className="font-mono-tabular">render.yaml</code> on Render or <code className="font-mono-tabular">Dockerfile</code> on Cloud Run / Railway with <code className="font-mono-tabular">GEMINI_API_KEY</code>), then paste that public backend URL below or set <code className="font-mono-tabular">VITE_API_BASE_URL</code> in GitHub Actions.
         </p>
         <form onSubmit={handleSaveAndTestApiServer} className="space-y-2.5">
           <div className="flex flex-wrap items-center gap-2">
@@ -1002,7 +1016,7 @@ export function VaultSettingsView({
               type="url"
               value={apiServerInput}
               onChange={(e) => setApiServerInput(e.target.value)}
-              placeholder="https://your-quillit-server.run.app"
+              placeholder="https://quillit-api.onrender.com"
               aria-label="Hosted Quillit AI server URL"
               className="input-tactile flex-1 min-w-[220px] px-3.5 py-2 text-xs font-mono-tabular"
             />

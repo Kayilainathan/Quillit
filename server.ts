@@ -1,5 +1,6 @@
 import 'dotenv/config';
 import express, { type NextFunction, type Request, type Response } from 'express';
+import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { apiRateLimiter, optionalAuthGuard } from './server/lib/authMiddleware';
@@ -36,8 +37,8 @@ function buildAllowedOrigins(isProd: boolean): Set<string> {
   return origins;
 }
 
-const GITHUB_PAGES_ORIGIN_RE =
-  /^https:\/\/[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.github\.io$/i;
+const STATIC_PAGES_ORIGIN_RE =
+  /^https:\/\/[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.(?:github\.io|gitlab\.io|pages\.dev)$/i;
 
 function createApiCorsMiddleware(isProd: boolean) {
   const allowedOrigins = buildAllowedOrigins(isProd);
@@ -52,9 +53,9 @@ function createApiCorsMiddleware(isProd: boolean) {
       const isSameHost =
         Boolean(reqHost) &&
         (originHeader === `http://${reqHost}` || originHeader === `https://${reqHost}`);
-      const isGitHubPagesOrigin = GITHUB_PAGES_ORIGIN_RE.test(originHeader);
+      const isStaticPagesOrigin = STATIC_PAGES_ORIGIN_RE.test(originHeader);
 
-      if (isSameHost || isGitHubPagesOrigin || allowedOrigins.has(originHeader)) {
+      if (isSameHost || isStaticPagesOrigin || allowedOrigins.has(originHeader)) {
         res.setHeader('Access-Control-Allow-Origin', originHeader);
         res.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
         res.setHeader('Access-Control-Allow-Headers', 'Content-Type,Authorization');
@@ -101,17 +102,28 @@ async function createApp() {
     app.use(vite.middlewares);
   } else {
     const distPath = path.resolve(__dirname, 'dist');
-    app.use(
-      express.static(distPath, {
-        index: false,
-        maxAge: '1y',
-        immutable: true,
-      })
-    );
-    app.get('*', (_req, res) => {
-      res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
-      res.sendFile(path.join(distPath, 'index.html'));
-    });
+    const indexHtmlPath = path.join(distPath, 'index.html');
+    if (fs.existsSync(indexHtmlPath)) {
+      app.use(
+        express.static(distPath, {
+          index: false,
+          maxAge: '1y',
+          immutable: true,
+        })
+      );
+      app.get('*', (_req, res) => {
+        res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+        res.sendFile(indexHtmlPath);
+      });
+    } else {
+      app.get('/', (_req, res) => {
+        res.json({
+          ok: true,
+          service: 'quillit-api',
+          health: '/api/health',
+        });
+      });
+    }
   }
 
   app.listen(PORT, '0.0.0.0', () => {
